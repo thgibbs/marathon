@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marathon — Architecture Diagram</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#161c24; --ink:#e6edf3; --muted:#9aa7b4;
+    --line:#3a4654; --accent:#5db0ff; --accent2:#7ee0c0;
+    --surface:#1d4ed8; --ingress:#0e7490; --core:#7c3aed; --exec:#b45309;
+    --gateway:#be123c; --external:#475569; --control:#3f6212; --delivery:#0f766e;
+    --warn:#f59e0b; --danger:#fb7185; --ok:#34d399;
+    --chip:#0b0f14;
+    --radius:12px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.45 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1160px;margin:0 auto;padding:28px 20px 60px}
+  h1{font-size:24px;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 20px}
+  .legend{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:12px 16px;margin-bottom:22px}
+  .legend b{font-weight:600}
+  .key{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:12.5px}
+  .swatch{width:13px;height:13px;border-radius:3px;display:inline-block}
+  .dashed{border:1.5px dashed var(--warn);border-radius:4px;width:16px;height:13px}
+
+  /* layered zone layout */
+  .zone{display:grid;grid-template-columns:118px 1fr;gap:14px;align-items:stretch;
+    margin:0 0 6px}
+  .ztag{display:flex;flex-direction:column;justify-content:center;align-items:flex-end;
+    text-align:right;padding:6px 6px 6px 0;color:var(--muted);
+    font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;border-right:2px solid var(--line)}
+  .ztag small{display:block;text-transform:none;letter-spacing:0;font-weight:400;color:#6b7886;font-size:10.5px;margin-top:3px}
+  .zbody{padding:10px 0}
+  .row{display:flex;gap:14px;flex-wrap:wrap;justify-content:center}
+  .row.spread{justify-content:space-around}
+
+  .node{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:11px 14px;min-width:150px;position:relative}
+  .node h3{margin:0;font-size:14px;display:flex;align-items:center;gap:8px}
+  .node p{margin:5px 0 0;color:var(--muted);font-size:12px}
+  .node .tag{position:absolute;top:-9px;right:10px;background:var(--chip);
+    border:1px solid var(--line);border-radius:999px;padding:1px 8px;font-size:10px;color:var(--muted)}
+  .dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+
+  .band{border-radius:10px;padding:8px;border:1px solid var(--line)}
+  .band-surface{background:linear-gradient(180deg,rgba(29,78,216,.16),transparent)}
+  .band-ingress{background:linear-gradient(180deg,rgba(14,116,144,.16),transparent)}
+  .band-core{background:linear-gradient(180deg,rgba(124,58,237,.15),transparent)}
+  .band-exec{background:linear-gradient(180deg,rgba(180,83,9,.16),transparent)}
+  .band-external{background:linear-gradient(180deg,rgba(71,85,105,.18),transparent)}
+  .band-control{background:linear-gradient(180deg,rgba(63,98,18,.16),transparent)}
+
+  .conn{height:26px;display:flex;align-items:center;justify-content:center;color:var(--line)}
+  .conn svg{display:block}
+  .arrowlabel{color:var(--muted);font-size:11px;margin:0 8px}
+
+  /* the worker / pi nesting */
+  .worker{background:rgba(180,83,9,.08);border:1.5px solid var(--exec);border-radius:14px;
+    padding:14px;max-width:760px;margin:0 auto;position:relative}
+  .worker > .lbl{position:absolute;top:-10px;left:14px;background:var(--bg);
+    padding:0 8px;color:#e2a04a;font-size:12px;font-weight:600}
+  .pi{background:rgba(94,176,255,.08);border:1.5px solid var(--accent);border-radius:12px;
+    padding:14px;position:relative;margin-top:6px}
+  .pi > .lbl{position:absolute;top:-10px;left:14px;background:#12181f;padding:0 8px;
+    color:var(--accent);font-size:12px;font-weight:600}
+  .pi .loopline{color:var(--muted);font-size:12px;margin:2px 0 12px;text-align:center}
+  .toollayer{background:rgba(126,224,192,.08);border:1.5px dashed var(--accent2);
+    border-radius:10px;padding:11px 14px;position:relative}
+  .toollayer > .lbl{position:absolute;top:-10px;left:12px;background:#101a17;padding:0 8px;
+    color:var(--accent2);font-size:12px;font-weight:600}
+  .toollayer ul{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12px;columns:2;column-gap:24px}
+  .pi-exits{display:flex;gap:18px;justify-content:center;margin-top:12px;flex-wrap:wrap}
+  .exit{flex:1 1 300px;min-width:280px}
+
+  .owns{border:1.5px solid var(--danger);border-radius:10px;background:rgba(251,113,133,.07);
+    padding:10px 14px;margin-top:14px}
+  .owns b{color:#ffd0d8}
+  .owns .pill{display:inline-block;background:rgba(251,113,133,.16);border:1px solid rgba(251,113,133,.4);
+    color:#ffd9df;border-radius:999px;padding:2px 9px;margin:4px 6px 0 0;font-size:11.5px}
+
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:7px}
+  .chip{background:var(--chip);border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:12px;color:var(--ink)}
+  .chip small{color:var(--muted)}
+
+  .badge-untrusted{display:inline-block;background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.5);
+    color:#ffd591;border-radius:999px;padding:1px 8px;font-size:10.5px;margin-left:6px;vertical-align:middle}
+
+  .note{display:flex;align-items:center;gap:10px;justify-content:center;color:var(--muted);
+    font-size:12px;margin:14px 0;flex-wrap:wrap}
+  .note .tb{border:1.5px dashed var(--warn);border-radius:8px;padding:6px 12px;color:#ffd591;background:rgba(245,158,11,.06)}
+  .note .secure{border:1.5px dashed var(--danger);border-radius:8px;padding:6px 12px;color:#ffd0d8;background:rgba(251,113,133,.06)}
+
+  /* loops */
+  .loops{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:8px}
+  .loopcard{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:10px;padding:11px 14px}
+  .loopcard h4{margin:0 0 6px;font-size:13px}
+  .loopcard.feedback{border-left-color:var(--ok)}
+  .loopcard p{margin:0;color:var(--muted);font-size:12px}
+  code{background:var(--chip);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px;color:#cfe8ff}
+
+  /* sequences */
+  h2{font-size:17px;margin:34px 0 10px;border-top:1px solid var(--line);padding-top:22px}
+  .seq{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px}
+  .seq h4{margin:0 0 8px;font-size:13.5px}
+  .steps{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+  .step{background:var(--chip);border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:12px}
+  .sep{color:var(--muted)}
+  .seq .emph{color:var(--muted);font-size:12px;margin:8px 0 0}
+  .mvp{color:#8ea2b3;font-size:11px}
+  .footer{color:#5b6776;font-size:11.5px;margin-top:30px;text-align:center}
+  @media (max-width:780px){.loops{grid-template-columns:1fr}.zone{grid-template-columns:78px 1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Marathon — Architecture</h1>
+  <p class="sub">Surface-shaped agent platform · durable tasks · Pi harness with embedded tool permissioning · minimal model layer · approval for destructive actions only</p>
+
+  <div class="legend">
+    <span class="key"><b>Zones:</b></span>
+    <span class="key"><span class="swatch" style="background:var(--surface)"></span>Surfaces</span>
+    <span class="key"><span class="swatch" style="background:var(--ingress)"></span>Ingress</span>
+    <span class="key"><span class="swatch" style="background:var(--core)"></span>Core (durable)</span>
+    <span class="key"><span class="swatch" style="background:var(--exec)"></span>Execution</span>
+    <span class="key"><span class="swatch" style="background:var(--external)"></span>External</span>
+    <span class="key"><span class="swatch" style="background:var(--control)"></span>Control plane</span>
+    <span class="key"><span class="dashed"></span>trust boundary</span>
+    <span class="key"><span class="badge-untrusted" style="margin:0">untrusted</span>treated as data, not instructions</span>
+  </div>
+
+  <!-- SURFACES -->
+  <div class="zone">
+    <div class="ztag">Surfaces<small>where users are</small></div>
+    <div class="zbody band band-surface">
+      <div class="row">
+        <div class="node"><h3><span class="dot" style="background:#4A154B"></span>Slack <span class="badge-untrusted">untrusted</span></h3>
+          <p>Single <code>@marathon</code> bot · address an agent by name (default if none)</p></div>
+        <div class="node"><h3><span class="dot" style="background:#e6edf3"></span>GitHub — markdown docs <span class="badge-untrusted">untrusted</span></h3>
+          <p>Files · PRs · issues · review/PR comments (<code>@mention</code>)</p></div>
+        <div class="node" style="opacity:.5"><h3><span class="dot" style="background:#64748b"></span>Web · Email · Scheduler</h3>
+          <p class="mvp">later — same surface interface</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="conn"><svg width="20" height="26"><line x1="10" y1="0" x2="10" y2="20" stroke="#3a4654" stroke-width="2"/><polygon points="5,18 15,18 10,26" fill="#3a4654"/></svg></div>
+
+  <!-- INGRESS -->
+  <div class="zone">
+    <div class="ztag">Ingress</div>
+    <div class="zbody band band-ingress">
+      <div class="row">
+        <div class="node"><h3><span class="dot" style="background:var(--ingress)"></span>Surface Gateways</h3>
+          <p>One per surface (shared interface): verify authenticity · dedupe · fast ack · normalize · enqueue</p></div>
+        <div class="node"><h3><span class="dot" style="background:var(--ingress)"></span>Invocation Router</h3>
+          <p>Resolve agent / default agent · authz (tenant · channel/repo · user) · create task · attach context</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="conn"><svg width="20" height="26"><line x1="10" y1="0" x2="10" y2="20" stroke="#3a4654" stroke-width="2"/><polygon points="5,18 15,18 10,26" fill="#3a4654"/></svg></div>
+
+  <!-- CORE -->
+  <div class="zone">
+    <div class="ztag">Core<small>durable</small></div>
+    <div class="zbody band band-core">
+      <div class="row spread">
+        <div class="node"><h3><span class="dot" style="background:var(--core)"></span>Task Orchestrator</h3>
+          <p>Lifecycle · step scheduling · checkpoints · automatic retries · durable approval waits · dead-letter</p>
+          <span class="tag">heart of Marathon</span></div>
+        <div class="node"><h3><span class="dot" style="background:#a78bfa"></span>Task Queue</h3>
+          <p>Postgres-backed · workflow-engine-compatible (Temporal later)</p></div>
+        <div class="node"><h3><span class="dot" style="background:#c4b5fd"></span>Postgres</h3>
+          <p>tasks · steps · checkpoints · model/tool invocations · approvals · feedback · audit · doc artifacts</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="conn"><span class="arrowlabel">lease work →</span><svg width="20" height="26"><line x1="10" y1="0" x2="10" y2="20" stroke="#3a4654" stroke-width="2"/><polygon points="5,18 15,18 10,26" fill="#3a4654"/></svg><span class="arrowlabel">← checkpoints to Postgres</span></div>
+
+  <!-- EXECUTION -->
+  <div class="zone">
+    <div class="ztag">Execution</div>
+    <div class="zbody band band-exec">
+      <div class="worker">
+        <span class="lbl">Agent Worker — durable wrapper (leases · heartbeats · checkpoint/resume)</span>
+        <div class="pi">
+          <span class="lbl">Pi harness — the agent runtime (swappable)</span>
+          <div class="loopline">agent loop · prompting · step sequencing · progress · per-call logging / retries / redaction</div>
+
+          <div class="pi-exits">
+            <!-- model exit -->
+            <div class="exit">
+              <div class="node" style="border-color:#7ea8c9">
+                <h3><span class="dot" style="background:var(--accent)"></span>Model access → Model Gateway <em style="color:var(--muted);font-style:normal">(minimal)</em></h3>
+                <p>routing + per-call <b>cost tracking</b>; budgets passed through to providers / OpenRouter. (logging/retries/redaction come from Pi)</p>
+              </div>
+            </div>
+            <!-- tool exit -->
+            <div class="exit">
+              <div class="toollayer">
+                <span class="lbl">Tool layer — embedded permissioning (the chokepoint)</span>
+                <p style="margin:4px 0 0;color:var(--muted);font-size:12px">Pi enforces on <b>every</b> call:</p>
+                <ul>
+                  <li>permission check</li>
+                  <li>input-schema validation</li>
+                  <li>destructive → approval</li>
+                  <li>rate limits</li>
+                  <li>execute w/ injected creds</li>
+                  <li>redact output · structured result</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div class="owns">
+            <b>Marathon owns <i>around</i> the tool layer</b> (the model can't change or bypass these):
+            <span class="pill">tool policy &amp; grants</span>
+            <span class="pill">credentials / secrets (injected at exec)</span>
+            <span class="pill">approval orchestration (durable waits + in-place prompts)</span>
+            <span class="pill">audit log</span>
+            <span class="pill">cost / usage records</span>
+          </div>
+        </div>
+        <div style="text-align:center;margin-top:10px">
+          <span class="arrowlabel">↕ Memory / Retrieval — task · thread · agent memory + tenant knowledge (permission-filtered; feedback feeds agent memory)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="conn"><svg width="20" height="26"><line x1="10" y1="0" x2="10" y2="20" stroke="#3a4654" stroke-width="2"/><polygon points="5,18 15,18 10,26" fill="#3a4654"/></svg></div>
+
+  <!-- EXTERNAL -->
+  <div class="zone">
+    <div class="ztag">External</div>
+    <div class="zbody band band-external">
+      <div class="row spread">
+        <div class="node"><h3><span class="dot" style="background:var(--accent)"></span>Model providers</h3>
+          <div class="chips"><span class="chip">Claude <small>Anthropic</small></span><span class="chip">ChatGPT <small>OpenAI</small></span><span class="chip">OpenRouter</span></div>
+          <p>no local models initially</p></div>
+        <div class="node"><h3><span class="dot" style="background:var(--accent2)"></span>Tool sources <span class="badge-untrusted">output untrusted</span></h3>
+          <div class="chips">
+            <span class="chip">Built-in connectors <small>GitHub · DB · Datadog</small></span>
+            <span class="chip">Command-line tools <small>primary</small></span>
+            <span class="chip">MCP servers <small>customer tools</small></span>
+          </div>
+          <p>all enforced uniformly by the harness tool layer</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="conn"><span class="arrowlabel">structured result →</span><svg width="20" height="26"><line x1="10" y1="0" x2="10" y2="20" stroke="#3a4654" stroke-width="2"/><polygon points="5,18 15,18 10,26" fill="#3a4654"/></svg></div>
+
+  <!-- DELIVERY + CONTROL -->
+  <div class="zone">
+    <div class="ztag">Delivery &amp; control</div>
+    <div class="zbody">
+      <div class="row">
+        <div class="node" style="border-color:#2c8a7e"><h3><span class="dot" style="background:var(--delivery)"></span>Surface Delivery Service</h3>
+          <p>renders the structured result back to the <b>originating</b> surface (Slack thread / GitHub comment or PR) — delivery target may differ from source</p></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <div class="node band-control"><h3><span class="dot" style="background:var(--control)"></span>Agent &amp; Tool registries</h3><p class="mvp">internal</p></div>
+        <div class="node band-control"><h3><span class="dot" style="background:var(--control)"></span>Audit log</h3><p>security-relevant events</p></div>
+        <div class="node band-control"><h3><span class="dot" style="background:var(--control)"></span>Inspectability dashboard</h3><p>per-task timeline: model/tool calls · data seen · cost · failures</p></div>
+        <div class="node band-control"><h3><span class="dot" style="background:var(--control)"></span>Admin / config</h3><p class="mvp">internal · secrets · budgets · provider config</p></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- trust boundary callouts -->
+  <div class="note">
+    <span class="secure">🔒 Secrets never cross into the model — injected only into the tool layer at execution</span>
+    <span class="secure">🛡 Policy enforced outside the model — in Pi's tool layer &amp; the orchestrator</span>
+    <span class="tb">⚠ Surface content, tool output &amp; model output are untrusted — data, not instructions</span>
+    <span class="tb">🏢 Tenant isolation across tasks, data, secrets, registries</span>
+  </div>
+
+  <!-- cross-cutting loops -->
+  <div class="loops">
+    <div class="loopcard">
+      <h4>↺ Approval loop (destructive actions only)</h4>
+      <p>Pi's tool layer detects a destructive call → Orchestrator sets <code>waiting_for_approval</code> (durable wait, may last days) → prompt posted <b>in place</b> on the surface → human approves → Orchestrator resumes → tool layer executes. Idempotency key prevents double-execute.</p>
+    </div>
+    <div class="loopcard feedback">
+      <h4>↺ Feedback loop</h4>
+      <p>Surface 👍 / 👎 (+ optional text) → Surface Gateway → Postgres → fed into <b>agent memory</b> &amp; the eval store. Cost is tracked silently and surfaced on completion.</p>
+    </div>
+  </div>
+
+  <!-- SEQUENCES -->
+  <h2>Key flows</h2>
+
+  <div class="seq">
+    <h4>1 · Slack investigation — read-only, autonomous</h4>
+    <div class="steps">
+      <span class="step">User @ Slack</span><span class="sep">→</span>
+      <span class="step">Slack Gateway</span><span class="sep">→</span>
+      <span class="step">Invocation Router</span><span class="sep">→</span>
+      <span class="step">Orchestrator (task + ack)</span><span class="sep">→</span>
+      <span class="step">Worker / Pi</span><span class="sep">→</span>
+      <span class="step">tool layer: read GitHub + Datadog</span><span class="sep">→</span>
+      <span class="step">model calls</span><span class="sep">→</span>
+      <span class="step">Surface Delivery</span><span class="sep">→</span>
+      <span class="step">Slack thread + 👍/👎</span>
+    </div>
+    <p class="emph">No approval (non-destructive) · durable checkpoints between steps · automatic retry on a transient tool failure.</p>
+  </div>
+
+  <div class="seq">
+    <h4>2 · Document-driven execution — the headline flow</h4>
+    <div class="steps">
+      <span class="step">Slack request</span><span class="sep">→</span>
+      <span class="step">agent drafts design doc as a markdown PR</span><span class="sep">→</span>
+      <span class="step">people comment on PR</span><span class="sep">→</span>
+      <span class="step">agent revises</span><span class="sep">→</span>
+      <span class="step">human merges PR <b>= approval</b></span><span class="sep">→</span>
+      <span class="step">agent executes plan</span><span class="sep">→</span>
+      <span class="step">progress to PR + Slack</span>
+    </div>
+    <p class="emph">The document is the durable plan of record · approval-by-merge · cross-surface (source = Slack, artifact = GitHub).</p>
+  </div>
+
+  <div class="seq">
+    <h4>3 · Destructive action with approval</h4>
+    <div class="steps">
+      <span class="step">Pi tool layer detects destructive call</span><span class="sep">→</span>
+      <span class="step">Orchestrator: <code>waiting_for_approval</code> (durable, may last days)</span><span class="sep">→</span>
+      <span class="step">prompt in place on surface</span><span class="sep">→</span>
+      <span class="step">human approves</span><span class="sep">→</span>
+      <span class="step">Orchestrator resumes</span><span class="sep">→</span>
+      <span class="step">tool layer executes (injected creds)</span><span class="sep">→</span>
+      <span class="step">audit + result</span>
+    </div>
+    <p class="emph">Enforcement in the harness · durable human wait holds no process open · idempotency key prevents double-execute.</p>
+  </div>
+
+  <p class="footer">Marathon architecture · rendered from <code>diagram.md</code> · MVP surfaces: Slack + GitHub markdown (others greyed / later)</p>
+</div>
+</body>
+</html>
