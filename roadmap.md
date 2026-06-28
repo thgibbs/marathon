@@ -298,6 +298,41 @@ Exit criteria — unit tests + automated demo:
 
 ---
 
+### M5.5 — Live Slack app (end-to-end Socket Mode listener)
+**Goal:** a persistent process lets a user `@marathon …` in Slack and get a real,
+tool-using, **threaded reply** end-to-end — stitching M2–M5 into something you can
+actually talk to. (The earlier milestones proved each piece; this runs them live.)
+
+Human prerequisites:
+- Bot installed in a channel (**#general — done**); app-level (`xapp-`) + bot
+  (`xoxb-`) tokens in `.env` (**done**).
+- A host to run the long-lived listener (local/dev is fine now; a deploy target later).
+
+Build:
+- **Socket Mode listener** — connect via `apps.connections.open`, handle
+  `hello` / `disconnect` / reconnect, and **ack each envelope** promptly.
+- **Dispatch** — `app_mention` → dedupe (event id) → `parseAppMention` →
+  `InvocationRouter` → durable task; the worker runs the **Pi agent (OpenAI default)
+  + tools under policy**; `SlackDelivery` posts ack → progress → the threaded
+  structured result (silent cost footer).
+- **Feedback** — `reaction_added` → `recordFeedback`.
+- **In-thread approvals** — a destructive tool call → `ApprovalService` posts the
+  prompt in-thread (interactivity buttons or a reply convention); approve/reject
+  resumes the task (block-persist-resume).
+- Graceful reconnect; at-least-once delivery made safe by event-id dedupe.
+
+Depends on: M2, M3, M4, M5.
+Exit criteria — unit tests + automated demo:
+- *Unit tests:* Socket Mode envelope parsing + ack, and event dispatch routing
+  (mention vs reaction vs interactivity).
+- *Automated demo* (`make demo-slack-app`): feed recorded Socket Mode envelopes
+  through the dispatcher with a fake Slack client + fake agent → assert a threaded
+  reply and recorded feedback; a duplicate envelope is a no-op.
+- *Live smoke* (`make smoke-slack-app`): mention `@marathon …` in #general → a real
+  threaded reply via a live model call.
+
+---
+
 ### M6 — GitHub document surface + document-driven workflow
 **Goal:** documents are a first-class surface; the draft-→review-→merge-→execute loop works.
 
@@ -422,11 +457,12 @@ Exit criteria — unit tests + automated demo:
 ## 3. Dependency / critical path
 
 ```
-M0 ─► M1 ─► M2 ─► M3 ─► M4 ─► M5 ─► M6  (= MVP)
+M0 ─► M1 ─► M2 ─► M3 ─► M4 ─► M5 ─► M5.5 ─► M6  (= MVP)
                    │            └► M7
                    └────────────► M8 (can start after M3, matures after M5)
                                   M9 runs continuously, gates the MVP release
 ```
+**M5.5** (live Slack app) integrates M2–M5 into a runnable end-to-end listener.
 Critical path runs through the **§6.1 approval-resume spike** (blocks M2 design) and
 the **approval durable-wait** (M5). Start the spike during M0/M1.
 
