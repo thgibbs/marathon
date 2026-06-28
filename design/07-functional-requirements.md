@@ -461,64 +461,107 @@ budget_policy:
 
 ## 7.12 Memory and context
 
-Marathon should support several types of context. How these are gathered and composed into a
-model prompt is specified in §7.18 (Prompt & context assembly).
+Memory is what lets an agent carry context within a task, across a conversation, and over time
+— and learn from feedback so it stops repeating corrected mistakes. How memory is *gathered
+and composed into a prompt* is §7.18; this section defines *what memory is, how it's scoped,
+and the swappable store behind it*.
 
-### Task-local memory
+### Dimensions: scope × term
 
-Used within a single task.
+Memory is organized along two axes.
 
-Examples:
+**Scope** (who owns it) — nested under a tenant, with agent and project orthogonal (an agent
+works across projects; a project is worked on by many agents):
 
-* Current plan
-* Tool results
-* Intermediate summaries
-* User clarifications
-* Pending approvals
+| Scope | Holds |
+| --- | --- |
+| **Tenant** | org-wide knowledge, conventions, policies (shared across all agents/projects) |
+| **Project** | facts/decisions about one project (a **GitHub repo** for now; see below) |
+| **Agent** | a named agent's learned preferences, runbooks, and corrections |
+| **Thread** | working memory for one conversation (a Slack thread or document thread) |
 
-### Thread memory
+**Term** (how long it lives):
 
-Used within a Slack thread.
+* **Short-term** — working memory (recent thread turns), TTL'd; ranked by recency.
+* **Long-term** — durable knowledge (summaries, corrections, facts); ranked by relevance.
 
-Examples:
+> **Task-local memory is not in the store.** A single task's working state (plan, tool
+> results, intermediate summaries) is already the durable **Pi session + checkpoint** (§7.5,
+> §11.2). The memory store's short-term tier is **thread-level** (spanning the tasks in one
+> conversation), so we don't duplicate the durable spine.
 
-* Prior agent responses
-* User corrections
-* Current investigation state
+A recall for one invocation **unions all applicable scopes** (tenant + project + agent +
+thread) and **both terms**, then ranks the merged set (relevance blended with recency) within
+a token budget. Callers ask "what's relevant here?" — they do **not** pick a term.
 
-### Agent memory
+### Project = GitHub repo (for now)
 
-Used by a named agent across tasks.
+"Project" is a tenant-scoped grouping resolved from the invocation source. Initially a
+**GitHub repo** (`owner/name`); a Slack channel or an explicit/generated `Project` can replace
+it later via a pluggable **project resolver**, with no change to the store interface. Project
+memory inherits the **repo-permission check** (§7.17): only agents/users with access to the
+repo may read or write its memory.
 
-Examples:
+### The store is swappable — `MemoryStore`
 
-* Preferred response format
-* Known runbooks
-* Common workflows
-* Team conventions
+Marathon does not hard-code a memory engine. All memory flows through a `MemoryStore`
+interface; backends are adapters. This lets us start simple and graduate to a purpose-built
+memory layer without touching the rest of the system.
 
-### Tenant knowledge
+```ts
+type MemoryTerm = "short" | "long";
+type MemoryLevel = "tenant" | "project" | "agent" | "thread";
+interface MemoryScope { tenantId: string; projectId?: string; agentId?: string; threadId?: string; }
 
-Retrieved from connected systems.
+interface MemoryItem {
+  id: string; scope: MemoryScope; level: MemoryLevel; term: MemoryTerm;  // term set on write
+  kind: string;           // summary | correction | preference | message | fact | ...
+  text: string; metadata?: Record<string, unknown>;
+  source?: { taskId?: string }; createdAt: Date; expiresAt?: Date;       // short-term TTL
+}
 
-Examples:
+interface MemoryStore {
+  remember(item): Promise<MemoryItem>;
+  recall(q: { query: string; scope: MemoryScope; levels?: MemoryLevel[];   // default: all applicable
+              limit?: number; tokenBudget?: number }): Promise<MemoryItem[]>;  // searches both terms
+  forget(filter: { id?: string; scope?: Partial<MemoryScope>; before?: Date }): Promise<number>;
+  list(scope: Partial<MemoryScope>): Promise<MemoryItem[]>;
+}
+```
 
-* GitHub repos
-* Docs
-* Runbooks
-* Incident notes
-* Support tickets
-* Database schemas
+Each adapter maps Marathon's scope to its provider's keys:
 
-Memory requirements:
+| Backend | Role | Notes |
+| --- | --- | --- |
+| **pgvector** | default, in-repo | a `memory_item` table + embeddings; zero extra infra; keeps CI deterministic. Stores + retrieves, but is **not a memory *system*** (no fact extraction, dedup/conflict resolution, temporal reasoning, or decay). |
+| **Mem0** | first external backend | a real memory layer; accessed as a service via its client SDK, not embedded in-process. Adds extraction/dedup when enabled. |
+| **Zep / others** | future | temporal knowledge graph, behind the same interface. |
+| **Letta / MemGPT** | not a fit | it owns the agent loop (Pi already does); borrow its tiered-memory ideas, don't adopt it as a store. |
 
-* Scoped by tenant
-* Scoped by permissions
-* Inspectable
-* Deletable
-* Configurable retention
-* Optional by default
-* Redacted when needed
+Embeddings for the pgvector default use **OpenAI `text-embedding-3-small`**.
+
+### What gets written (store-and-retrieve scope)
+
+The first cut is **store-and-retrieve only** — no LLM fact-extraction or short→long
+consolidation yet (added later, largely "for free" once Mem0 is wired):
+
+* **Long-term** ← the task **result summaries** Marathon already produces, plus **feedback
+  corrections** (a 👎 + correction becomes an agent-scoped `correction` item) — this is the
+  "feedback incorporated into future context" goal (§7.6).
+* **Short-term** ← **thread turns**, written with a TTL.
+* **Recall** is called by the prompt builder (§7.18) on each invocation.
+
+### Requirements (now enforced by the store)
+
+* **Tenant-isolated**; project memory gated by repo permission (§7.17).
+* **Inspectable** (`list`) and **deletable** (`forget`) per scope — for the dashboard (§16)
+  and retention/erasure (§12.5).
+* Configurable **retention**; short-term **TTL**; **redaction** of sensitive content (§12.2).
+* **Optional by default** — an agent uses memory only if configured to.
+
+> **As-built status.** Not implemented yet (M7). Today the agent runs with no memory recall or
+> persistence beyond the per-task checkpoint, and the prompt builder (§7.18) does not yet
+> inject recalled memory.
 
 ---
 

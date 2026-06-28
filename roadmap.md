@@ -446,33 +446,52 @@ Exit criteria — unit tests + automated demo:
 ---
 
 ### M7 — Memory & feedback-to-memory
-**Goal:** agents carry context across a task/thread and learn from feedback.
+**Goal:** agents carry context across a conversation and over time, and learn from feedback so
+a corrected mistake isn't repeated — behind a **swappable memory store** (design §7.12).
 
 Human prerequisites:
-- Confirm **embeddings access** (which provider/model for retrieval) with billing —
-  usually covered by the M2 provider accounts; ensure the embeddings key is in the secret
-  store. (pgvector itself runs in Compose — no human setup.)
+- Ensure the **embeddings key** is in the secret store (OpenAI `text-embedding-3-small`;
+  usually covered by the M2 provider account). pgvector runs in Compose — no human setup.
+- For the live Mem0 smoke only: a **Mem0 endpoint + key** (hosted or self-hosted) in `.env`.
+
+Design decisions (settled — design §7.12):
+- **Scope × term** model: scopes = **tenant / project / agent / thread**; terms = short / long.
+  `recall` unions all applicable scopes and **searches both terms** (caller never picks a term).
+- **Project = GitHub repo** (`owner/name`) via a pluggable resolver; project memory is gated by
+  the repo-permission check (§7.17).
+- **Task short-term is NOT in the store** — it's the existing Pi session + checkpoint; the
+  store's short-term tier is thread-level.
+- **Store-and-retrieve only** this milestone — no LLM fact-extraction / consolidation yet.
 
 Build:
-- Task-local, thread, and agent memory; **tenant knowledge** retrieval via pgvector;
-  permission-filtered, inspectable, deletable, configurable retention.
-- **Feedback incorporated into agent memory / future context** so a corrected mistake
-  isn't repeated.
-- **Prompt & context assembly (design §7.18)** — load `AgentVersion.instructions` (give
-  **Quill**/**Bruce** real personas), build per-surface context (Slack thread / document
-  region + memory) with untrusted-content delimiting. *(M6 carry-over #2.)*
-- **Document revision loop (design §6.8)** — the agent revises a drafted doc PR in
-  response to review comments before merge. *(M6 carry-over #3.)*
+- **`MemoryStore` interface** (`remember` / `recall` / `forget` / `list`) — the swappable seam.
+- **`PgVectorMemoryStore`** (default, in-repo) + a `FakeMemoryStore` for tests; pgvector schema
+  (`memory_item` + embeddings), tenant-isolated + repo-permission-filtered, recall ranks
+  relevance blended with recency within a token budget, with TTL + retention/`forget`.
+- **`Mem0MemoryStore`** adapter — first external backend (validates the seam; client SDK
+  against a Mem0 service, not embedded in-process).
+- **Writes:** task **result summaries** → long-term; **feedback corrections** (👎 + text) →
+  agent-scoped long-term; **thread turns** → short-term (TTL).
+- **Recall wired into prompt assembly** (§7.18) so agents actually use memory.
+- **Prompt & context assembly (§7.18)** — load `AgentVersion.instructions` (give **Quill** /
+  **Bruce** real personas) + per-surface context builder with untrusted-content delimiting.
+  *(M6 carry-over #2.)*
+- **Document revision loop (§6.8)** — agent revises a drafted doc PR in response to review
+  comments before merge. *(M6 carry-over #3.)*
 - **Watched documents** — populate the `watched` role + `last_revision_seen`; react when a
   tracked document changes. *(M6 carry-over #5.)*
 
-Depends on: M4 (feedback), M6.
-Exit criteria — unit tests + automated demo:
-- *Unit tests:* memory scoping + permission filtering, retrieval ranking, feedback →
-  memory write, deletion.
-- *Automated demo* (`make demo-m7`): seed a corrective feedback, run a later task, and
-  assert it retrieves and applies the correction; assert permission-filtered retrieval
-  excludes unauthorized content; assert deletion removes it.
+Deferred to later: LLM **fact-extraction / consolidation** (short→long promotion), Zep adapter.
+
+Depends on: M4 (feedback), M6 (repo permission), M6.1 (governed tools).
+Exit criteria — unit tests + automated demo (+ live smoke):
+- *Unit tests:* scope×term modeling, recall ranking across scopes searching both terms,
+  tenant + project-permission filtering, feedback → memory write, TTL/retention `forget`.
+- *Automated demo* (`make demo-m7`, pgvector + fakes): seed a corrective feedback, run a later
+  task in the same scope, assert recall surfaces + the prompt applies the correction; assert a
+  different tenant/project does **not** see it; assert `forget` removes it.
+- *Live smoke* (`make smoke-mem0`): `remember` + `recall` round-trip against a real Mem0
+  service through the same interface.
 
 ---
 

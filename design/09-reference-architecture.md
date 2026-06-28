@@ -181,15 +181,17 @@ Responsibilities:
 
 ### Memory/Retrieval Service
 
+Implements the swappable **`MemoryStore`** seam (§7.12): scope×term memory behind pluggable
+adapters (**pgvector** default, **Mem0** as the first external backend).
+
 Responsibilities:
 
-* Store task memory
-* Store agent memory
-* Retrieve documents
-* Embed content
-* Enforce permission filters
-* Summarize large context
-* Redact sensitive content
+* `remember` / `recall` / `forget` / `list` over **tenant / project / agent / thread** scopes,
+  searching short- and long-term together
+* Embed content (OpenAI `text-embedding-3-small` for the pgvector adapter)
+* Enforce **tenant isolation** + **project (repo) permission** filters (§7.17)
+* Rank recall by relevance blended with recency, within a token budget
+* Retain/expire per policy; redact sensitive content
 
 ---
 
