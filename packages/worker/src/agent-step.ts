@@ -75,6 +75,8 @@ export function makeAgentTaskStepRunner(db: Database, runtime: AgentRuntime, opt
       instructions: parts.instructions,
       input: parts.input,
       modelRef: opts.modelRef,
+      tenantId: task?.tenantId,
+      agentId: task?.agentId ?? undefined,
     };
     const turnIndex = checkpoint.completedSteps.length;
     const turn = await runtime.nextTurn({ request, checkpoint });

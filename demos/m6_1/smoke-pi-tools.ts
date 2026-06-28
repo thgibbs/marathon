@@ -27,7 +27,6 @@ async function main(): Promise<void> {
     secrets,
     governed: {
       gateway,
-      ctx: { taskId: "smoke", tenantId: "smoke" },
       tools: [
         {
           name: "github.read_file",
@@ -46,6 +45,7 @@ async function main(): Promise<void> {
   const turn = await runtime.nextTurn({
     request: {
       taskId: "smoke",
+      tenantId: "smoke", // per-call ctx for governed tool execution + audit
       instructions: "Use the github.read_file tool to read files when asked. Be brief.",
       input: `Read the file .gitignore from the repo ${repo} and tell me the first line.`,
       modelRef: process.env.SMOKE_MODEL ?? "openai:gpt-4o-mini",

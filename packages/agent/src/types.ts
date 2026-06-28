@@ -19,6 +19,9 @@ export interface AgentRequest {
   input: string;
   /** "provider:model" the runtime should use. */
   modelRef: string;
+  /** Tenant/agent for governed tool calls + audit (per-task; the runtime is shared). */
+  tenantId?: string;
+  agentId?: string;
 }
 
 export interface AgentTurn {

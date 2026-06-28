@@ -431,6 +431,9 @@ importers:
       '@marathon/config':
         specifier: workspace:*
         version: link:../config
+      '@marathon/connector-github':
+        specifier: workspace:*
+        version: link:../connector-github
       '@marathon/core':
         specifier: workspace:*
         version: link:../core
@@ -452,6 +455,9 @@ importers:
       '@marathon/surface-slack':
         specifier: workspace:*
         version: link:../surface-slack
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../tools
       '@marathon/worker':
         specifier: workspace:*
         version: link:../worker

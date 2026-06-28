@@ -1,11 +1,19 @@
 import { EnvSecretStore, loadConfig } from "@marathon/config";
 import { PiAgentRuntime } from "@marathon/agent";
+import { httpGithubClientFactory, makeGithubReadTools } from "@marathon/connector-github";
 import { Database, migrate } from "@marathon/db";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
 import { Queue } from "@marathon/queue";
 import { RealSlackClient, SlackDelivery, SocketModeClient } from "@marathon/surface-slack";
+import { ToolGateway, ToolRegistry } from "@marathon/tools";
 import { InvocationRouter, makeAgentTaskStepRunner, Orchestrator, Worker } from "@marathon/worker";
+
+const SLACK_AGENT_PERSONA =
+  "You are Marathon, a concise engineering assistant in Slack. You can read GitHub " +
+  "repositories with the github_read_file and github_list_contents tools — pass `repo` as " +
+  "\"owner/name\". Use them to ground answers in real code before making claims. Be brief and " +
+  "state uncertainty clearly.";
 import { bootstrapSlackApp } from "./bootstrap";
 import { dispatchEnvelope, type AppDeps } from "./handlers";
 
@@ -32,11 +40,34 @@ export async function startSlackApp(): Promise<void> {
 
   const boot = await bootstrapSlackApp(db, { teamId, teamName: auth.team });
 
-  const runtime = new PiAgentRuntime({ secrets });
   const modelRef = resolveModelRef(DEFAULT_MODEL_POLICY);
   const memory = new PgVectorMemoryStore(cfg.databaseUrl, new OpenAIEmbedder(secrets));
+
+  // Governed GitHub read tools, exposed to the agent through the Tool Gateway
+  // (policy + credential injection + audit + redaction). Read-only for now — write
+  // tools need the in-thread approval flow (roadmap §2b #1).
+  const toolGateway = new ToolGateway({
+    registry: new ToolRegistry(makeGithubReadTools(httpGithubClientFactory())),
+    policy: { grants: [{ tool: "github.read_file" }, { tool: "github.list_contents" }] },
+    secrets,
+    recorder: {
+      onInvocation: (r) =>
+        db.recordToolInvocation({ taskId: r.taskId, toolId: r.toolName, status: r.status, riskLevel: r.riskLevel, inputSummary: r.inputSummary, outputSummary: r.outputSummary, error: r.error }),
+      onAudit: (e) => db.write({ tenantId: e.tenantId, eventType: e.eventType, summary: e.summary, targetType: e.targetType, targetId: e.targetId }),
+    },
+  });
+  const runtime = new PiAgentRuntime({
+    secrets,
+    governed: {
+      gateway: toolGateway,
+      tools: [
+        { name: "github.read_file", description: "Read a file from a GitHub repository.", parameters: { type: "object", properties: { repo: { type: "string" }, path: { type: "string" } }, required: ["repo", "path"] } },
+        { name: "github.list_contents", description: "List files/directories at a path in a GitHub repository.", parameters: { type: "object", properties: { repo: { type: "string" }, path: { type: "string" } }, required: ["repo"] } },
+      ],
+    },
+  });
   const worker = new Worker(queue, db, {
-    stepRunner: makeAgentTaskStepRunner(db, runtime, { modelRef, memory }),
+    stepRunner: makeAgentTaskStepRunner(db, runtime, { modelRef, memory, instructions: SLACK_AGENT_PERSONA }),
     visibilityMs: 120_000,
   });
   const router = new InvocationRouter(db, new Orchestrator(db, queue));

@@ -31,7 +31,8 @@ export interface GovernedToolsConfig {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   gateway: any; // @marathon/tools ToolGateway (kept loose to avoid a hard dep cycle)
   tools: GovernedToolSpec[];
-  ctx: { taskId: string; tenantId: string; agentId?: string };
+  /** Fallback ctx; per-call ctx is taken from the turn's request when available. */
+  ctx?: { taskId: string; tenantId: string; agentId?: string };
   onApprovalRequired?: (toolName: string, input: Record<string, unknown>, reason: string) => Promise<void> | void;
 }
 
@@ -94,7 +95,14 @@ export class PiAgentRuntime implements AgentRuntime {
     const customTools: unknown[] = [];
     const governedNames: string[] = [];
     if (this.opts.governed) {
-      const { gateway, tools: specs, ctx, onApprovalRequired } = this.opts.governed;
+      const { gateway, tools: specs, onApprovalRequired } = this.opts.governed;
+      // Per-call ctx from this turn's request (the runtime is shared across tasks),
+      // falling back to a configured ctx for single-shot uses.
+      const govCtx = {
+        taskId: ctx.request.taskId,
+        tenantId: ctx.request.tenantId ?? this.opts.governed.ctx?.tenantId ?? "",
+        agentId: ctx.request.agentId ?? this.opts.governed.ctx?.agentId,
+      };
       for (const spec of specs) {
         // Model-facing tool names must match ^[A-Za-z0-9_-]+$ (no dots); map back
         // to the real Marathon tool name when calling the gateway.
@@ -108,7 +116,7 @@ export class PiAgentRuntime implements AgentRuntime {
             parameters: spec.parameters,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             execute: async (_id: string, params: any) => {
-              const outcome = await runGovernedTool(gateway, spec.name, params ?? {}, ctx);
+              const outcome = await runGovernedTool(gateway, spec.name, params ?? {}, govCtx);
               if (outcome.status === "approval_required") {
                 await onApprovalRequired?.(spec.name, params ?? {}, outcome.reason);
               }
