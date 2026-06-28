@@ -1,0 +1,13 @@
+{
+  "name": "@marathon/demo-m8",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "tsx run.ts" },
+  "dependencies": {
+    "@marathon/core": "workspace:*",
+    "@marathon/db": "workspace:*",
+    "@marathon/observability": "workspace:*",
+    "@marathon/queue": "workspace:*"
+  }
+}

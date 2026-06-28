@@ -261,6 +261,21 @@ importers:
         specifier: workspace:*
         version: link:../../packages/worker
 
+  demos/m8:
+    dependencies:
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@marathon/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
+      '@marathon/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
+
   demos/slack-app:
     dependencies:
       '@marathon/agent':
@@ -393,6 +408,15 @@ importers:
         specifier: workspace:*
         version: link:../config
 
+  packages/observability:
+    dependencies:
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../db
+
   packages/queue:
     dependencies:
       pg:
@@ -473,6 +497,9 @@ importers:
       '@marathon/memory':
         specifier: workspace:*
         version: link:../memory
+      '@marathon/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@marathon/queue':
         specifier: workspace:*
         version: link:../queue

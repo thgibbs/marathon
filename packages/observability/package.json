@@ -1,0 +1,11 @@
+{
+  "name": "@marathon/observability",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@marathon/core": "workspace:*",
+    "@marathon/db": "workspace:*"
+  }
+}

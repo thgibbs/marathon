@@ -507,6 +507,14 @@ Exit criteria — unit tests + automated demo (+ live smoke):
 ### M8 — Inspectability, cost & observability
 **Goal:** every task is explainable; cost and health are visible.
 
+> **Status — core done & CI-green.** `@marathon/observability`: per-task **timeline** +
+> `getTaskReport` (model/tool/approval/audit, cost, failures, prompt versions), **cost rollups**
+> (by model/agent/task), a **metrics** snapshot (tasks/jobs by status, dead-letter, tool/model
+> error rate), and **budgets** (`evaluateBudget`/`checkBudget`/`assertWithinBudget`) enforced in
+> the agent step runner. **Remaining M8:** an inspectability **UI** (the data API is done),
+> **OpenTelemetry** export (a thin hook over the metrics), and **cross-surface progress** (#8 —
+> needs cross-surface identity linking).
+
 Human prerequisites:
 - If exporting telemetry externally, provision an **observability backend** (OTel
   collector + a backend like Grafana/Honeycomb) and its credentials. (Local-only needs

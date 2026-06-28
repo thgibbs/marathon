@@ -2,6 +2,7 @@ import type { Checkpoint, StepContext, StepResult } from "@marathon/core";
 import { redactSecrets } from "@marathon/core";
 import { Database } from "@marathon/db";
 import type { MemoryStore } from "@marathon/memory";
+import { assertWithinBudget, type BudgetPolicy } from "@marathon/observability";
 import type { AgentRequest, AgentRuntime } from "@marathon/agent";
 import { buildAgentPrompt } from "./prompt";
 
@@ -45,6 +46,8 @@ export interface AgentTaskStepOptions {
   redactTrace?: boolean;
   /** When set, recall is injected into the prompt (design §7.18). */
   memory?: MemoryStore;
+  /** When set, model spend is enforced before each turn (M8); throws if exceeded. */
+  budget?: { policy: BudgetPolicy; scope?: { agentId?: string } };
 }
 
 /**
@@ -55,6 +58,14 @@ export interface AgentTaskStepOptions {
 export function makeAgentTaskStepRunner(db: Database, runtime: AgentRuntime, opts: AgentTaskStepOptions) {
   return async ({ taskId, checkpoint }: StepContext): Promise<StepResult> => {
     const task = await db.getTask(taskId);
+    // Enforce the spend budget before incurring more model cost (M8).
+    if (opts.budget && task) {
+      await assertWithinBudget(
+        db,
+        { tenantId: task.tenantId, agentId: opts.budget.scope?.agentId ?? task.agentId ?? undefined },
+        opts.budget.policy,
+      );
+    }
     // Assemble instructions (persona) + recalled memory + the ask (design §7.18).
     const parts = task
       ? await buildAgentPrompt({ db, memory: opts.memory }, task, { basePersona: opts.instructions })

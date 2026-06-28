@@ -567,6 +567,96 @@ export class Database implements AuditWriter, IdempotencyStore {
     );
     return rows[0].total as number;
   }
+
+  // --- M8 inspectability / cost / metrics reads ---
+
+  async getTaskSteps(taskId: Id): Promise<Array<Record<string, unknown>>> {
+    const { rows } = await this.pool.query(`select * from task_step where task_id = $1 order by created_at asc`, [taskId]);
+    return rows;
+  }
+
+  async getModelInvocations(taskId: Id): Promise<Array<Record<string, unknown>>> {
+    const { rows } = await this.pool.query(`select * from model_invocation where task_id = $1 order by created_at asc`, [taskId]);
+    return rows;
+  }
+
+  async getToolInvocations(taskId: Id): Promise<Array<Record<string, unknown>>> {
+    const { rows } = await this.pool.query(`select * from tool_invocation where task_id = $1 order by created_at asc`, [taskId]);
+    return rows;
+  }
+
+  async listApprovalsForTask(taskId: Id): Promise<ApprovalRequest[]> {
+    const { rows } = await this.pool.query(`select * from approval_request where task_id = $1 order by created_at asc`, [taskId]);
+    return rows.map(rowToApproval);
+  }
+
+  async getTaskAuditEvents(taskId: Id): Promise<Array<Record<string, unknown>>> {
+    const { rows } = await this.pool.query(
+      `select * from audit_event where target_type = 'task' and target_id = $1 order by created_at asc`,
+      [taskId],
+    );
+    return rows;
+  }
+
+  /** Total model spend for a tenant (optionally one agent). */
+  async sumModelCostUsdByTenant(tenantId: Id, agentId?: Id): Promise<number> {
+    const params: unknown[] = [tenantId];
+    let clause = "t.tenant_id = $1";
+    if (agentId) {
+      params.push(agentId);
+      clause += ` and t.agent_id = $2`;
+    }
+    const { rows } = await this.pool.query(
+      `select coalesce(sum(mi.cost_usd), 0)::float8 as total
+       from model_invocation mi join task t on t.id = mi.task_id
+       where ${clause}`,
+      params,
+    );
+    return rows[0].total as number;
+  }
+
+  /** Cost rollup grouped by model | agent | task for a tenant. */
+  async costRollup(tenantId: Id, by: "model" | "agent" | "task"): Promise<Array<{ key: string; costUsd: number; calls: number; inputTokens: number; outputTokens: number }>> {
+    const keyExpr = by === "model" ? `mi.provider || ':' || mi.model` : by === "agent" ? `coalesce(t.agent_id::text, 'none')` : `mi.task_id::text`;
+    const { rows } = await this.pool.query(
+      `select ${keyExpr} as key,
+              coalesce(sum(mi.cost_usd),0)::float8 as cost_usd,
+              count(*)::int as calls,
+              coalesce(sum(mi.input_tokens),0)::int as input_tokens,
+              coalesce(sum(mi.output_tokens),0)::int as output_tokens
+       from model_invocation mi join task t on t.id = mi.task_id
+       where t.tenant_id = $1
+       group by key order by cost_usd desc`,
+      [tenantId],
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return rows.map((r: any) => ({ key: r.key, costUsd: r.cost_usd, calls: r.calls, inputTokens: r.input_tokens, outputTokens: r.output_tokens }));
+  }
+
+  async countTasksByStatus(tenantId: Id): Promise<Record<string, number>> {
+    const { rows } = await this.pool.query(`select status, count(*)::int as n from task where tenant_id = $1 group by status`, [tenantId]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return Object.fromEntries(rows.map((r: any) => [r.status, r.n]));
+  }
+
+  async countJobsByStatus(): Promise<Record<string, number>> {
+    const { rows } = await this.pool.query(`select status, count(*)::int as n from job group by status`);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return Object.fromEntries(rows.map((r: any) => [r.status, r.n]));
+  }
+
+  /** Error rate (errored/total) for tool or model invocations in a tenant. */
+  async invocationErrorRate(tenantId: Id, kind: "tool" | "model"): Promise<{ total: number; errored: number; rate: number }> {
+    const table = kind === "tool" ? "tool_invocation" : "model_invocation";
+    const { rows } = await this.pool.query(
+      `select count(*)::int as total, count(*) filter (where x.status = 'error')::int as errored
+       from ${table} x join task t on t.id = x.task_id where t.tenant_id = $1`,
+      [tenantId],
+    );
+    const total = rows[0].total as number;
+    const errored = rows[0].errored as number;
+    return { total, errored, rate: total ? errored / total : 0 };
+  }
 }
 
 // --- row mappers (snake_case → camelCase) ---

@@ -9,6 +9,7 @@
     "@marathon/core": "workspace:*",
     "@marathon/db": "workspace:*",
     "@marathon/memory": "workspace:*",
+    "@marathon/observability": "workspace:*",
     "@marathon/queue": "workspace:*",
     "@marathon/surface": "workspace:*",
     "@marathon/tools": "workspace:*"
