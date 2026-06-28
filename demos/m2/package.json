@@ -1,0 +1,19 @@
+{
+  "name": "@marathon/demo-m2",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx run.ts",
+    "smoke": "tsx smoke-pi.ts"
+  },
+  "dependencies": {
+    "@marathon/agent": "workspace:*",
+    "@marathon/config": "workspace:*",
+    "@marathon/core": "workspace:*",
+    "@marathon/db": "workspace:*",
+    "@marathon/model-gateway": "workspace:*",
+    "@marathon/queue": "workspace:*",
+    "@marathon/worker": "workspace:*"
+  }
+}

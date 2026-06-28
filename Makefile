@@ -5,7 +5,7 @@ MARATHON_DB_PORT ?= 5432
 DATABASE_URL ?= postgres://marathon:marathon@localhost:$(MARATHON_DB_PORT)/marathon
 export DATABASE_URL MARATHON_DB_PORT
 
-.PHONY: install db-up db-down migrate typecheck test demo demo-m0 demo-m1 down
+.PHONY: install db-up db-down migrate typecheck test demo demo-m0 demo-m1 demo-m2 smoke-pi down
 
 install:
 	pnpm install
@@ -31,7 +31,14 @@ demo-m0: db-up migrate
 demo-m1: db-up migrate
 	pnpm --filter @marathon/demo-m1 start
 
+demo-m2: db-up migrate
+	pnpm --filter @marathon/demo-m2 start
+
+# Local-only: exercises the REAL Pi adapter (needs a model key). Not run in CI.
+smoke-pi:
+	pnpm --filter @marathon/demo-m2 smoke
+
 # Runs the full demo chain (grows as milestones land).
-demo: demo-m0 demo-m1
+demo: demo-m0 demo-m1 demo-m2
 
 down: db-down

@@ -4,8 +4,8 @@ Open-source platform for durable AI agents that work where teams already work �
 **Slack** and **GitHub-backed markdown documents** — built on the **Pi** agent harness.
 
 > Status: early implementation. The design is settled; code is being built milestone by
-> milestone (see `roadmap.md`). **M0 (foundations)** and **M1 (durable task spine)** are in
-> place.
+> milestone (see `roadmap.md`). **M0 (foundations)**, **M1 (durable task spine)**, and
+> **M2 (Pi harness seam + minimal model gateway)** are in place.
 
 ## Docs
 
@@ -39,10 +39,15 @@ packages/
   db/        @marathon/db       — Postgres schema/migrations + data access
   queue/     @marathon/queue    — durable Postgres job queue + retry/backoff
   worker/    @marathon/worker   — orchestrator + agent worker (checkpoint/resume)
+  model-gateway/ @marathon/model-gateway — model specs, routing, cost, keys
+  agent/     @marathon/agent    — AgentRuntime seam: FakeAgentRuntime + real Pi adapter
 demos/
   m0/        @marathon/demo-m0  — foundations demo
   m1/        @marathon/demo-m1  — durable-spine demo (crash mid-run, resume once)
+  m2/        @marathon/demo-m2  — agent loop via the runtime (fake model), cost, resume
 ```
+
+The real Pi adapter is exercised locally (needs a model key) with `make smoke-pi`.
 
 ## License
 

@@ -1,8 +1,13 @@
-import { isTerminal, type Id, type SurfaceType, type Task } from "@marathon/core";
+import {
+  isTerminal,
+  parseCheckpoint,
+  type Id,
+  type StepRunner,
+  type SurfaceType,
+  type Task,
+} from "@marathon/core";
 import { Database } from "@marathon/db";
 import { backoffMs, classifyError, Queue } from "@marathon/queue";
-import { parseCheckpoint } from "./checkpoint";
-import type { StepRunner } from "./steps";
 
 /** Thrown to simulate a hard crash mid-run: the lease is abandoned (no ack/nack). */
 export class SimulatedCrash extends Error {
@@ -70,11 +75,17 @@ export class Worker {
         const res = await this.opts.stepRunner({ taskId: job.taskId, checkpoint });
         if (res.done && res.stepType === "noop") break; // nothing left to do
 
-        // persist effect + checkpoint atomically (basis for exactly-once)
-        await this.db.completeStep(job.taskId, res.stepType, {
-          completedSteps: res.checkpoint.completedSteps,
-          findings: res.checkpoint.findings,
-        });
+        // persist effect + checkpoint (+ any model invocations) atomically — the
+        // basis for exactly-once resume.
+        await this.db.completeStep(
+          job.taskId,
+          res.stepType,
+          {
+            completedSteps: res.checkpoint.completedSteps,
+            findings: res.checkpoint.findings,
+          },
+          res.modelInvocations ?? [],
+        );
         checkpoint = res.checkpoint;
         await this.queue.heartbeat(job.id, token, this.visibilityMs);
 

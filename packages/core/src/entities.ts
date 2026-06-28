@@ -90,3 +90,33 @@ export interface Task {
   failedAt: Date | null;
   cancelledAt: Date | null;
 }
+
+export interface ModelInvocation {
+  id: Id;
+  taskId: Id;
+  taskStepId: Id | null;
+  provider: string;
+  model: string;
+  promptVersion: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costUsd: number | null;
+  latencyMs: number | null;
+  status: string | null;
+  error: string | null;
+  createdAt: Date;
+}
+
+export type NewModelInvocation = {
+  taskId: Id;
+  taskStepId?: Id | null;
+  provider: string;
+  model: string;
+  promptVersion?: string | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  costUsd?: number | null;
+  latencyMs?: number | null;
+  status?: string | null;
+  error?: string | null;
+};

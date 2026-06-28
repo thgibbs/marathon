@@ -5,6 +5,7 @@
   "type": "module",
   "exports": { ".": "./src/index.ts" },
   "dependencies": {
+    "@marathon/agent": "workspace:*",
     "@marathon/core": "workspace:*",
     "@marathon/db": "workspace:*",
     "@marathon/queue": "workspace:*"

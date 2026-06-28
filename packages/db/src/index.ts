@@ -8,6 +8,7 @@ import {
   type AgentVersion,
   type Id,
   type NewAuditEvent,
+  type NewModelInvocation,
   type Role,
   type SurfaceType,
   type Task,
@@ -191,19 +192,42 @@ export class Database implements AuditWriter {
     taskId: Id,
     stepType: string,
     checkpoint: Record<string, unknown>,
+    modelInvocations: Array<Omit<NewModelInvocation, "taskId">> = [],
   ): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
-      await client.query(
+      const stepRes = await client.query(
         `insert into task_step(task_id, step_type, status, started_at, completed_at)
-         values ($1, $2, 'completed', now(), now())`,
+         values ($1, $2, 'completed', now(), now())
+         returning id`,
         [taskId, stepType],
       );
+      const stepId = stepRes.rows[0].id as string;
       await client.query(`update task set checkpoint = $2 where id = $1`, [
         taskId,
         JSON.stringify(checkpoint),
       ]);
+      for (const mi of modelInvocations) {
+        await client.query(
+          `insert into model_invocation(task_id, task_step_id, provider, model, prompt_version,
+                                        input_tokens, output_tokens, cost_usd, latency_ms, status, error)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          [
+            taskId,
+            mi.taskStepId ?? stepId,
+            mi.provider,
+            mi.model,
+            mi.promptVersion ?? null,
+            mi.inputTokens ?? null,
+            mi.outputTokens ?? null,
+            mi.costUsd ?? null,
+            mi.latencyMs ?? null,
+            mi.status ?? null,
+            mi.error ?? null,
+          ],
+        );
+      }
       await client.query("commit");
     } catch (err) {
       await client.query("rollback");
@@ -219,6 +243,22 @@ export class Database implements AuditWriter {
       [taskId],
     );
     return rows[0].n as number;
+  }
+
+  async countModelInvocations(taskId: Id): Promise<number> {
+    const { rows } = await this.pool.query(
+      `select count(*)::int as n from model_invocation where task_id = $1`,
+      [taskId],
+    );
+    return rows[0].n as number;
+  }
+
+  async sumModelCostUsd(taskId: Id): Promise<number> {
+    const { rows } = await this.pool.query(
+      `select coalesce(sum(cost_usd), 0)::float8 as total from model_invocation where task_id = $1`,
+      [taskId],
+    );
+    return rows[0].total as number;
   }
 }
 

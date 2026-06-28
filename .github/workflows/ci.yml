@@ -50,3 +50,6 @@ jobs:
 
       - name: Automated demo (M1)
         run: pnpm --filter @marathon/demo-m1 start
+
+      - name: Automated demo (M2)
+        run: pnpm --filter @marathon/demo-m2 start
