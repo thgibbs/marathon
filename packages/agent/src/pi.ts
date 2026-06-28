@@ -5,6 +5,7 @@ import {
   ModelRegistry,
   resolveApiKey,
 } from "@marathon/model-gateway";
+import { governedOutcomeText, runGovernedTool } from "./governed";
 import type { AgentRuntime, AgentTurn, AgentTurnContext } from "./types";
 
 /**
@@ -18,11 +19,29 @@ import type { AgentRuntime, AgentTurn, AgentTurnContext } from "./types";
  * Pi is loaded via a runtime (non-literal) dynamic import so the type checker
  * stays decoupled from Pi's internal types.
  */
+/** A Marathon-governed tool exposed to the Pi agent (M6.1). */
+export interface GovernedToolSpec {
+  name: string;
+  description: string;
+  /** JSON-schema-ish parameters shown to the model. */
+  parameters: Record<string, unknown>;
+}
+
+export interface GovernedToolsConfig {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  gateway: any; // @marathon/tools ToolGateway (kept loose to avoid a hard dep cycle)
+  tools: GovernedToolSpec[];
+  ctx: { taskId: string; tenantId: string; agentId?: string };
+  onApprovalRequired?: (toolName: string, input: Record<string, unknown>, reason: string) => Promise<void> | void;
+}
+
 export interface PiAgentOptions {
   secrets: SecretStore;
   registry?: ModelRegistry;
   /** Where Pi stores its per-task session JSONL (the durable trace/checkpoint). */
   sessionDir?: string;
+  /** Marathon-governed tools to expose to the agent (M6.1). */
+  governed?: GovernedToolsConfig;
 }
 
 const PI_MODULE: string = "@earendil-works/pi-coding-agent";
@@ -69,6 +88,37 @@ export class PiAgentRuntime implements AgentRuntime {
     await loader.reload();
 
     const start = Date.now();
+    // Marathon-governed tools (M6.1): each Pi custom tool delegates to the Tool
+    // Gateway, so policy/credentials/audit/redaction apply, and destructive calls
+    // surface an approval requirement to the model.
+    const customTools: unknown[] = [];
+    const governedNames: string[] = [];
+    if (this.opts.governed) {
+      const { gateway, tools: specs, ctx, onApprovalRequired } = this.opts.governed;
+      for (const spec of specs) {
+        // Model-facing tool names must match ^[A-Za-z0-9_-]+$ (no dots); map back
+        // to the real Marathon tool name when calling the gateway.
+        const modelName = spec.name.replace(/[^A-Za-z0-9_-]/g, "_");
+        governedNames.push(modelName);
+        customTools.push(
+          pi.defineTool({
+            name: modelName,
+            label: modelName,
+            description: spec.description,
+            parameters: spec.parameters,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            execute: async (_id: string, params: any) => {
+              const outcome = await runGovernedTool(gateway, spec.name, params ?? {}, ctx);
+              if (outcome.status === "approval_required") {
+                await onApprovalRequired?.(spec.name, params ?? {}, outcome.reason);
+              }
+              return { content: [{ type: "text", text: governedOutcomeText(outcome) }], details: {} };
+            },
+          }),
+        );
+      }
+    }
+
     const { session } = await pi.createAgentSession({
       cwd,
       agentDir,
@@ -77,7 +127,8 @@ export class PiAgentRuntime implements AgentRuntime {
       modelRegistry,
       resourceLoader: loader,
       sessionManager,
-      tools: ["read", "grep", "find", "ls"], // read-only for M2
+      customTools,
+      tools: ["read", "grep", "find", "ls", ...governedNames],
     });
 
     let streamed = "";

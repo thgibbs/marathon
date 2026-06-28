@@ -68,3 +68,6 @@ jobs:
 
       - name: Automated demo (M6)
         run: pnpm --filter @marathon/demo-m6 start
+
+      - name: Automated demo (M6.1 governed tools)
+        run: pnpm --filter @marathon/demo-m6-1 start
