@@ -20,17 +20,24 @@ them visually obvious:
    nothing about any specific surface.
 2. **The durable task is the spine.** Every invocation becomes a persisted, checkpointed
    task in Postgres; workers are replaceable and stateless except for leased work.
-3. **The agent loop runs inside the Pi harness**, which itself runs inside Marathon's
-   durable Agent Worker. Marathon owns durability *around* Pi; Pi owns the loop.
-4. **The model layer is minimal.** Marathon routes and tracks cost; providers (Claude,
-   ChatGPT) and OpenRouter — plus Pi — do the heavy lifting (budgets, logging, retries,
-   redaction).
+3. **The agent loop runs inside the Pi harness** (`@earendil-works/pi-coding-agent`,
+   embedded in-process via its SDK), which itself runs inside Marathon's durable Agent
+   Worker. Marathon owns durability *around* Pi; Pi owns the loop. The **Pi session JSONL
+   is the durable checkpoint and full trace** (powers crash-resume, inspectability, replay).
+4. **The model layer is minimal.** Marathon routes and reads **cost from Pi** (model cost
+   metadata + session stats); providers (Claude, ChatGPT) and OpenRouter — plus Pi — do the
+   heavy lifting (budgets, logging, retries, redaction). Per-tenant keys are injected at
+   runtime (`setRuntimeApiKey`).
 5. **Tools run through the Pi harness, and the harness's tool layer is the single
    chokepoint** for all side effects. Agents never reach external systems directly.
-   Permissioning is *embedded in the harness*; Marathon supplies the policy and
-   credentials and owns approval, audit, and redaction.
+   Permissioning is *embedded in the harness* via Pi's `tool_call` hook (block/mutate +
+   inject credentials) and `tool_result` hook (redact/log); Marathon supplies the policy
+   and owns approval and audit.
 6. **Approval is for destructive actions only**, requested *in place* on the originating
-   surface (Slack thread / PR comment).
+   surface (Slack thread / PR comment), implemented as **block-persist-resume** (Pi has no
+   native multi-day suspend).
+7. **Pi has no built-in sandbox** — Marathon adds OS-level isolation and routes tool
+   execution (esp. `bash`/writes) through a sandbox (container/VM + Gondolin / OpenShell).
 7. **Trust boundaries are explicit.** Surface content, tool output, and model output are
    untrusted; secrets never reach the model; policy is enforced outside the model.
 
@@ -77,21 +84,25 @@ Group nodes into these zones so the layering reads top-to-bottom:
 
 **Execution**
 - **Agent Worker** — durable wrapper (leases, heartbeats, checkpoint/resume). Show the
-  **Pi harness running *inside* the worker** as a nested box. Annotate Pi's ownership:
-  the agent loop — prompting, tool calling, step sequencing, progress, per-call logging /
-  retries / redaction.
+  **Pi harness (`@earendil-works/pi-coding-agent`, in-process SDK) running *inside* the
+  worker** as a nested box. Annotate Pi's ownership: the agent loop — prompting, tool
+  calling, step sequencing, progress, per-call logging / retries / redaction. Note the
+  **per-task Pi session JSONL** is the durable checkpoint + trace. Pi has **no sandbox** —
+  the worker+Pi run under OS-level isolation (see below).
 
 **Harness exits (the two controlled exits from the agent loop, both via Pi)**
 - **Model Gateway (minimal)** — model calls run through Pi; the gateway does routing +
-  per-call **cost tracking** and passes budget enforcement through to providers/OpenRouter.
+  **cost read from Pi** (model cost metadata + session stats) and passes budget enforcement
+  through to providers/OpenRouter. Per-tenant keys injected at runtime (`setRuntimeApiKey`).
   Logging/retries/redaction come from Pi and provider SDKs, not reimplemented here.
 - **Tool layer (embedded in Pi)** — the chokepoint for side effects; draw it *inside* the
-  Pi box, not as a separate service. Annotate what Pi enforces per call: permission check,
-  input-schema validation, **destructive-action approval check**, rate limits, execution
-  with Marathon-injected credentials, output redaction, structured result. Annotate what
-  Marathon owns *around* it: the policy/grants, credentials, approval orchestration, and
-  audit. Add the rule "the agent loop cannot bypass the harness tool layer, and the model
-  cannot rewrite its policy."
+  Pi box, not as a separate service. It is wired through Pi's **`tool_call` hook**
+  (block/mutate + inject credentials) and **`tool_result` hook** (redact/log). Annotate what
+  Pi enforces per call: permission check, input-schema validation, **destructive-action
+  approval check**, rate limits, execution with Marathon-injected credentials, output
+  redaction, structured result. Annotate what Marathon owns *around* it: the policy/grants,
+  credentials, approval orchestration, and audit. Add the rule "the agent loop cannot bypass
+  the harness tool layer, and the model cannot rewrite its policy."
 
 **External systems**
 - **Model providers**: Anthropic (Claude), OpenAI (ChatGPT), **OpenRouter**.
@@ -137,10 +148,11 @@ Cross-cutting edges (draw lighter, or they'll clutter):
 - **Inspectability dashboard** and **Admin/config** read from Postgres / Audit Log.
 - **Credential injection**: the secret store injects credentials into Pi's tool layer at
   execution time (never into the model prompt path).
-- **Approval loop**: Pi's tool layer detects a destructive call → Orchestrator marks the
-  task `waiting_for_approval` → Surface Delivery posts the approval prompt in place → human
-  approves on the surface → Surface Gateway → Orchestrator resumes the task. Draw this as a
-  distinct, labeled loop because it's a key behavior.
+- **Approval loop (block-persist-resume)**: Pi's `tool_call` hook **blocks** a destructive
+  call → Marathon persists the Pi session JSONL and tears down the worker → Orchestrator
+  marks the task `waiting_for_approval` → Surface Delivery posts the prompt in place → human
+  approves → Orchestrator **re-opens the Pi session and re-enters** so the action runs. Draw
+  this as a distinct, labeled loop because it's a key behavior.
 - **Feedback loop**: surface 👍/👎 → Surface Gateway → Postgres → Memory/Retrieval (agent
   memory) and the eval/feedback store.
 
@@ -182,9 +194,10 @@ This is the intended shape, not the final art:
                             │  Agent Worker (durable: leases,     │
                             │  checkpoint/resume)                 │
                             │  ┌──────────────────────────────┐   │
-                            │  │  Pi harness                   │   │
+                            │  │  Pi harness (in-process SDK)  │   │
                             │  │  agent loop · model calls ·   │   │
-                            │  │  TOOL LAYER (permissioning)   │   │
+                            │  │  TOOL LAYER (tool_call hook)  │   │
+                            │  │  session JSONL = checkpoint   │   │
                             │  └──┬────────────────────────┬──┘   │
                             └─────┼────────────────────────┼──────┘
                           model calls │            tool calls │ (policy enforced here)
@@ -194,6 +207,7 @@ This is the intended shape, not the final art:
                                                      (GitHub, DB, Datadog, …) → external systems
 
                Marathon owns AROUND the tool layer: policy/grants · credentials · approval · audit
+               Pi has NO sandbox → worker+Pi run isolated (container/VM + Gondolin / OpenShell)
                                    Memory / Retrieval  ←→  Agent Worker
 
  DELIVERY      Surface Delivery Service  →  back to the originating surface (progress + result)
@@ -222,13 +236,14 @@ agent revises → human merges the PR (merge = approval) → agent executes the 
 posting progress to both the PR and the Slack thread`. Emphasize: the document is the
 durable plan of record; approval-by-merge; cross-surface (source = Slack, artifact = GitHub).
 
-### 4.3 Destructive action with approval
-`Pi's tool layer detects a destructive tool call → Orchestrator sets task
-waiting_for_approval (durable wait, may last days) → approval prompt posted in place on the
-surface → human approves → Orchestrator resumes → Pi's tool layer executes (with injected
-credentials) → audit event → result delivered`. Emphasize: enforcement happens in the
-harness, durable human wait, in-place approval, idempotency key so a retry/duplicate event
-can't double-execute.
+### 4.3 Destructive action with approval (block-persist-resume)
+`Pi's tool_call hook blocks a destructive call → Marathon persists the Pi session JSONL and
+tears down the worker → Orchestrator sets task waiting_for_approval (durable wait, may last
+days) → approval prompt posted in place on the surface → human approves → Orchestrator
+re-opens the Pi session and re-enters → the action executes (with injected credentials) →
+audit event → result delivered`. Emphasize: enforcement happens in the harness, **no process
+held during the wait**, in-place approval, idempotency key so a retry/duplicate event can't
+double-execute.
 
 ---
 
@@ -238,10 +253,14 @@ can't double-execute.
   multi-tenant/SSO).
 - Note **idempotency** on the write edges (e.g. `repo + path + base_sha` for doc edits;
   `surface_type + external_event_id` for incoming events).
-- Note **cost tracking** point at the Model Gateway and that cost is **silent by default**
-  (surfaced on completion).
-- Label the Pi box clearly so it's obvious Pi is the agent runtime, swappable behind a thin
-  interface.
+- Note **cost tracking** point at the Model Gateway — cost is **read from Pi** (model cost
+  metadata + session stats) and is **silent by default** (surfaced on completion).
+- Label the Pi box clearly so it's obvious Pi is the agent runtime (`@earendil-works/pi-coding-agent`,
+  in-process SDK), swappable behind a thin interface, with the **session JSONL** as the
+  durable checkpoint/trace.
+- Show the **`tool_call` / `tool_result` hooks** as the embedded-permissioning mechanism.
+- Show that **Pi has no sandbox** → the worker+Pi run isolated (container/VM + Gondolin /
+  OpenShell). See `pi-details.md`.
 
 ## 6. What to leave out
 
