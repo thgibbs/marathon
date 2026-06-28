@@ -372,6 +372,12 @@ Exit criteria — unit tests + automated demo:
 
 **← MVP complete here.**
 
+> **M6 completion status.** Core loop + exit-demo are done & CI-green. Added later:
+> **repo-permission checks** (agent + invoking user, §7.17), **output templates**
+> (postmortem/PRD/release-notes), and **`document.reply_to_comment`**. Carried into later
+> milestones: prompt/persona + revision loop + watched-docs → **M7**; cross-surface progress
+> → **M8**; rebase-on-conflict → **M9**.
+
 ---
 
 ## 2a. Live-integration follow-ons
@@ -452,6 +458,13 @@ Build:
   permission-filtered, inspectable, deletable, configurable retention.
 - **Feedback incorporated into agent memory / future context** so a corrected mistake
   isn't repeated.
+- **Prompt & context assembly (design §7.18)** — load `AgentVersion.instructions` (give
+  **Quill**/**Bruce** real personas), build per-surface context (Slack thread / document
+  region + memory) with untrusted-content delimiting. *(M6 carry-over #2.)*
+- **Document revision loop (design §6.8)** — the agent revises a drafted doc PR in
+  response to review comments before merge. *(M6 carry-over #3.)*
+- **Watched documents** — populate the `watched` role + `last_revision_seen`; react when a
+  tracked document changes. *(M6 carry-over #5.)*
 
 Depends on: M4 (feedback), M6.
 Exit criteria — unit tests + automated demo:
@@ -480,6 +493,8 @@ Build:
   completion + on threshold breach; budgets enforced from actuals.
 - Metrics (queue depth, success/latency, tool/model error rates, retries, dead-letter),
   OpenTelemetry traces, failure analytics.
+- **Cross-surface progress** — a task initiated on one surface (e.g. a GitHub mention)
+  can post progress/status to the requesting user on another (e.g. Slack). *(M6 carry-over #8.)*
 
 Depends on: M2/M3 (invocation records), M5 (approvals).
 Exit criteria — unit tests + automated demo:
@@ -509,6 +524,8 @@ Build:
 - **Harden execution isolation** — finalize the sandbox for tool execution (Gondolin /
   Docker / OpenShell), since Pi provides none (`design.md` §12.6).
 - Prompt-injection tests (malicious doc body / comment / tool output).
+- **Concurrent document edits** — rebase-before-write on a stale base SHA (today we safely
+  *reject*; risk #7). *(M6 carry-over #6.)*
 - Retention controls per tenant/data class; redaction rules; dead-letter UX.
 - Docker Compose quickstart, README, architecture docs, internal agent-config flow,
   eval fixtures (surface-agnostic: Slack thread *or* document snapshot).
@@ -542,14 +559,14 @@ fold into M7–M9 sequencing as capacity allows.
 4. **Durable resume of a *real* Pi run** *(reliability).* `PiAgentRuntime` runs single-turn;
    the per-turn checkpoint/resume path is only exercised by fake agents. Build a multi-turn
    tool loop with per-turn checkpointing so a crashed in-flight model run resumes.
-5. **Document revision loop** *(M6 follow-on).* The agent drafts a doc PR but does not yet
+5. **Document revision loop** *(scheduled: M7).* The agent drafts a doc PR but does not yet
    revise it in response to review comments — add the read-comments → update-doc cycle.
-6. **Prompt & context assembly + model selection** *(now specified — design §7.18, §7.19).*
-   Today the agent gets a generic hardcoded instruction + the raw mention text. Build the real
-   prompt builder: load `AgentVersion.instructions`, add a per-surface context builder (Slack
-   thread / document region + memory) with untrusted-content delimiting (§12.2), and implement
-   real model selection (role→tier routing, constraint/budget filter, fallback, per-tenant
-   policy). Pairs with M7 (context/memory) and M8 (budgets).
+6. **Prompt & context assembly + model selection** *(now specified — design §7.18, §7.19;
+   scheduled: M7, budgets M8).* Today the agent gets a generic hardcoded instruction + the raw
+   mention text. Build the real prompt builder: load `AgentVersion.instructions`, add a
+   per-surface context builder (Slack thread / document region + memory) with untrusted-content
+   delimiting (§12.2), and implement real model selection (role→tier routing, constraint/budget
+   filter, fallback, per-tenant policy).
 7. **Testing conventions to keep** *(process).* The **deterministic demo (fakes/fixtures, CI)
    + live smoke (real services, local)** split worked well and caught real bugs. Rule learned
    the hard way: **await all side effects in demos** — a fire-and-forget audit write made the
