@@ -1,0 +1,15 @@
+{
+  "name": "@marathon/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "migrate": "tsx src/migrate.ts"
+  },
+  "dependencies": {
+    "@marathon/config": "workspace:*",
+    "@marathon/core": "workspace:*",
+    "pg": "^8.13.0"
+  }
+}
