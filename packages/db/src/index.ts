@@ -535,6 +535,23 @@ export class Database implements AuditWriter, IdempotencyStore {
     return rows[0] ? rowToDocumentArtifact(rows[0]) : null;
   }
 
+  /** Watched documents in a repo (for reacting to pushes — M7 #8). */
+  async listWatchedArtifacts(tenantId: Id, repo: string): Promise<DocumentArtifact[]> {
+    const { rows } = await this.pool.query(
+      `select * from document_artifact
+       where tenant_id = $1 and role = 'watched' and location->>'repo' = $2`,
+      [tenantId, repo],
+    );
+    return rows.map(rowToDocumentArtifact);
+  }
+
+  async updateDocumentArtifactRevision(id: Id, revision: string): Promise<void> {
+    await this.pool.query(
+      `update document_artifact set last_revision_seen = $2, updated_at = now() where id = $1`,
+      [id, revision],
+    );
+  }
+
   async countDocumentArtifacts(tenantId: Id): Promise<number> {
     const { rows } = await this.pool.query(
       `select count(*)::int as n from document_artifact where tenant_id = $1`,

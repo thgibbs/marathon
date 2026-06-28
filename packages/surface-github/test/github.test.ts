@@ -56,9 +56,23 @@ describe("classifyGithubEvent", () => {
     expect(a).toMatchObject({ kind: "merge", repo: "o/repo", number: 7, mergeCommitSha: "abc123" });
   });
 
+  it("parses a push into changed paths (for watched docs)", () => {
+    const a = classifyGithubEvent("push", {
+      repository: { full_name: "o/repo" },
+      after: "sha-after",
+      commits: [{ modified: ["docs/policy.md"], added: ["docs/new.md"] }, { modified: ["docs/policy.md"] }],
+    });
+    expect(a.kind).toBe("push");
+    if (a.kind === "push") {
+      expect(a.repo).toBe("o/repo");
+      expect(a.after).toBe("sha-after");
+      expect([...a.paths].sort()).toEqual(["docs/new.md", "docs/policy.md"]);
+    }
+  });
+
   it("ignores non-mentions, non-merged closes, and other events", () => {
     expect(classifyGithubEvent("issue_comment", { action: "created", comment: { body: "no mention here" } }).kind).toBe("ignore");
     expect(classifyGithubEvent("pull_request", { action: "closed", pull_request: { merged: false } }).kind).toBe("ignore");
-    expect(classifyGithubEvent("push", {}).kind).toBe("ignore");
+    expect(classifyGithubEvent("star", {}).kind).toBe("ignore");
   });
 });

@@ -9,6 +9,7 @@
     "@marathon/connector-github": "workspace:*",
     "@marathon/core": "workspace:*",
     "@marathon/db": "workspace:*",
+    "@marathon/memory": "workspace:*",
     "@marathon/surface": "workspace:*",
     "@marathon/surface-github": "workspace:*",
     "@marathon/tools": "workspace:*",

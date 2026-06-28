@@ -15,6 +15,7 @@ import { EnvSecretStore, loadConfig } from "@marathon/config";
 import { GithubDelivery, HttpGithubClient, httpGithubClientFactory, makeDocumentTools } from "@marathon/connector-github";
 import { Database, migrate } from "@marathon/db";
 import { bootstrapGithubApp, handleWebhookRequest, type GithubAppDeps } from "@marathon/github-app";
+import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { Queue } from "@marathon/queue";
 import { ToolGateway, ToolRegistry } from "@marathon/tools";
 import { InvocationRouter, Orchestrator } from "@marathon/worker";
@@ -39,10 +40,11 @@ async function main(): Promise<void> {
   const deps: GithubAppDeps = {
     db,
     client,
+    memory: new PgVectorMemoryStore(cfg.databaseUrl, new OpenAIEmbedder(secrets)),
     router: new InvocationRouter(db, new Orchestrator(db, queue)),
     gateway: new ToolGateway({
       registry: new ToolRegistry(makeDocumentTools(httpGithubClientFactory())),
-      policy: { grants: [{ tool: "document.create" }, { tool: "document.update" }, { tool: "document.comment" }, { tool: "document.read_region" }] },
+      policy: { grants: [{ tool: "document.create" }, { tool: "document.update" }, { tool: "document.revise" }, { tool: "document.comment" }, { tool: "document.read_region" }] },
       secrets,
     }),
     delivery: new GithubDelivery(client),

@@ -92,6 +92,29 @@ export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
     },
   };
 
+  const revise: Tool = {
+    name: "document.revise",
+    description: "Revise an existing document by committing to its PR branch (updates the open PR).",
+    riskLevel: "medium",
+    destructive: false,
+    validate(input) {
+      if (typeof input.repo !== "string") return "repo is required";
+      if (typeof input.path !== "string") return "path is required";
+      if (typeof input.content !== "string") return "content is required";
+      if (typeof input.branch !== "string") return "branch is required";
+      return null;
+    },
+    async execute(input, ctx) {
+      const client = await getClient(ctx);
+      const repo = String(input.repo);
+      const path = String(input.path);
+      const branch = String(input.branch);
+      const current = await client.readFileWithSha(repo, path, branch); // re-validate against the branch
+      await client.putFile(repo, path, String(input.content), branch, `docs: revise ${path}`, current.sha);
+      return { content: `revised ${path} on ${branch}`, details: { path, branch } };
+    },
+  };
+
   const comment: Tool = {
     name: "document.comment",
     description: "Comment on a PR or issue.",
@@ -129,5 +152,5 @@ export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
     },
   };
 
-  return [readRegion, create, update, comment, replyToComment];
+  return [readRegion, create, update, revise, comment, replyToComment];
 }

@@ -3,6 +3,7 @@ import type { NormalizedInvocation } from "@marathon/surface";
 export type GithubAction =
   | { kind: "mention"; invocation: NormalizedInvocation }
   | { kind: "merge"; repo: string; number: number; mergeCommitSha?: string }
+  | { kind: "push"; repo: string; after?: string; paths: string[] }
   | { kind: "ignore" };
 
 export interface ParseGithubOptions {
@@ -81,6 +82,15 @@ export function classifyGithubEvent(eventType: string, payload: any, opts: Parse
       number: payload.pull_request?.number,
       mergeCommitSha: payload.pull_request?.merge_commit_sha,
     };
+  }
+
+  if (eventType === "push") {
+    const paths = new Set<string>();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const c of (payload?.commits ?? []) as any[]) {
+      for (const f of [...(c.added ?? []), ...(c.modified ?? [])]) paths.add(String(f));
+    }
+    return { kind: "push", repo: payload?.repository?.full_name, after: payload?.after, paths: [...paths] };
   }
 
   return { kind: "ignore" };

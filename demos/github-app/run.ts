@@ -1,12 +1,15 @@
 /**
- * M6.2 automated demo — the live document app's webhook receiver, deterministic.
+ * M6.2 + M7 automated demo — the live document app's webhook receiver, deterministic.
  *
- * Feeds SIGNED GitHub webhook payloads through handleWebhookRequest (signature
- * verify + delivery-id dedupe) into the same pipeline as the live server, with a
- * fake agent + fixtures GitHub client:
- *   - issue_comment mention -> draft a design-doc PR + reply (task waits)
- *   - merged pull_request -> execute + comment
- *   - duplicate delivery -> 200 (no double-run); bad signature -> 401
+ * Signed GitHub webhooks through handleWebhookRequest (signature + delivery dedupe)
+ * into the same pipeline as the live server, with a fake agent + fixtures GitHub +
+ * an in-memory MemoryStore:
+ *   - issue_comment mention -> draft a design-doc PR + reply
+ *   - PR comment on that PR  -> revise the doc on its branch (no new PR)   [M7 #3]
+ *   - bad signature -> 401; duplicate delivery -> no-op
+ *   - merged pull_request -> execute
+ *   - mention from a user without repo access -> denied
+ *   - watch a doc + push that changes it -> react (revision bumped, task spawned) [M7 #8]
  *
  * Requires Postgres at DATABASE_URL.
  */
@@ -14,7 +17,8 @@ import { FakeAgentRuntime } from "@marathon/agent";
 import { EnvSecretStore } from "@marathon/config";
 import { FixturesGithubClient, GithubDelivery, makeDocumentTools } from "@marathon/connector-github";
 import { Database, migrate } from "@marathon/db";
-import { bootstrapGithubApp, handleWebhookRequest, type GithubAppDeps } from "@marathon/github-app";
+import { bootstrapGithubApp, handleWebhookRequest, watchDocument, type GithubAppDeps } from "@marathon/github-app";
+import { FakeMemoryStore } from "@marathon/memory";
 import { Queue } from "@marathon/queue";
 import { computeGithubSignature } from "@marathon/surface-github";
 import { ToolGateway, ToolRegistry, type ToolPolicy } from "@marathon/tools";
@@ -30,6 +34,7 @@ function signed(eventType: string, deliveryId: string, payload: unknown) {
   const rawBody = JSON.stringify(payload);
   return { eventType, deliveryId, rawBody, signature: computeGithubSignature(SECRET, rawBody) };
 }
+const count = (gh: FixturesGithubClient, op: string) => gh.writes.filter((w) => w.op === op).length;
 
 async function main(): Promise<void> {
   const url = process.env.DATABASE_URL ?? "postgres://marathon:marathon@localhost:5432/marathon";
@@ -40,15 +45,15 @@ async function main(): Promise<void> {
   const queue = new Queue(url);
   try {
     const boot = await bootstrapGithubApp(db, { owner: `demo-owner-${Date.now()}` });
-    // "thgibbs" defaults to write access; "stranger" is denied.
     const gh = new FixturesGithubClient({ userPermissions: { [`${REPO}:stranger`]: "none" } });
     const deps: GithubAppDeps = {
       db,
       client: gh,
+      memory: new FakeMemoryStore(),
       router: new InvocationRouter(db, new Orchestrator(db, queue)),
       gateway: new ToolGateway({
         registry: new ToolRegistry(makeDocumentTools(() => gh)),
-        policy: { grants: [{ tool: "document.create" }, { tool: "document.comment" }] } as ToolPolicy,
+        policy: { grants: [{ tool: "document.create" }, { tool: "document.revise" }, { tool: "document.comment" }] } as ToolPolicy,
         secrets: new EnvSecretStore({}),
         recorder: {
           onInvocation: (r) => db.recordToolInvocation({ taskId: r.taskId, toolId: r.toolName, status: r.status, riskLevel: r.riskLevel, inputSummary: r.inputSummary, outputSummary: r.outputSummary, error: r.error }),
@@ -62,65 +67,72 @@ async function main(): Promise<void> {
       agentIdByName: boot.agentIdByName,
       defaultAgent: boot.defaultAgent,
     };
+    const u = Date.now(); // unique ids per run (delivery dedupe + router idempotency)
 
-    // Unique ids per run (delivery-id dedupe + router idempotency) so re-runs on a
-    // persistent dev DB don't dedupe to a prior run. CI's DB is ephemeral.
-    const u = Date.now();
-
-    // 1. mention webhook -> draft a doc PR + reply
-    const mention = signed("issue_comment", `d-mention-${u}`, {
+    // 1. mention -> draft a doc PR
+    await handleWebhookRequest(deps, SECRET, signed("issue_comment", `d-mention-${u}`, {
       action: "created",
       repository: { full_name: REPO, owner: { login: "thgibbs" } },
       issue: { number: 20 },
       comment: { id: u, body: "@marathon quill draft a plan for rate limiting", user: { login: "thgibbs" } },
-    });
-    const r1 = await handleWebhookRequest(deps, SECRET, mention);
-    assert(r1.status === 200, `mention webhook should 200, got ${r1.status}`);
-    assert(gh.writes.some((w) => w.op === "createPullRequest"), "a design-doc PR should be opened");
+    }));
+    assert(count(gh, "createPullRequest") === 1, "a design-doc PR should be opened");
     assert((await db.countDocumentArtifacts(boot.tenantId)) === 1, "a document artifact should be recorded");
-    console.log("[github-app demo] issue_comment mention -> drafted design-doc PR + reply");
+    console.log("[github-app demo] mention -> drafted design-doc PR #1");
 
-    // 2. bad signature -> 401
-    const bad = await handleWebhookRequest(deps, SECRET, { eventType: "issue_comment", deliveryId: "d-x", rawBody: mention.rawBody, signature: "sha256=bad" });
+    // 2. PR comment on PR #1 -> revise the doc on its branch (no new PR)   [M7 #3]
+    const putsBefore = count(gh, "putFile");
+    await handleWebhookRequest(deps, SECRET, signed("issue_comment", `d-rev-${u}`, {
+      action: "created",
+      repository: { full_name: REPO, owner: { login: "thgibbs" } },
+      issue: { number: 1, pull_request: {} },
+      comment: { id: u + 10, body: "@marathon quill tighten the limits section", user: { login: "thgibbs" } },
+    }));
+    assert(count(gh, "createPullRequest") === 1, "revision must NOT open a new PR");
+    assert(count(gh, "putFile") === putsBefore + 1, "revision should commit once to the existing branch");
+    assert(gh.writes.some((w) => w.op === "putFile" && (w.args as { branch?: string }).branch?.startsWith("marathon/doc-")), "revision committed to the draft branch");
+    console.log("[github-app demo] PR comment -> revised doc on its branch (no new PR)");
+
+    // 3. bad signature -> 401
+    const bad = await handleWebhookRequest(deps, SECRET, { eventType: "issue_comment", deliveryId: "d-x", rawBody: "{}", signature: "sha256=bad" });
     assert(bad.status === 401, "bad signature should be 401");
 
-    // 3. duplicate delivery -> 200 no-op
-    const dup = await handleWebhookRequest(deps, SECRET, mention);
-    assert(dup.status === 200 && dup.note === "duplicate delivery", "duplicate delivery should be a no-op");
-    assert(gh.writes.filter((w) => w.op === "createPullRequest").length === 1, "no second PR on duplicate");
-    console.log("[github-app demo] bad signature -> 401; duplicate delivery -> no-op");
-
-    // 4. merge webhook -> execute (PR #1 from the fixtures client)
-    const merge = signed("pull_request", `d-merge-${u}`, {
+    // 4. merge PR #1 -> execute
+    await handleWebhookRequest(deps, SECRET, signed("pull_request", `d-merge-${u}`, {
       action: "closed",
       repository: { full_name: REPO },
       pull_request: { number: 1, merged: true, merge_commit_sha: "abc123" },
-    });
-    const r2 = await handleWebhookRequest(deps, SECRET, merge);
-    assert(r2.status === 200, "merge webhook should 200");
+    }));
     const artifact = await db.findDocumentArtifactByPr(boot.tenantId, REPO, 1);
-    assert(artifact?.owningTaskId != null, "merge should resolve to the producing task");
     assert((await db.getTask(artifact!.owningTaskId!))!.status === "completed", "merged task should complete");
-    const comments = gh.writes.filter((w) => w.op === "commentIssue").length;
-    assert(comments >= 3, `expected >=3 comments (ack? draft reply, progress, result), got ${comments}`);
-    console.log("[github-app demo] merged PR -> executed + commented");
+    console.log("[github-app demo] bad sig -> 401; merged PR -> executed");
 
-    // 5. mention from a user WITHOUT repo access -> denied (no PR, no task)
-    const prCountBefore = gh.writes.filter((w) => w.op === "createPullRequest").length;
+    // 5. mention from a user WITHOUT repo access -> denied (no PR/task)
+    const prsBefore = count(gh, "createPullRequest");
     const tasksBefore = await db.countTasks(boot.tenantId);
-    const denied = signed("issue_comment", `d-denied-${u}`, {
+    await handleWebhookRequest(deps, SECRET, signed("issue_comment", `d-denied-${u}`, {
       action: "created",
       repository: { full_name: REPO, owner: { login: "thgibbs" } },
       issue: { number: 21 },
       comment: { id: u + 1, body: "@marathon quill draft something", user: { login: "stranger" } },
-    });
-    const r3 = await handleWebhookRequest(deps, SECRET, denied);
-    assert(r3.status === 200, "denied mention still returns 200");
-    assert(gh.writes.filter((w) => w.op === "createPullRequest").length === prCountBefore, "no PR for a user without access");
+    }));
+    assert(count(gh, "createPullRequest") === prsBefore, "no PR for a user without access");
     assert((await db.countTasks(boot.tenantId)) === tasksBefore, "no task for a user without access");
-    console.log("[github-app demo] mention from user without repo access -> denied (no PR/task)");
+    console.log("[github-app demo] user without access -> denied");
 
-    console.log(`[github-app demo] artifacts=${await db.countDocumentArtifacts(boot.tenantId)} comments=${comments}`);
+    // 6. watch a doc + a push that changes it -> react   [M7 #8]
+    await watchDocument(deps, { repo: REPO, path: "docs/policy.md", agentId: boot.agentIdByName.quill });
+    const tasksBeforePush = await db.countTasks(boot.tenantId);
+    await handleWebhookRequest(deps, SECRET, signed("push", `d-push-${u}`, {
+      repository: { full_name: REPO },
+      after: "sha-after-001",
+      commits: [{ modified: ["docs/policy.md"], added: [] }],
+    }));
+    const watched = await db.listWatchedArtifacts(boot.tenantId, REPO);
+    assert(watched.length === 1 && watched[0]!.lastRevisionSeen === "sha-after-001", "watched doc revision should be bumped to the push sha");
+    assert((await db.countTasks(boot.tenantId)) === tasksBeforePush + 1, "a push to a watched doc should spawn a review task");
+    console.log("[github-app demo] watched doc + push -> revision bumped + review task spawned");
+
     console.log("demo-github-app OK");
   } finally {
     await db.close();

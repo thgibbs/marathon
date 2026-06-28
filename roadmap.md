@@ -449,11 +449,13 @@ Exit criteria — unit tests + automated demo:
 **Goal:** agents carry context across a conversation and over time, and learn from feedback so
 a corrected mistake isn't repeated — behind a **swappable memory store** (design §7.12).
 
-> **Status.** Core **done & CI-green:** `MemoryStore` seam, `PgVectorMemoryStore` (default) +
+> **Status — M7 done & CI-green.** `MemoryStore` seam, `PgVectorMemoryStore` (default) +
 > `FakeMemoryStore`, `Mem0MemoryStore` (smoke), `FakeEmbedder`/`OpenAIEmbedder`, project=repo
 > resolver, feedback→memory, and prompt assembly (§7.18) loading personas + injecting recalled
-> memory (wired into the live Slack app). DB switched to the `pgvector/pgvector:pg16` image.
-> **Remaining M7:** document **revision loop** (#3) and **watched documents** (#8). Deferred as
+> memory — wired into **both** the live Slack app and the GitHub app. DB on
+> `pgvector/pgvector:pg16`. Carry-overs delivered: **document revision loop** (#3 — `document.revise`
+> commits to the draft PR's branch on a follow-up comment) and **watched documents** (#8 — a
+> `push` to a watched path bumps `last_revision_seen` and spawns a review task). Deferred as
 > planned: LLM fact-extraction/consolidation, Zep adapter.
 
 Human prerequisites:
@@ -585,8 +587,8 @@ fold into M7–M9 sequencing as capacity allows.
 4. **Durable resume of a *real* Pi run** *(reliability).* `PiAgentRuntime` runs single-turn;
    the per-turn checkpoint/resume path is only exercised by fake agents. Build a multi-turn
    tool loop with per-turn checkpointing so a crashed in-flight model run resumes.
-5. **Document revision loop** *(scheduled: M7).* The agent drafts a doc PR but does not yet
-   revise it in response to review comments — add the read-comments → update-doc cycle.
+5. **Document revision loop** *(done in M7).* A follow-up `@marathon` comment on a drafted PR
+   now revises the doc on its branch (`document.revise`) instead of opening a new PR.
 6. **Prompt & context assembly + model selection** *(now specified — design §7.18, §7.19;
    scheduled: M7, budgets M8).* Today the agent gets a generic hardcoded instruction + the raw
    mention text. Build the real prompt builder: load `AgentVersion.instructions`, add a

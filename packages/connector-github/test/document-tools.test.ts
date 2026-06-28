@@ -49,6 +49,17 @@ describe("document tools", () => {
     expect(put.args.content).toContain("It broke.");
   });
 
+  it("document.revise commits to an existing branch (no new PR)", async () => {
+    const gh = new FixturesGithubClient({});
+    await tool("document.create", gh).execute({ repo: "o/r", path: "docs/x.md", content: "# v1" }, ctx);
+    const branch = (gh.writes.find((w) => w.op === "createBranch")!.args as { branch: string }).branch;
+    const puts = gh.writes.filter((w) => w.op === "putFile").length;
+    const res = await tool("document.revise", gh).execute({ repo: "o/r", path: "docs/x.md", content: "# v2", branch }, ctx);
+    expect(res.content).toMatch(/revised/);
+    expect(gh.writes.filter((w) => w.op === "createPullRequest")).toHaveLength(1); // no new PR
+    expect(gh.writes.filter((w) => w.op === "putFile")).toHaveLength(puts + 1);
+  });
+
   it("document.reply_to_comment threads under a review comment", async () => {
     const gh = new FixturesGithubClient({});
     const res = await tool("document.reply_to_comment", gh).execute(

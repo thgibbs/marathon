@@ -17,7 +17,7 @@ export interface PromptParts {
 export async function buildAgentPrompt(
   deps: { db: Database; memory?: MemoryStore },
   task: Task,
-  opts: { basePersona?: string; recallLimit?: number } = {},
+  opts: { basePersona?: string; recallLimit?: number; documents?: Array<{ path: string; content: string }> } = {},
 ): Promise<PromptParts> {
   // 1. instructions (trusted): the agent persona + a do-not-follow-data framing.
   let persona = opts.basePersona ?? DEFAULT_PERSONA;
@@ -42,7 +42,13 @@ export async function buildAgentPrompt(
     }
   }
 
+  // 2b. document context (untrusted): e.g. the current doc being revised.
+  let docBlock = "";
+  for (const d of opts.documents ?? []) {
+    docBlock += `<context kind="document" path="${d.path}">\n${d.content}\n</context>\n\n`;
+  }
+
   // 3. invocation (untrusted): the actual ask.
-  const input = `${contextBlock}<request>\n${userText}\n</request>`;
+  const input = `${contextBlock}${docBlock}<request>\n${userText}\n</request>`;
   return { instructions, input };
 }

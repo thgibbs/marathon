@@ -44,6 +44,9 @@ importers:
       '@marathon/github-app':
         specifier: workspace:*
         version: link:../../packages/github-app
+      '@marathon/memory':
+        specifier: workspace:*
+        version: link:../../packages/memory
       '@marathon/model-gateway':
         specifier: workspace:*
         version: link:../../packages/model-gateway
@@ -352,6 +355,9 @@ importers:
       '@marathon/db':
         specifier: workspace:*
         version: link:../db
+      '@marathon/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@marathon/surface':
         specifier: workspace:*
         version: link:../surface

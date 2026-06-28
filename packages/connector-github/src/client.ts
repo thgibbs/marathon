@@ -11,6 +11,7 @@ export interface GithubEntry {
 
 export interface GithubClient {
   readFile(repo: string, path: string, ref?: string): Promise<GithubFile>;
+  readFileWithSha(repo: string, path: string, ref?: string): Promise<GithubFile & { sha: string }>;
   listContents(repo: string, path?: string, ref?: string): Promise<GithubEntry[]>;
   // writes
   createIssue(repo: string, title: string, body?: string): Promise<{ number: number; url: string }>;
@@ -85,11 +86,16 @@ export class HttpGithubClient implements GithubClient {
   }
 
   async readFile(repo: string, path: string, ref?: string): Promise<GithubFile> {
+    const { path: p, content } = await this.readFileWithSha(repo, path, ref);
+    return { path: p, content };
+  }
+
+  async readFileWithSha(repo: string, path: string, ref?: string): Promise<GithubFile & { sha: string }> {
     const q = ref ? `?ref=${encodeURIComponent(ref)}` : "";
     const j = await this.api(`/repos/${repo}/contents/${encodeURI(path)}${q}`);
     if (Array.isArray(j)) throw new Error(`${path} is a directory, not a file`);
     const content = Buffer.from(String(j.content ?? ""), j.encoding ?? "base64").toString("utf8");
-    return { path: j.path, content };
+    return { path: j.path, content, sha: j.sha };
   }
 
   async listContents(repo: string, path = "", ref?: string): Promise<GithubEntry[]> {
@@ -207,6 +213,13 @@ export class FixturesGithubClient implements GithubClient {
     const f = this.fixtures.files?.[`${repo}:${path}`];
     if (!f) throw new Error(`fixture missing: readFile ${repo}:${path}`);
     return f;
+  }
+
+  async readFileWithSha(repo: string, path: string): Promise<GithubFile & { sha: string }> {
+    const key = `${repo}:${path}`;
+    const f = this.fixtures.files?.[key];
+    // Lenient: a doc created via putFile won't be in `files`, but has a tracked sha.
+    return { path, content: f?.content ?? "", sha: this.fileShas.get(key) ?? "sha-existing" };
   }
 
   async listContents(repo: string, path = ""): Promise<GithubEntry[]> {
