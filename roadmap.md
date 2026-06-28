@@ -544,7 +544,13 @@ fold into M7–M9 sequencing as capacity allows.
    tool loop with per-turn checkpointing so a crashed in-flight model run resumes.
 5. **Document revision loop** *(M6 follow-on).* The agent drafts a doc PR but does not yet
    revise it in response to review comments — add the read-comments → update-doc cycle.
-6. **Testing conventions to keep** *(process).* The **deterministic demo (fakes/fixtures, CI)
+6. **Prompt & context assembly + model selection** *(now specified — design §7.18, §7.19).*
+   Today the agent gets a generic hardcoded instruction + the raw mention text. Build the real
+   prompt builder: load `AgentVersion.instructions`, add a per-surface context builder (Slack
+   thread / document region + memory) with untrusted-content delimiting (§12.2), and implement
+   real model selection (role→tier routing, constraint/budget filter, fallback, per-tenant
+   policy). Pairs with M7 (context/memory) and M8 (budgets).
+7. **Testing conventions to keep** *(process).* The **deterministic demo (fakes/fixtures, CI)
    + live smoke (real services, local)** split worked well and caught real bugs. Rule learned
    the hard way: **await all side effects in demos** — a fire-and-forget audit write made the
    M3 demo flaky in CI (now fixed by awaiting recorder writes).

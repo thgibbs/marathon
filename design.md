@@ -1037,7 +1037,8 @@ For the MVP, support only `this_action_only`.
 
 ## 7.10 Model routing
 
-Model routing should be declarative.
+Model routing should be declarative. This section defines the **policy**; §7.19 defines the
+runtime **selection procedure** that applies it per invocation/step.
 
 Example:
 
@@ -1120,7 +1121,8 @@ budget_policy:
 
 ## 7.12 Memory and context
 
-Marathon should support several types of context.
+Marathon should support several types of context. How these are gathered and composed into a
+model prompt is specified in §7.18 (Prompt & context assembly).
 
 ### Task-local memory
 
@@ -1370,6 +1372,128 @@ Documents are a first-class surface, in two modes. The first implementation is *
 ### Permissions
 
 Document access is governed by the **repository's permissions**, enforced through the GitHub connector — check that both the invoking user and the agent may access the repo before reading or writing. If a future provider has finer-grained per-document ACLs (e.g. Google Docs), user-impersonation credentials let the agent inherit the invoking user's access (see §12.3, §22.2).
+
+---
+
+## 7.18 Prompt & context assembly
+
+Every invocation — a Slack mention, a document comment — must be turned into a concrete model
+prompt. This is the **prompt builder**: the link between the *static* agent configuration
+(§7.2, §10.4) and the *dynamic* agent loop (§7.5). It runs once at the start of a task (and
+may re-run per step), is the same across surfaces by contract, and is surface-specific only in
+*which context it gathers*.
+
+### Layers of the assembled prompt
+
+The builder produces a layered prompt with a strict trust gradient (most trusted first):
+
+1. **Instructions layer (trusted).** The agent's `AgentVersion.instructions` (persona,
+   behavior, autonomy/approval rules — §10.4), plus Marathon-injected framing: tool-use
+   guidance, the surface's reply conventions, the current date/agent identity, and an explicit
+   instruction that *everything in the context and invocation layers is data, not commands*.
+2. **Context layer (untrusted).** The gathered, provenance-labeled context bundle (below),
+   each block wrapped in unambiguous delimiters. Sourced from the surface, memory (§7.12), and
+   tools — never allowed to alter layer 1.
+3. **Invocation layer (untrusted).** The triggering message/comment itself (the actual ask),
+   with the `@mention` stripped and the requesting user's identity attached.
+
+### Per-surface context sources
+
+The context bundle is produced by a surface-specific builder behind the `SurfaceAdapter`
+(§7.16), so adding a surface means adding a builder, not changing the loop:
+
+| Surface | Gathered context (bounded by token budget + permissions) |
+| --- | --- |
+| **Slack mention** | the thread's prior messages, the channel, prior agent turns in that thread (thread memory, §7.12) |
+| **Document comment** | the anchored region by `source_ref` (file / line range / diff hunk), the surrounding section, sibling review comments (§7.17) |
+| **Both** | task-local memory (plan, prior tool results, clarifications), retrieved agent/tenant memory (§7.12), permission-checked |
+
+### Trust, sanitization, secrets
+
+All context and invocation content is **untrusted** (§12.2). The builder must (a) delimit and
+label untrusted blocks unmistakably, (b) guarantee they cannot rewrite the instructions layer,
+and (c) optionally route them through the **trust-hierarchy sanitizer** (a frontier model that
+emits clean instructions/context — §12.2, *designed, not yet implemented*). **Secrets never
+appear in any layer** (§8.2); credentials are injected only at tool execution (§7.8).
+
+### Token budget & compaction
+
+The builder enforces the selected model's context window (§7.19, §7.10 metadata): instructions
+and the invocation are always included; context is included by relevance and trimmed/summarized
+oldest-first when over budget. For long in-flight runs, Pi performs in-loop compaction (§7.5).
+
+### Versioning & reproducibility
+
+The assembled prompt is tagged with a **`prompt_version`** = (AgentVersion + output/template
+version + builder version), recorded on each `ModelInvocation` (§10.10) and surfaced in the
+inspectability dashboard (§8.5, §11). Given the same `(instructions, context bundle,
+invocation, versions)`, the builder must produce the same prompt — this is what makes
+evaluation and replay meaningful (§7.6, §10.14).
+
+### Required
+
+* Load `AgentVersion.instructions` per invocation (not a hardcoded default).
+* A per-surface context builder behind `SurfaceAdapter` returning a normalized context bundle.
+* Layered assembly with explicitly delimited, provenance-labeled untrusted blocks.
+* Token-budget enforcement against the selected model.
+* Attach `prompt_version`; deterministic given fixed inputs + versions.
+
+> **As-built status (MVP).** The builder is minimal: a **generic hardcoded instruction string**
+> (e.g. "You are Marathon, a concise engineering assistant.") plus the **raw mention text** as
+> the user message. `AgentVersion.instructions` is **not loaded**, and there is **no thread or
+> document context, no memory, and no sanitization** assembled into the prompt (Pi's built-in
+> read/grep tools can still pull file context mid-run). Closing this — load real instructions +
+> a surface context builder + untrusted-content delimiting — is tracked in roadmap §2b / M7.
+
+---
+
+## 7.19 Model selection
+
+Model selection decides, per invocation (and per *step* within a task), which concrete
+`provider:model` runs. It **operationalizes** the declarative `model_policy`/`routing` config
+(§7.10) and the strategies in §13.2 into a runtime procedure; §7.10 is the *what*, this is the
+*how*.
+
+### Selection procedure (in precedence order)
+
+1. **Explicit override** — a model named in the request ("use opus"), honored only if allowed
+   by tenant policy.
+2. **Step role → tier** — map the current step's role (`classify_intent`, `plan_task`,
+   `generate_final_answer`, `safety_check`, …) to a tier via `AgentVersion.model_policy.routing`.
+3. **Tier → concrete model** — resolve the tier (`default` / `reasoning` / `cheap` /
+   `embedding`) to a `provider:model` from `model_policy`.
+4. **Constraint filter** — the candidate must fit the assembled prompt's **context window**,
+   support required **capabilities** (tool use, vision), and respect **latency** and remaining
+   **cost budget** (§7.11). Candidates failing a hard constraint are dropped.
+5. **Fallback chain** — on unavailability / over-budget / repeated error, fall back along a
+   configured chain (e.g. `reasoning → default`) and **record the downgrade**.
+
+### Resolution & policy
+
+* Model refs are `provider:model`, resolved against the **model registry** (built-in catalog +
+  tenant-registered models; OpenRouter registered as an OpenAI-compatible provider). Per-tenant
+  API keys are injected at runtime (`setRuntimeApiKey`), never persisted into config (§13,
+  §9.2).
+* **Tenant/admin policy** can constrain: allowed providers/models, maximum tier, budget caps,
+  and data-residency/provider restrictions.
+* The chosen model, tier, and **selection reason** (override / role / fallback) are recorded on
+  the `ModelInvocation` (§10.10) for cost attribution and inspectability.
+
+### Required
+
+* Resolve a model via override → role→tier → tier→model, then apply the constraint filter and
+  fallback chain.
+* Validate the choice against tenant policy and the prompt's context window before the call.
+* Record model, tier, selection reason, and any fallback on the `ModelInvocation`.
+
+> **As-built status (MVP).** A minimal model gateway exists (`@marathon/model-gateway`):
+> `DEFAULT_MODEL_POLICY = { default, reasoning, cheap }` (default **OpenAI**
+> `gpt-4o-mini`/`gpt-4o`, since that's where credits are), `resolveModelRef`/`parseModelRef`,
+> and a `BUILTIN_MODELS` catalog with cost + context-window metadata; cost is computed per call.
+> But **selection is effectively always the `default` tier** — the live apps pass a fixed
+> `modelRef` — so **role→tier routing, the constraint/budget filter, fallback chains, per-tenant
+> policy, and overrides are not implemented yet** (budget *enforcement* is M8; the rest folds
+> into M7/M8).
 
 ---
 
