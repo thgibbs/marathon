@@ -96,6 +96,33 @@ importers:
         specifier: workspace:*
         version: link:../../packages/tools
 
+  demos/m4:
+    dependencies:
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@marathon/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
+      '@marathon/surface':
+        specifier: workspace:*
+        version: link:../../packages/surface
+      '@marathon/surface-slack':
+        specifier: workspace:*
+        version: link:../../packages/surface-slack
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+      '@marathon/worker':
+        specifier: workspace:*
+        version: link:../../packages/worker
+
   demos/m5:
     dependencies:
       '@marathon/config':
@@ -170,6 +197,18 @@ importers:
         specifier: ^8.13.0
         version: 8.22.0
 
+  packages/surface:
+    dependencies:
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/surface-slack:
+    dependencies:
+      '@marathon/surface':
+        specifier: workspace:*
+        version: link:../surface
+
   packages/tools:
     dependencies:
       '@marathon/config':
@@ -193,6 +232,9 @@ importers:
       '@marathon/queue':
         specifier: workspace:*
         version: link:../queue
+      '@marathon/surface':
+        specifier: workspace:*
+        version: link:../surface
       '@marathon/tools':
         specifier: workspace:*
         version: link:../tools

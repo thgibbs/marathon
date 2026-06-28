@@ -57,5 +57,8 @@ jobs:
       - name: Automated demo (M3)
         run: pnpm --filter @marathon/demo-m3 start
 
+      - name: Automated demo (M4)
+        run: pnpm --filter @marathon/demo-m4 start
+
       - name: Automated demo (M5)
         run: pnpm --filter @marathon/demo-m5 start

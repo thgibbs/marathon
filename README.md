@@ -6,8 +6,8 @@ Open-source platform for durable AI agents that work where teams already work �
 > Status: early implementation. The design is settled; code is being built milestone by
 > milestone (see `roadmap.md`). **M0 (foundations)**, **M1 (durable task spine)**,
 > **M2 (Pi harness seam + minimal model gateway)**, **M3 (tool layer with embedded
-> permissioning + first tools)**, and **M5 (destructive-action approval + GitHub write
-> tools)** are in place. (M4, the Slack surface, is deferred.)
+> permissioning + first tools)**, **M4 (Slack surface)**, and **M5 (destructive-action
+> approval + GitHub write tools)** are in place.
 
 ## Docs
 
@@ -44,19 +44,22 @@ packages/
   model-gateway/ @marathon/model-gateway — model specs, routing, cost, keys
   agent/     @marathon/agent    — AgentRuntime seam: FakeAgentRuntime + real Pi adapter
   tools/     @marathon/tools    — tool layer: policy, gateway (embedded permissioning), CLI
-  connector-github/ @marathon/connector-github — read-only GitHub tools (HTTP + fixtures)
+  connector-github/ @marathon/connector-github — GitHub tools (read + write; HTTP + fixtures)
+  surface/   @marathon/surface  — SurfaceAdapter seam: invocation, agent selection, rendering
+  surface-slack/ @marathon/surface-slack — Slack: signature, parse, delivery, Socket Mode
 demos/
   m0/        @marathon/demo-m0  — foundations demo
   m1/        @marathon/demo-m1  — durable-spine demo (crash mid-run, resume once)
   m2/        @marathon/demo-m2  — agent loop via the runtime (fake model), cost, resume
   m3/        @marathon/demo-m3  — tools under policy: allow/deny, audit, no creds in trace
+  m4/        @marathon/demo-m4  — Slack mention -> task -> read tool -> threaded reply + feedback
   m5/        @marathon/demo-m5  — destructive-action approval (block/approve/reject/expire), idempotent
 ```
 
 Real adapters are runtime-verified locally (need keys/tokens in `.env`):
-`make smoke-pi` (live model call), `make smoke-github` (reads a real repo), and
-`make smoke-github-write` (creates/comments/closes a real issue). CI uses
-fakes/fixtures for determinism.
+`make smoke-pi` (live model call), `make smoke-github` / `make smoke-github-write`
+(real repo read/write), and `make smoke-slack` (auth + Socket Mode + optional post).
+CI uses fakes/fixtures for determinism.
 
 ## License
 

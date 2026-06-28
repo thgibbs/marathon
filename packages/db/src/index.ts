@@ -379,6 +379,82 @@ export class Database implements AuditWriter, IdempotencyStore {
     await this.pool.query(`delete from idempotency_key where key = $1`, [key]);
   }
 
+  // --- surface identity & feedback (M4) ---
+
+  /** Find the user behind a surface identity, creating the user + identity if new. */
+  async findOrCreateUserByIdentity(
+    tenantId: Id,
+    surfaceType: SurfaceType,
+    externalId: string,
+    displayName?: string,
+  ): Promise<User> {
+    const existing = await this.pool.query(
+      `select u.* from app_user u
+         join user_identity i on i.user_id = u.id
+       where i.surface_type = $1 and i.external_id = $2 and u.tenant_id = $3`,
+      [surfaceType, externalId, tenantId],
+    );
+    if (existing.rows[0]) return rowToUser(existing.rows[0]);
+
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const u = await client.query(
+        `insert into app_user(tenant_id, display_name, role) values ($1, $2, 'user') returning *`,
+        [tenantId, displayName ?? null],
+      );
+      await client.query(
+        `insert into user_identity(user_id, surface_type, external_id) values ($1, $2, $3)`,
+        [u.rows[0].id, surfaceType, externalId],
+      );
+      await client.query("commit");
+      return rowToUser(u.rows[0]);
+    } catch (err) {
+      await client.query("rollback");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async recordFeedback(input: {
+    tenantId: Id;
+    taskId?: Id;
+    agentId?: Id;
+    userId?: Id;
+    feedbackType: "thumbs_up" | "thumbs_down" | "free_text";
+    comment?: string;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into feedback(tenant_id, task_id, agent_id, user_id, feedback_type, comment)
+       values ($1, $2, $3, $4, $5, $6)`,
+      [
+        input.tenantId,
+        input.taskId ?? null,
+        input.agentId ?? null,
+        input.userId ?? null,
+        input.feedbackType,
+        input.comment ?? null,
+      ],
+    );
+  }
+
+  async countFeedback(tenantId: Id): Promise<number> {
+    const { rows } = await this.pool.query(
+      `select count(*)::int as n from feedback where tenant_id = $1`,
+      [tenantId],
+    );
+    return rows[0].n as number;
+  }
+
+  async countTasks(tenantId: Id): Promise<number> {
+    const { rows } = await this.pool.query(
+      `select count(*)::int as n from task where tenant_id = $1`,
+      [tenantId],
+    );
+    return rows[0].n as number;
+  }
+
   async sumModelCostUsd(taskId: Id): Promise<number> {
     const { rows } = await this.pool.query(
       `select coalesce(sum(cost_usd), 0)::float8 as total from model_invocation where task_id = $1`,

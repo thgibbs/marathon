@@ -1,0 +1,20 @@
+{
+  "name": "@marathon/demo-m4",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx run.ts",
+    "smoke": "tsx smoke-slack.ts"
+  },
+  "dependencies": {
+    "@marathon/config": "workspace:*",
+    "@marathon/core": "workspace:*",
+    "@marathon/db": "workspace:*",
+    "@marathon/surface": "workspace:*",
+    "@marathon/surface-slack": "workspace:*",
+    "@marathon/tools": "workspace:*",
+    "@marathon/queue": "workspace:*",
+    "@marathon/worker": "workspace:*"
+  }
+}

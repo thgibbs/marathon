@@ -5,7 +5,7 @@ MARATHON_DB_PORT ?= 5432
 DATABASE_URL ?= postgres://marathon:marathon@localhost:$(MARATHON_DB_PORT)/marathon
 export DATABASE_URL MARATHON_DB_PORT
 
-.PHONY: install db-up db-down migrate typecheck test demo demo-m0 demo-m1 demo-m2 demo-m3 demo-m5 smoke-pi smoke-github smoke-github-write down
+.PHONY: install db-up db-down migrate typecheck test demo demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 smoke-pi smoke-github smoke-github-write smoke-slack down
 
 install:
 	pnpm install
@@ -37,6 +37,9 @@ demo-m2: db-up migrate
 demo-m3: db-up migrate
 	pnpm --filter @marathon/demo-m3 start
 
+demo-m4: db-up migrate
+	pnpm --filter @marathon/demo-m4 start
+
 demo-m5: db-up migrate
 	pnpm --filter @marathon/demo-m5 start
 
@@ -50,7 +53,10 @@ smoke-github:
 smoke-github-write:
 	pnpm --filter @marathon/demo-m5 smoke
 
-# Runs the full demo chain (grows as milestones land; M4/Slack pending).
-demo: demo-m0 demo-m1 demo-m2 demo-m3 demo-m5
+smoke-slack:
+	pnpm --filter @marathon/demo-m4 smoke
+
+# Runs the full demo chain (grows as milestones land).
+demo: demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5
 
 down: db-down
