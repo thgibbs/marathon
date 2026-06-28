@@ -36,6 +36,24 @@ importers:
         specifier: workspace:*
         version: link:../../packages/db
 
+  demos/m1:
+    dependencies:
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@marathon/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
+      '@marathon/worker':
+        specifier: workspace:*
+        version: link:../../packages/worker
+
   packages/config: {}
 
   packages/core: {}
@@ -51,6 +69,24 @@ importers:
       pg:
         specifier: ^8.13.0
         version: 8.22.0
+
+  packages/queue:
+    dependencies:
+      pg:
+        specifier: ^8.13.0
+        version: 8.22.0
+
+  packages/worker:
+    dependencies:
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../db
+      '@marathon/queue':
+        specifier: workspace:*
+        version: link:../queue
 
 packages:
 

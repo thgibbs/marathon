@@ -81,6 +81,8 @@ export interface Task {
   status: TaskStatus;
   inputText: string | null;
   summary: string | null;
+  /** Durable resume checkpoint (design.md §11.2). */
+  checkpoint: Record<string, unknown> | null;
   costUsd: number;
   createdAt: Date;
   startedAt: Date | null;

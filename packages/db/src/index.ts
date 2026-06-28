@@ -181,6 +181,45 @@ export class Database implements AuditWriter {
     );
     return rows[0].n as number;
   }
+
+  /**
+   * Record one completed step's effect and the new checkpoint atomically, so a
+   * crash leaves the task either fully before or fully after the step (the basis
+   * for exactly-once resume).
+   */
+  async completeStep(
+    taskId: Id,
+    stepType: string,
+    checkpoint: Record<string, unknown>,
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `insert into task_step(task_id, step_type, status, started_at, completed_at)
+         values ($1, $2, 'completed', now(), now())`,
+        [taskId, stepType],
+      );
+      await client.query(`update task set checkpoint = $2 where id = $1`, [
+        taskId,
+        JSON.stringify(checkpoint),
+      ]);
+      await client.query("commit");
+    } catch (err) {
+      await client.query("rollback");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async countTaskSteps(taskId: Id): Promise<number> {
+    const { rows } = await this.pool.query(
+      `select count(*)::int as n from task_step where task_id = $1`,
+      [taskId],
+    );
+    return rows[0].n as number;
+  }
 }
 
 // --- row mappers (snake_case → camelCase) ---
@@ -255,6 +294,7 @@ function rowToTask(r: any): Task {
     status: r.status,
     inputText: r.input_text,
     summary: r.summary,
+    checkpoint: r.checkpoint ?? null,
     costUsd: Number(r.cost_usd),
     createdAt: r.created_at,
     startedAt: r.started_at,

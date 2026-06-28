@@ -5,7 +5,7 @@ MARATHON_DB_PORT ?= 5432
 DATABASE_URL ?= postgres://marathon:marathon@localhost:$(MARATHON_DB_PORT)/marathon
 export DATABASE_URL MARATHON_DB_PORT
 
-.PHONY: install db-up db-down migrate typecheck test demo demo-m0 down
+.PHONY: install db-up db-down migrate typecheck test demo demo-m0 demo-m1 down
 
 install:
 	pnpm install
@@ -28,7 +28,10 @@ test:
 demo-m0: db-up migrate
 	pnpm --filter @marathon/demo-m0 start
 
+demo-m1: db-up migrate
+	pnpm --filter @marathon/demo-m1 start
+
 # Runs the full demo chain (grows as milestones land).
-demo: demo-m0
+demo: demo-m0 demo-m1
 
 down: db-down
