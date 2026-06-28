@@ -878,14 +878,19 @@ Requirements:
   gate tools.)
 * The harness runs *inside* the durable Agent Worker. Marathon owns durability around it
   (queueing, leases, checkpoints, resumption, idempotency); Pi owns the agent loop.
-* **Permissioning uses Pi's `tool_call` hook** (block or mutate a call) and `tool_result`
-  hook (redact/log); Marathon supplies the policy and injects credentials by mutating the
-  call input (see §7.8).
+* **Permissioning is embedded in the harness.** *As-built:* Marathon registers each tool as a
+  Pi **custom tool that delegates to the `ToolGateway`** (the gateway is the chokepoint —
+  policy, credential injection, audit, redaction); destructive calls return an
+  approval-required signal. The originally-planned `tool_call`/`tool_result` hook approach
+  remains valid and is still the way to also govern Pi's **built-in** tools, which the custom-
+  tool approach does **not** cover yet (see §7.8, §12.6, `pi-details.md` §3 As-built).
 * **The Pi session (a JSONL tree) is the durable agent checkpoint and the full trace.**
   Persist it per task; it powers crash-resume, the inspectability dashboard, and replay
   (see §11, §16).
-* Pi provides model-call **logging, retries, and redaction**, plus per-model **cost metadata
-  and session stats**, which keeps Marathon's Model Gateway minimal (see §9.2, §13).
+* Pi provides model-call **logging, retries, and redaction**, plus per-model **cost metadata**,
+  which keeps Marathon's Model Gateway minimal (see §9.2, §13). *As-built:* per-call cost is
+  read from the turn's assistant message (`usage.cost.total`); budget enforcement is deferred
+  to M8.
 * **Pi has no built-in sandbox** — Marathon must run the harness and its tools under
   OS-level isolation (see §12.6).
 
@@ -961,7 +966,7 @@ Tools run **through the Pi harness**, which exposes a single tool interface to t
 
 ## 7.8 Tool permissioning
 
-Tools are executed through the Pi harness, and **permissioning is embedded in the harness**: Pi enforces the policy on every tool call. Marathon owns *what* Pi enforces — it **defines the policy, injects credentials, orchestrates approvals (durable waits + in-place prompts), and records the audit log** — while Pi is the in-loop enforcement point, so the model can neither bypass nor rewrite it. Concretely this is wired through Pi's `tool_call` hook (block/mutate each call and inject credentials) and `tool_result` hook (redact/log); see `pi-details.md` §3. Each tool should declare:
+Tools are executed through the Pi harness, and **permissioning is embedded in the harness**: Marathon owns *what* is enforced — it **defines the policy, injects credentials, orchestrates approvals (durable waits + in-place prompts), and records the audit log** — at an in-loop chokepoint the model can neither bypass nor rewrite. *As-built (M6.1):* the chokepoint is the **`ToolGateway`**, reached by registering each Marathon tool as a Pi **custom tool whose `execute` delegates to `gateway.run`** (validate → policy → credential injection → execute → redact → audit). The originally-planned `tool_call`/`tool_result` hook (see `pi-details.md` §3) is equivalent and additionally covers Pi's **built-in** tools — which the custom-tool approach does not govern yet, and which therefore also depend on the sandbox work (§12.6). Two practical constraints learned in build: model-facing tool names must match `^[A-Za-z0-9_-]+$` (no dots — sanitized + mapped back), and only Marathon-registered tools currently flow through the gateway. Each tool should declare:
 
 * Name
 * Description
@@ -1635,6 +1640,13 @@ Each surface has a gateway (Slack gateway, Document gateway, …). Responsibilit
 
 Gateways should not run agents directly. Adding a surface means adding a gateway, not changing the core.
 
+> *As-built transports:* **Slack** ingests via **Socket Mode** (a persistent WebSocket; no
+> public URL — `apps.connections.open`, ack each envelope), so the HTTP signature path exists
+> but isn't on the live path. **GitHub** ingests via **HTTP webhooks** (`X-Hub-Signature-256`
+> verify + `X-GitHub-Delivery` dedupe). Result delivery is performed by the app layer
+> (`@marathon/slack-app` / `@marathon/github-app`) after the worker completes, not by the
+> worker itself.
+
 ---
 
 ### Invocation Router
@@ -1695,8 +1707,9 @@ Responsibilities:
 
 * Abstract the initial providers (Claude, ChatGPT, OpenRouter)
 * Apply routing policies
-* Track cost per call (for budgets and reporting) — **read from Pi's model cost metadata +
-  session stats** rather than re-metering
+* Track cost per call (for budgets and reporting) — **read from Pi per call** (the turn's
+  assistant-message `usage.cost.total`) rather than re-metering. *As-built:* capture is done
+  (a `ModelInvocation` row per turn); budget **enforcement** is deferred to M8.
 * Inject **per-tenant API keys at runtime** (Pi `setRuntimeApiKey`), not from shared env/config
 * Pass budget enforcement through to the provider / OpenRouter where possible
 
@@ -2409,6 +2422,10 @@ Defenses:
 
 ### Agent trust hierarchy
 
+> *Status: designed, not yet implemented.* As of the MVP build the agent runs a single model
+> directly over surface/tool content; the sanitization layer below is future work (pairs with
+> §12.6 isolation).
+
 Models differ in their resistance to injection. Frontier models are relatively robust to "ignore your instructions" attacks; smaller open-source or execution-focused models are not. Marathon should therefore use a **trust hierarchy**:
 
 * A trusted frontier model reads untrusted surface content (Slack text, document bodies/comments, tool output) and produces **clean, sanitized instructions and context**.
@@ -2485,6 +2502,12 @@ For privacy-sensitive deployments, allow prompt/response logging to be disabled 
 ---
 
 ## 12.6 Execution isolation
+
+> *Status: designed, not yet implemented — the top remaining security gap (roadmap M9).* The
+> MVP runs Pi with no sandbox, and (per §7.8 as-built) Pi's enabled **built-in** tools
+> (`read/grep/find/ls`) run **ungoverned and unaudited** against the worker's filesystem. `bash`
+> is intentionally not enabled yet. Closing this means both a sandbox *and* routing built-ins
+> through the gateway (or replacing them).
 
 **Pi has no built-in sandbox** — it runs with the full permissions of its OS user, and its
 "project trust" only guards config loading, not runtime. Isolation is therefore Marathon's

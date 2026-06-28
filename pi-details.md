@@ -29,6 +29,27 @@ permissioning, models/auth, logging, sessions/durability, and security.
 `diagram.md`. The Agent Worker wraps Pi; Marathon owns durability, policy, credentials,
 approval, audit *around* it.
 
+> **As-built notes (verified against `@earendil-works/pi-coding-agent` 0.80.2).** This file
+> was first written from the docs; the live integration in `@marathon/agent` corrected a few
+> things:
+> - **Models come from `ModelRegistry`** (resolve a model ref via the registry), not
+>   `getModel` from `@earendil-works/pi-ai`.
+> - **`createAgentSession` and `DefaultResourceLoader` require `cwd` and `agentDir`.**
+> - **Per-call cost is read from the assistant message** (`usage.cost.total`), not from
+>   session stats (see §4.4).
+> - **The adapter must surface model errors** (`stopReason: "error"`, e.g. billing/rate
+>   limits) instead of returning an empty turn.
+> - **Embedded permissioning is implemented as custom tools that delegate to Marathon's
+>   `ToolGateway`** (the gateway is the chokepoint), *not* via the `tool_call` hook in §3.2.
+>   Consequence: Pi's **built-in** tools (`read/grep/find/ls`) are **not** gateway-governed —
+>   only Marathon-registered tools are. Governing/replacing the built-ins + sandboxing is open
+>   (see §7, roadmap M9).
+> - **Model-facing tool names must match `^[A-Za-z0-9_-]+$`** (OpenAI rejects dots); Marathon
+>   sanitizes `github.read_file` → `github_read_file` and maps back to the real tool.
+> - **Approval is implemented at the Marathon orchestration layer** (durable, tested); the
+>   live "suspend a running Pi turn and resume after approval" path in §6.3 is **not yet
+>   built** — see §6.3.
+
 ---
 
 ## 2. How Marathon embeds Pi — three options
@@ -51,18 +72,21 @@ import {
   createAgentSession, AuthStorage, ModelRegistry,
   SessionManager, SettingsManager, DefaultResourceLoader, defineTool,
 } from "@earendil-works/pi-coding-agent";
-import { getModel } from "@earendil-works/pi-ai";
 
 const authStorage = AuthStorage.create();                 // ~/.pi/agent/auth.json + env
-authStorage.setRuntimeApiKey("anthropic", tenantKey);     // inject per-tenant key, not persisted
+authStorage.setRuntimeApiKey("openai", tenantKey);        // inject per-tenant key, not persisted
 const modelRegistry = ModelRegistry.create(authStorage);
+const loader = new DefaultResourceLoader({ cwd, agentDir }); // cwd/agentDir are REQUIRED
 
 const { session } = await createAgentSession({
-  model: getModel("anthropic", "claude-opus-4-5"),
+  cwd, agentDir,                                           // REQUIRED
+  model: modelRegistry.resolve(modelRef),                 // models come from the registry
   authStorage, modelRegistry,
-  tools: ["read", "grep", "find", "ls", /* + our custom tool names */],
-  customTools: [/* defineTool(...) */],
-  resourceLoader: loaderWithOurHooks,                      // registers tool_call/tool_result hooks
+  resourceLoader: loader,
+  // As-built: Marathon tools are custom tools that delegate to the ToolGateway (the
+  // chokepoint). Built-in tools below are NOT gateway-governed (see As-built notes / §7).
+  tools: ["read", "grep", "find", "ls", /* + sanitized custom tool names */],
+  customTools: [/* defineTool(...) delegating to gateway.run */],
   sessionManager: SessionManager.create(perTaskDir),       // durable JSONL (see §6)
   settingsManager: SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2 } }),
 });
@@ -129,6 +153,14 @@ const loader = new DefaultResourceLoader({
   model context.
 - This directly resolves plan **risk #2** (confirming Pi exposes a per-call authorize hook).
 
+> **As-built (M6.1):** Marathon does *not* currently use the `tool_call`/`tool_result` hooks
+> above. Instead it registers each Marathon tool as a Pi **custom tool whose `execute`
+> delegates to `ToolGateway.run`** — so policy, credential injection, audit, and redaction all
+> happen inside the gateway, which becomes the single embedded chokepoint. The trade-off: only
+> Marathon-registered tools are governed; Pi's **built-in** tools bypass the gateway. Adopting
+> the `tool_call` hook (to also govern/deny built-ins) or replacing the built-ins with governed
+> equivalents is open work, and matters most once a sandbox lands (§7, roadmap M9).
+
 ### 3.3 Approval over RPC (if we ever run Pi out-of-process)
 RPC mode emits `extension_ui_request` (methods: `select`, `confirm`, `input`, `editor`) and
 takes `extension_ui_response` on stdin — usable to surface an approval prompt. In-process,
@@ -179,9 +211,11 @@ pi.registerProvider("openrouter", {
   `{ tokens:{input,output,total}, cost, contextUsage }`. The SDK exposes the same via session
   state/stats.
 - **Marathon mapping:** our "minimal Model Gateway" can largely **read cost/tokens from Pi**
-  (session stats + model cost metadata) rather than reimplementing metering — write a
-  `ModelInvocation` row from the per-turn/`agent_end` events. Budgets are enforced from these
-  actuals.
+  rather than reimplementing metering — write a `ModelInvocation` row per turn. Budgets are
+  enforced from these actuals.
+- **As-built:** the adapter reads cost/usage from the **last assistant message** of the turn
+  (`message.usage`, with USD in `usage.cost.total`), not from aggregate session stats — this is
+  what's actually populated per call in 0.80.2. Budget *enforcement* is not built yet (M8).
 
 ---
 
@@ -233,7 +267,16 @@ entries are a clean place to stash Marathon state (e.g., approval markers) in-ba
 - Auto-retry on transient errors (overloaded / rate-limit / 5xx) — matches our
   "automatic retry for transient failures."
 
-### 6.3 The durable approval wait (plan risk #1) — **strategy, needs a spike**
+### 6.3 The durable approval wait (plan risk #1) — **strategy, partially built**
+
+> **Status (as-built).** The durable approval engine exists and is tested **at the Marathon
+> orchestration layer**: `proposeToolCall`/`executeApproved` + `ApprovalService`
+> (block/approve/reject/expire, survives worker restart, idempotent — see M5). The piece below
+> that is **not yet built** is the *live Pi* half: suspending an in-flight Pi turn, persisting
+> its session, and re-entering it on approval. In M6.1 a destructive governed tool simply
+> returns "approval required" to the model; the spike to choose the re-entry mechanism (a/b
+> below) has not been run. This is the top remaining Pi-integration risk.
+
 Pi has **no native "suspend an in-flight turn for days."** But sessions are resumable, so the
 intended Marathon pattern is **block-persist-resume**, not hold-open:
 
