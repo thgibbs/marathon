@@ -1,6 +1,9 @@
 SHELL := /bin/bash
-DATABASE_URL ?= postgres://marathon:marathon@localhost:5432/marathon
-export DATABASE_URL
+# Host port for the dockerized Postgres. Override if 5432 is taken locally,
+# e.g. `make demo-m0 MARATHON_DB_PORT=55432`.
+MARATHON_DB_PORT ?= 5432
+DATABASE_URL ?= postgres://marathon:marathon@localhost:$(MARATHON_DB_PORT)/marathon
+export DATABASE_URL MARATHON_DB_PORT
 
 .PHONY: install db-up db-down migrate typecheck test demo demo-m0 down
 

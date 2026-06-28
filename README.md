@@ -25,7 +25,9 @@ pnpm test         # unit tests
 pnpm typecheck
 ```
 
-`make demo-m0` should end with `demo-m0 OK`.
+`make demo-m0` should end with `demo-m0 OK`. If host port 5432 is already in use
+(e.g. a local Postgres), pick another: `make demo-m0 MARATHON_DB_PORT=55432`.
+Stop the database with `make down`.
 
 ## Layout
 
