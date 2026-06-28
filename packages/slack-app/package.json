@@ -9,6 +9,7 @@
     "@marathon/config": "workspace:*",
     "@marathon/core": "workspace:*",
     "@marathon/db": "workspace:*",
+    "@marathon/memory": "workspace:*",
     "@marathon/model-gateway": "workspace:*",
     "@marathon/queue": "workspace:*",
     "@marathon/surface": "workspace:*",

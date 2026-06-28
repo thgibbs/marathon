@@ -1,6 +1,7 @@
 services:
   db:
-    image: postgres:16
+    # pgvector image = postgres 16 + the `vector` extension (M7 memory).
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: marathon
       POSTGRES_PASSWORD: marathon

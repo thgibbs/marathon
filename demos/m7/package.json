@@ -1,0 +1,17 @@
+{
+  "name": "@marathon/demo-m7",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx run.ts",
+    "smoke": "tsx smoke-mem0.ts"
+  },
+  "dependencies": {
+    "@marathon/config": "workspace:*",
+    "@marathon/core": "workspace:*",
+    "@marathon/db": "workspace:*",
+    "@marathon/memory": "workspace:*",
+    "@marathon/worker": "workspace:*"
+  }
+}

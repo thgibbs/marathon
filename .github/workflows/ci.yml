@@ -11,7 +11,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: marathon
           POSTGRES_PASSWORD: marathon
@@ -71,6 +71,9 @@ jobs:
 
       - name: Automated demo (M6.1 governed tools)
         run: pnpm --filter @marathon/demo-m6-1 start
+
+      - name: Automated demo (M7 memory)
+        run: pnpm --filter @marathon/demo-m7 start
 
       - name: Automated demo (M6.2 github webhook app)
         run: pnpm --filter @marathon/demo-github-app start

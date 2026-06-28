@@ -1,7 +1,9 @@
 import type { Checkpoint, StepContext, StepResult } from "@marathon/core";
 import { redactSecrets } from "@marathon/core";
 import { Database } from "@marathon/db";
+import type { MemoryStore } from "@marathon/memory";
 import type { AgentRequest, AgentRuntime } from "@marathon/agent";
+import { buildAgentPrompt } from "./prompt";
 
 export interface AgentStepOptions {
   /** Redact secrets from stored findings/trace (on by default). */
@@ -41,6 +43,8 @@ export interface AgentTaskStepOptions {
   modelRef: string;
   instructions?: string;
   redactTrace?: boolean;
+  /** When set, recall is injected into the prompt (design §7.18). */
+  memory?: MemoryStore;
 }
 
 /**
@@ -51,10 +55,14 @@ export interface AgentTaskStepOptions {
 export function makeAgentTaskStepRunner(db: Database, runtime: AgentRuntime, opts: AgentTaskStepOptions) {
   return async ({ taskId, checkpoint }: StepContext): Promise<StepResult> => {
     const task = await db.getTask(taskId);
+    // Assemble instructions (persona) + recalled memory + the ask (design §7.18).
+    const parts = task
+      ? await buildAgentPrompt({ db, memory: opts.memory }, task, { basePersona: opts.instructions })
+      : { instructions: opts.instructions ?? "You are Marathon, a concise engineering assistant.", input: "" };
     const request: AgentRequest = {
       taskId,
-      instructions: opts.instructions ?? "You are Marathon, a concise engineering assistant.",
-      input: task?.inputText ?? "",
+      instructions: parts.instructions,
+      input: parts.input,
       modelRef: opts.modelRef,
     };
     const turnIndex = checkpoint.completedSteps.length;

@@ -1,0 +1,15 @@
+{
+  "name": "@marathon/memory",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@marathon/config": "workspace:*",
+    "@marathon/core": "workspace:*",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10"
+  }
+}

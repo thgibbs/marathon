@@ -1,6 +1,7 @@
 import { EnvSecretStore, loadConfig } from "@marathon/config";
 import { PiAgentRuntime } from "@marathon/agent";
 import { Database, migrate } from "@marathon/db";
+import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
 import { Queue } from "@marathon/queue";
 import { RealSlackClient, SlackDelivery, SocketModeClient } from "@marathon/surface-slack";
@@ -33,8 +34,9 @@ export async function startSlackApp(): Promise<void> {
 
   const runtime = new PiAgentRuntime({ secrets });
   const modelRef = resolveModelRef(DEFAULT_MODEL_POLICY);
+  const memory = new PgVectorMemoryStore(cfg.databaseUrl, new OpenAIEmbedder(secrets));
   const worker = new Worker(queue, db, {
-    stepRunner: makeAgentTaskStepRunner(db, runtime, { modelRef }),
+    stepRunner: makeAgentTaskStepRunner(db, runtime, { modelRef, memory }),
     visibilityMs: 120_000,
   });
   const router = new InvocationRouter(db, new Orchestrator(db, queue));

@@ -64,6 +64,7 @@ packages/
   connector-github/ @marathon/connector-github — GitHub tools (read + write; HTTP + fixtures)
   surface/   @marathon/surface  — SurfaceAdapter seam: invocation, agent selection, rendering
   surface-slack/ @marathon/surface-slack — Slack: signature, parse, delivery, Socket Mode
+  memory/    @marathon/memory   — swappable MemoryStore (pgvector default, Mem0 adapter) + embedders
   surface-github/ @marathon/surface-github — GitHub webhooks: signature + event parsing
   slack-app/ @marathon/slack-app — live Slack app: bootstrap, dispatch, Socket Mode wiring
   github-app/ @marathon/github-app — live GitHub document app: webhook receiver + dispatch
@@ -77,6 +78,7 @@ demos/
   m6/        @marathon/demo-m6  — document-driven workflow: mention -> draft PR -> merge -> execute
   m6_1/      @marathon/demo-m6-1 — governed tools in the agent loop (allow/approve/audit)
   github-app/ @marathon/demo-github-app — webhook receiver demo + live runner (make github-app)
+  m7/        @marathon/demo-m7  — memory: scope×term recall, isolation, feedback→memory, prompt assembly
 ```
 
 Real adapters are runtime-verified locally (need keys/tokens in `.env`):

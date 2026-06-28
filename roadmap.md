@@ -449,6 +449,13 @@ Exit criteria — unit tests + automated demo:
 **Goal:** agents carry context across a conversation and over time, and learn from feedback so
 a corrected mistake isn't repeated — behind a **swappable memory store** (design §7.12).
 
+> **Status.** Core **done & CI-green:** `MemoryStore` seam, `PgVectorMemoryStore` (default) +
+> `FakeMemoryStore`, `Mem0MemoryStore` (smoke), `FakeEmbedder`/`OpenAIEmbedder`, project=repo
+> resolver, feedback→memory, and prompt assembly (§7.18) loading personas + injecting recalled
+> memory (wired into the live Slack app). DB switched to the `pgvector/pgvector:pg16` image.
+> **Remaining M7:** document **revision loop** (#3) and **watched documents** (#8). Deferred as
+> planned: LLM fact-extraction/consolidation, Zep adapter.
+
 Human prerequisites:
 - Ensure the **embeddings key** is in the secret store (OpenAI `text-embedding-3-small`;
   usually covered by the M2 provider account). pgvector runs in Compose — no human setup.

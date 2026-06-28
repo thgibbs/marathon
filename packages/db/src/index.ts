@@ -135,6 +135,15 @@ export class Database implements AuditWriter, IdempotencyStore {
     return rowToAgentVersion(rows[0]);
   }
 
+  /** Latest agent version (highest version_number) for loading instructions/persona. */
+  async getLatestAgentVersion(agentId: Id): Promise<AgentVersion | null> {
+    const { rows } = await this.pool.query(
+      `select * from agent_version where agent_id = $1 order by version_number desc limit 1`,
+      [agentId],
+    );
+    return rows[0] ? rowToAgentVersion(rows[0]) : null;
+  }
+
   async createTask(input: {
     tenantId: Id;
     agentId?: Id;

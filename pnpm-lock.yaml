@@ -240,6 +240,24 @@ importers:
         specifier: workspace:*
         version: link:../../packages/worker
 
+  demos/m7:
+    dependencies:
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@marathon/memory':
+        specifier: workspace:*
+        version: link:../../packages/memory
+      '@marathon/worker':
+        specifier: workspace:*
+        version: link:../../packages/worker
+
   demos/slack-app:
     dependencies:
       '@marathon/agent':
@@ -347,6 +365,22 @@ importers:
         specifier: workspace:*
         version: link:../worker
 
+  packages/memory:
+    dependencies:
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../config
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../core
+      pg:
+        specifier: ^8.13.0
+        version: 8.22.0
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.20.0
+
   packages/model-gateway:
     dependencies:
       '@marathon/config':
@@ -373,6 +407,9 @@ importers:
       '@marathon/db':
         specifier: workspace:*
         version: link:../db
+      '@marathon/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@marathon/model-gateway':
         specifier: workspace:*
         version: link:../model-gateway
@@ -427,6 +464,9 @@ importers:
       '@marathon/db':
         specifier: workspace:*
         version: link:../db
+      '@marathon/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@marathon/queue':
         specifier: workspace:*
         version: link:../queue
