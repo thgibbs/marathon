@@ -1822,11 +1822,14 @@ created_at
 updated_at
 ```
 
-UserIdentity fields:
+UserIdentity fields (a surface identity is unique **within a tenant** —
+`unique(tenant_id, surface_type, external_id)` — since the same external id can
+recur across tenants/workspaces):
 
 ```text
 id
 user_id
+tenant_id
 surface_type        # slack | github | web | email
 external_id         # e.g. slack_user_id, GitHub login
 created_at

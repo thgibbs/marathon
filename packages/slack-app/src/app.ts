@@ -1,0 +1,64 @@
+import { EnvSecretStore, loadConfig } from "@marathon/config";
+import { PiAgentRuntime } from "@marathon/agent";
+import { Database, migrate } from "@marathon/db";
+import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
+import { Queue } from "@marathon/queue";
+import { RealSlackClient, SlackDelivery, SocketModeClient } from "@marathon/surface-slack";
+import { InvocationRouter, makeAgentTaskStepRunner, Orchestrator, Worker } from "@marathon/worker";
+import { bootstrapSlackApp } from "./bootstrap";
+import { dispatchEnvelope, type AppDeps } from "./handlers";
+
+/** Start the live Marathon Slack app (Socket Mode). Long-running. */
+export async function startSlackApp(): Promise<void> {
+  const cfg = loadConfig();
+  const botToken = process.env.SLACK_BOT_TOKEN?.trim();
+  const appToken = process.env.SLACK_APP_TOKEN?.trim();
+  if (!botToken) throw new Error("SLACK_BOT_TOKEN (xoxb-) is required");
+  if (!appToken) throw new Error("SLACK_APP_TOKEN (xapp-) is required");
+
+  await migrate(cfg.databaseUrl);
+  const db = new Database(cfg.databaseUrl);
+  const queue = new Queue(cfg.databaseUrl);
+  const secrets = new EnvSecretStore();
+
+  // identify the workspace
+  const authRes = await fetch("https://slack.com/api/auth.test", {
+    headers: { Authorization: `Bearer ${botToken}` },
+  });
+  const auth = (await authRes.json()) as { ok: boolean; team?: string; team_id?: string; error?: string };
+  if (!auth.ok) throw new Error(`auth.test failed: ${auth.error}`);
+  const teamId = auth.team_id ?? auth.team ?? "unknown";
+
+  const boot = await bootstrapSlackApp(db, { teamId, teamName: auth.team });
+
+  const runtime = new PiAgentRuntime({ secrets });
+  const modelRef = resolveModelRef(DEFAULT_MODEL_POLICY);
+  const worker = new Worker(queue, db, {
+    stepRunner: makeAgentTaskStepRunner(db, runtime, { modelRef }),
+    visibilityMs: 120_000,
+  });
+  const router = new InvocationRouter(db, new Orchestrator(db, queue));
+  const delivery = new SlackDelivery(new RealSlackClient(botToken));
+
+  const deps: AppDeps = {
+    db,
+    router,
+    worker,
+    delivery,
+    tenantId: boot.tenantId,
+    agents: boot.agents,
+    agentIdByName: boot.agentIdByName,
+    defaultAgent: boot.defaultAgent,
+  };
+
+  const socket = new SocketModeClient(appToken, {
+    onConnected: () =>
+      console.log(`[slack-app] connected (team ${auth.team}); model=${modelRef}. Mention @marathon in a channel.`),
+    onError: (e) => console.error("[slack-app] error:", e),
+  });
+
+  await socket.start((env) =>
+    dispatchEnvelope(deps, env).catch((e) => console.error("[slack-app] dispatch error:", e)),
+  );
+  console.log("[slack-app] listening (Ctrl-C to stop)…");
+}

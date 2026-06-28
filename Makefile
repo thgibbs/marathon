@@ -5,7 +5,7 @@ MARATHON_DB_PORT ?= 5432
 DATABASE_URL ?= postgres://marathon:marathon@localhost:$(MARATHON_DB_PORT)/marathon
 export DATABASE_URL MARATHON_DB_PORT
 
-.PHONY: install db-up db-down migrate typecheck test demo demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 smoke-pi smoke-github smoke-github-write smoke-slack down
+.PHONY: install db-up db-down migrate typecheck test demo demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-slack-app slack-app smoke-pi smoke-github smoke-github-write smoke-slack down
 
 install:
 	pnpm install
@@ -42,6 +42,13 @@ demo-m4: db-up migrate
 
 demo-m5: db-up migrate
 	pnpm --filter @marathon/demo-m5 start
+
+demo-slack-app: db-up migrate
+	pnpm --filter @marathon/demo-slack-app start
+
+# Run the LIVE Slack app (long-running; needs Slack + model keys in .env).
+slack-app: db-up migrate
+	set -a; . ./.env; set +a; pnpm --filter @marathon/demo-slack-app live
 
 # Local-only smokes against real services (need keys/tokens). Not run in CI.
 smoke-pi:

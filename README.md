@@ -6,8 +6,12 @@ Open-source platform for durable AI agents that work where teams already work �
 > Status: early implementation. The design is settled; code is being built milestone by
 > milestone (see `roadmap.md`). **M0 (foundations)**, **M1 (durable task spine)**,
 > **M2 (Pi harness seam + minimal model gateway)**, **M3 (tool layer with embedded
-> permissioning + first tools)**, **M4 (Slack surface)**, and **M5 (destructive-action
-> approval + GitHub write tools)** are in place.
+> permissioning + first tools)**, **M4 (Slack surface)**, **M5 (destructive-action
+> approval + GitHub write tools)**, and **M5.5 (live Slack app — Socket Mode listener)**
+> are in place.
+>
+> **Talk to it:** `make slack-app` runs the live listener — then `@marathon …` in a
+> channel the bot is in to get a real, threaded, agent reply.
 
 ## Docs
 
@@ -47,6 +51,7 @@ packages/
   connector-github/ @marathon/connector-github — GitHub tools (read + write; HTTP + fixtures)
   surface/   @marathon/surface  — SurfaceAdapter seam: invocation, agent selection, rendering
   surface-slack/ @marathon/surface-slack — Slack: signature, parse, delivery, Socket Mode
+  slack-app/ @marathon/slack-app — live Slack app: bootstrap, dispatch, Socket Mode wiring
 demos/
   m0/        @marathon/demo-m0  — foundations demo
   m1/        @marathon/demo-m1  — durable-spine demo (crash mid-run, resume once)

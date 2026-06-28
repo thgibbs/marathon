@@ -144,6 +144,39 @@ importers:
         specifier: workspace:*
         version: link:../../packages/worker
 
+  demos/slack-app:
+    dependencies:
+      '@marathon/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@marathon/model-gateway':
+        specifier: workspace:*
+        version: link:../../packages/model-gateway
+      '@marathon/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
+      '@marathon/slack-app':
+        specifier: workspace:*
+        version: link:../../packages/slack-app
+      '@marathon/surface':
+        specifier: workspace:*
+        version: link:../../packages/surface
+      '@marathon/surface-slack':
+        specifier: workspace:*
+        version: link:../../packages/surface-slack
+      '@marathon/worker':
+        specifier: workspace:*
+        version: link:../../packages/worker
+
   packages/agent:
     dependencies:
       '@marathon/config':
@@ -196,6 +229,36 @@ importers:
       pg:
         specifier: ^8.13.0
         version: 8.22.0
+
+  packages/slack-app:
+    dependencies:
+      '@marathon/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../config
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../db
+      '@marathon/model-gateway':
+        specifier: workspace:*
+        version: link:../model-gateway
+      '@marathon/queue':
+        specifier: workspace:*
+        version: link:../queue
+      '@marathon/surface':
+        specifier: workspace:*
+        version: link:../surface
+      '@marathon/surface-slack':
+        specifier: workspace:*
+        version: link:../surface-slack
+      '@marathon/worker':
+        specifier: workspace:*
+        version: link:../worker
 
   packages/surface:
     dependencies:

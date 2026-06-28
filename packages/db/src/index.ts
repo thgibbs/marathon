@@ -83,6 +83,29 @@ export class Database implements AuditWriter, IdempotencyStore {
     return rowToAgent(rows[0]);
   }
 
+  /** Find a tenant by its Slack team id (stored in settings), creating it if new. */
+  async findOrCreateTenantBySlackTeam(teamId: string, name: string): Promise<Tenant> {
+    const existing = await this.pool.query(
+      `select * from tenant where settings->>'slack_team_id' = $1 limit 1`,
+      [teamId],
+    );
+    if (existing.rows[0]) return rowToTenant(existing.rows[0]);
+    const { rows } = await this.pool.query(
+      `insert into tenant(name, settings) values ($1, $2) returning *`,
+      [name, JSON.stringify({ slack_team_id: teamId })],
+    );
+    return rowToTenant(rows[0]);
+  }
+
+  async findOrCreateAgent(tenantId: Id, name: string): Promise<Agent> {
+    const existing = await this.pool.query(`select * from agent where tenant_id = $1 and name = $2`, [
+      tenantId,
+      name,
+    ]);
+    if (existing.rows[0]) return rowToAgent(existing.rows[0]);
+    return this.createAgent({ tenantId, name });
+  }
+
   async createAgentVersion(input: {
     agentId: Id;
     versionNumber: number;
@@ -404,8 +427,8 @@ export class Database implements AuditWriter, IdempotencyStore {
         [tenantId, displayName ?? null],
       );
       await client.query(
-        `insert into user_identity(user_id, surface_type, external_id) values ($1, $2, $3)`,
-        [u.rows[0].id, surfaceType, externalId],
+        `insert into user_identity(user_id, tenant_id, surface_type, external_id) values ($1, $2, $3, $4)`,
+        [u.rows[0].id, tenantId, surfaceType, externalId],
       );
       await client.query("commit");
       return rowToUser(u.rows[0]);
