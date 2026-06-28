@@ -369,6 +369,71 @@ Exit criteria — unit tests + automated demo:
 
 ---
 
+## 2a. Live-integration follow-ons
+
+> Surfaced during the MVP build. The components (tool layer, approvals, document
+> surface) are built and tested; the demos/CI exercise them with fakes. These two
+> milestones wire them into the **live** agent loops. Not required for the MVP; they
+> make the running system use governed tools and live document webhooks.
+
+### M6.1 — Governed tools in the live agent (Pi `tool_call` hook)
+**Goal:** the live agent (Slack or document) uses Marathon-governed tools through the
+Pi harness — not just Pi's built-in read tools — so policy, credential injection,
+audit, and **in-thread approvals** apply to a real model-driven run.
+
+Human prerequisites:
+- None new (uses existing model + GitHub credentials).
+
+Build:
+- Register a Pi **`tool_call` hook** (via `DefaultResourceLoader` extension factory)
+  that runs each call through `ToolGateway.evaluate` → block / inject credentials /
+  detect destructive; and a **`tool_result` hook** for redaction + `ToolInvocation`
+  audit (per `pi-details.md` §3, design §7.8).
+- Expose Marathon tools to Pi (GitHub read/write, `document.*`, CLI) as Pi custom
+  tools (`defineTool`) backed by our connectors.
+- On a destructive call, drive the **block-persist-resume** approval (M5) and post the
+  prompt **in-thread** on the originating surface; resume on approve.
+
+Depends on: M3, M5, M5.5 (and M6 tools).
+Exit criteria — unit tests + automated demo:
+- *Unit tests:* the `tool_call`/`tool_result` hook adapters (block, mutate/inject,
+  redact) over a fake Pi tool-call event.
+- *Automated demo* (`make demo-m6.1`): a fake Pi run that emits a non-destructive and
+  a destructive tool call → assert the first executes + is audited, the second is
+  blocked pending approval, and approve → executes once.
+- *Live smoke* (`make smoke-pi-tools`): a real model run that uses a governed GitHub
+  read tool end-to-end.
+
+### M6.2 — Live document app (GitHub webhook receiver)
+**Goal:** real inbound GitHub document events drive the pipeline live (the parallel
+of M5.5 for documents) — `@marathon` in a PR/issue comment gets a real reply, and a
+merge triggers execution.
+
+Human prerequisites:
+- A **GitHub App (or webhook) + a public endpoint/tunnel** (e.g. ngrok) and the
+  webhook secret in `.env`; subscribe to `issue_comment`,
+  `pull_request_review_comment`, `pull_request`.
+
+Build:
+- An HTTP **webhook receiver** (Fastify) that verifies the signature
+  (`verifyGithubSignature`), dedupes by delivery id, and dispatches via
+  `classifyGithubEvent` → the same router/worker/`GithubDelivery` pipeline as the
+  M6 demo.
+- A `github-app` wiring (parallel to `slack-app`): bootstrap tenant-by-repo, mention
+  → draft/answer, merge → execute.
+
+Depends on: M6 (and M6.1 for governed tools in the live run).
+Exit criteria — unit tests + automated demo:
+- *Unit tests:* webhook request handling (signature reject, delivery-id dedupe,
+  dispatch routing).
+- *Automated demo* (`make demo-github-app`): POST recorded webhook payloads (signed)
+  to the receiver with fakes → assert a reply comment and, on a merge payload,
+  execution.
+- *Live smoke*: comment `@marathon …` on a PR in the sandbox repo → a real reply
+  (requires the tunnel).
+
+---
+
 ### M7 — Memory & feedback-to-memory
 **Goal:** agents carry context across a task/thread and learn from feedback.
 
@@ -463,6 +528,8 @@ M0 ─► M1 ─► M2 ─► M3 ─► M4 ─► M5 ─► M5.5 ─► M6  (= M
                                   M9 runs continuously, gates the MVP release
 ```
 **M5.5** (live Slack app) integrates M2–M5 into a runnable end-to-end listener.
+**M6.1 / M6.2** (§2a) are post-MVP live-integration follow-ons: governed tools in the
+live agent (Pi `tool_call` hook), and a GitHub webhook receiver for live documents.
 Critical path runs through the **§6.1 approval-resume spike** (blocks M2 design) and
 the **approval durable-wait** (M5). Start the spike during M0/M1.
 
