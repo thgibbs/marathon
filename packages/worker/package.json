@@ -8,6 +8,7 @@
     "@marathon/agent": "workspace:*",
     "@marathon/core": "workspace:*",
     "@marathon/db": "workspace:*",
-    "@marathon/queue": "workspace:*"
+    "@marathon/queue": "workspace:*",
+    "@marathon/tools": "workspace:*"
   }
 }

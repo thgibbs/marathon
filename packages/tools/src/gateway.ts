@@ -1,6 +1,6 @@
 import type { SecretStore } from "@marathon/config";
 import { redactSecrets, type RiskLevel } from "@marathon/core";
-import { enforce, type PolicyDecision } from "./policy";
+import { enforce, type PolicyDecision, type PolicyResult } from "./policy";
 import type { RateLimiter } from "./rate-limit";
 import type { Tool, ToolInput, ToolPolicy, ToolResult } from "./types";
 
@@ -73,10 +73,27 @@ export interface ToolGatewayOptions {
  * record (ToolInvocation + audit). Credentials are resolved inside the tool via
  * `ctx.secrets` and never written to the recorded summaries.
  */
+export interface RunOptions {
+  /** Bypass the destructive -> needs_approval gate (an approval was granted). */
+  approved?: boolean;
+}
+
 export class ToolGateway {
   constructor(private readonly opts: ToolGatewayOptions) {}
 
-  async run(toolName: string, input: ToolInput, ctx: ToolCallContext): Promise<ToolResult> {
+  /** Evaluate the policy decision for a tool call without executing it. */
+  evaluate(toolName: string, input: ToolInput): PolicyResult {
+    const tool = this.opts.registry.get(toolName);
+    if (!tool) return { decision: "deny", reason: `unknown tool: ${toolName}` };
+    return enforce(this.opts.policy, tool, input);
+  }
+
+  async run(
+    toolName: string,
+    input: ToolInput,
+    ctx: ToolCallContext,
+    opts: RunOptions = {},
+  ): Promise<ToolResult> {
     const redact = (s: string) => redactSecrets(s, { enabled: this.opts.redactTrace !== false });
     const inputSummary = redact(safeJson(input)).slice(0, 1000);
     const tool = this.opts.registry.get(toolName);
@@ -100,7 +117,9 @@ export class ToolGateway {
     }
 
     const decision = enforce(this.opts.policy, tool, input);
-    if (decision.decision !== "allow") {
+    // A granted approval lets a destructive call through; deny is always terminal.
+    const allowed = decision.decision === "allow" || (decision.decision === "needs_approval" && opts.approved === true);
+    if (!allowed) {
       await this.record({ taskId: ctx.taskId, toolName, status: "blocked", riskLevel: tool.riskLevel, inputSummary, error: decision.reason });
       await this.audit(ctx, "policy.denied", `${decision.decision}: ${toolName} (${decision.reason ?? ""})`);
       throw new ToolBlockedError(decision.reason ?? "blocked", decision.decision);

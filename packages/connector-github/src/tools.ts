@@ -52,6 +52,67 @@ export function makeGithubReadTools(getClient: GithubClientFactory): Tool[] {
   return [readFile, listContents];
 }
 
+/** GitHub write tools. Create/comment are non-destructive (autonomous); merge is destructive (approval). */
+export function makeGithubWriteTools(getClient: GithubClientFactory): Tool[] {
+  const createIssue: Tool = {
+    name: "github.create_issue",
+    description: "Create an issue in a GitHub repository.",
+    riskLevel: "medium",
+    destructive: false,
+    validate(input) {
+      if (typeof input.repo !== "string") return "repo (owner/name) is required";
+      if (typeof input.title !== "string") return "title is required";
+      return null;
+    },
+    async execute(input, ctx) {
+      const client = await getClient(ctx);
+      const res = await client.createIssue(
+        String(input.repo),
+        String(input.title),
+        typeof input.body === "string" ? input.body : undefined,
+      );
+      return { content: `created issue #${res.number} ${res.url}`, details: res };
+    },
+  };
+
+  const commentIssue: Tool = {
+    name: "github.comment_issue",
+    description: "Comment on a GitHub issue or pull request.",
+    riskLevel: "low",
+    destructive: false,
+    validate(input) {
+      if (typeof input.repo !== "string") return "repo (owner/name) is required";
+      if (typeof input.number !== "number") return "number is required";
+      if (typeof input.body !== "string") return "body is required";
+      return null;
+    },
+    async execute(input, ctx) {
+      const client = await getClient(ctx);
+      const res = await client.commentIssue(String(input.repo), Number(input.number), String(input.body));
+      return { content: `commented (id ${res.id})`, details: res };
+    },
+  };
+
+  const mergePr: Tool = {
+    name: "github.merge_pull_request",
+    description: "Merge a pull request (destructive).",
+    riskLevel: "high",
+    destructive: true,
+    validate(input) {
+      if (typeof input.repo !== "string") return "repo (owner/name) is required";
+      if (typeof input.number !== "number") return "number (PR) is required";
+      return null;
+    },
+    async execute(input, ctx) {
+      const client = await getClient(ctx);
+      const res = await client.mergePullRequest(String(input.repo), Number(input.number));
+      return { content: res.merged ? `merged PR #${input.number}` : "merge failed", details: res };
+    },
+  };
+
+  return [createIssue, commentIssue, mergePr];
+}
+
 /** Factory that builds a real HTTP client from the secret store (provider "github"). */
 export function httpGithubClientFactory(): GithubClientFactory {
   return async (ctx: ToolContext) => {

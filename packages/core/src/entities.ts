@@ -120,3 +120,30 @@ export type NewModelInvocation = {
   status?: string | null;
   error?: string | null;
 };
+
+export interface ApprovalRequest {
+  id: Id;
+  tenantId: Id;
+  taskId: Id;
+  toolInvocationId: Id | null;
+  requestedByAgentId: Id | null;
+  requestedFromUserId: Id | null;
+  status: ApprovalStatus;
+  actionSummary: string | null;
+  riskLevel: RiskLevel | null;
+  expiresAt: Date | null;
+  createdAt: Date;
+  resolvedAt: Date | null;
+  resolvedByUserId: Id | null;
+}
+
+export type NewApprovalRequest = {
+  tenantId: Id;
+  taskId: Id;
+  toolInvocationId?: Id | null;
+  requestedByAgentId?: Id | null;
+  requestedFromUserId?: Id | null;
+  actionSummary?: string | null;
+  riskLevel?: RiskLevel | null;
+  expiresAt?: Date | null;
+};

@@ -12,6 +12,11 @@ export interface GithubEntry {
 export interface GithubClient {
   readFile(repo: string, path: string, ref?: string): Promise<GithubFile>;
   listContents(repo: string, path?: string, ref?: string): Promise<GithubEntry[]>;
+  // writes
+  createIssue(repo: string, title: string, body?: string): Promise<{ number: number; url: string }>;
+  commentIssue(repo: string, issueNumber: number, body: string): Promise<{ id: number }>;
+  closeIssue(repo: string, issueNumber: number): Promise<void>;
+  mergePullRequest(repo: string, prNumber: number): Promise<{ merged: boolean; sha?: string }>;
 }
 
 /** Real read-only GitHub client (Contents API). */
@@ -22,17 +27,21 @@ export class HttpGithubClient implements GithubClient {
   ) {}
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async api(path: string): Promise<any> {
+  private async api(path: string, init?: { method?: string; body?: unknown }): Promise<any> {
     const res = await fetch(`${this.baseUrl}${path}`, {
+      method: init?.method ?? "GET",
       headers: {
         Authorization: `Bearer ${this.token}`,
         Accept: "application/vnd.github+json",
         "User-Agent": "marathon",
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
       },
+      body: init?.body ? JSON.stringify(init.body) : undefined,
     });
     if (!res.ok) {
       throw new Error(`github ${res.status}: ${(await res.text()).slice(0, 200)}`);
     }
+    if (res.status === 204) return null;
     return res.json();
   }
 
@@ -50,6 +59,28 @@ export class HttpGithubClient implements GithubClient {
     const arr = Array.isArray(j) ? j : [j];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return arr.map((e: any) => ({ name: e.name, type: e.type, path: e.path }));
+  }
+
+  async createIssue(repo: string, title: string, body?: string): Promise<{ number: number; url: string }> {
+    const j = await this.api(`/repos/${repo}/issues`, { method: "POST", body: { title, body } });
+    return { number: j.number, url: j.html_url };
+  }
+
+  async commentIssue(repo: string, issueNumber: number, body: string): Promise<{ id: number }> {
+    const j = await this.api(`/repos/${repo}/issues/${issueNumber}/comments`, {
+      method: "POST",
+      body: { body },
+    });
+    return { id: j.id };
+  }
+
+  async closeIssue(repo: string, issueNumber: number): Promise<void> {
+    await this.api(`/repos/${repo}/issues/${issueNumber}`, { method: "PATCH", body: { state: "closed" } });
+  }
+
+  async mergePullRequest(repo: string, prNumber: number): Promise<{ merged: boolean; sha?: string }> {
+    const j = await this.api(`/repos/${repo}/pulls/${prNumber}/merge`, { method: "PUT" });
+    return { merged: Boolean(j.merged), sha: j.sha };
   }
 }
 
@@ -72,5 +103,29 @@ export class FixturesGithubClient implements GithubClient {
     const c = this.fixtures.contents?.[`${repo}:${path}`];
     if (!c) throw new Error(`fixture missing: listContents ${repo}:${path}`);
     return c;
+  }
+
+  /** Recorded write operations (for assertions in tests/demos). */
+  public readonly writes: Array<{ op: string; args: unknown }> = [];
+  private issueSeq = 1000;
+
+  async createIssue(repo: string, title: string, body?: string): Promise<{ number: number; url: string }> {
+    const number = this.issueSeq++;
+    this.writes.push({ op: "createIssue", args: { repo, title, body } });
+    return { number, url: `https://example.test/${repo}/issues/${number}` };
+  }
+
+  async commentIssue(repo: string, issueNumber: number, body: string): Promise<{ id: number }> {
+    this.writes.push({ op: "commentIssue", args: { repo, issueNumber, body } });
+    return { id: this.issueSeq++ };
+  }
+
+  async closeIssue(repo: string, issueNumber: number): Promise<void> {
+    this.writes.push({ op: "closeIssue", args: { repo, issueNumber } });
+  }
+
+  async mergePullRequest(repo: string, prNumber: number): Promise<{ merged: boolean; sha?: string }> {
+    this.writes.push({ op: "mergePullRequest", args: { repo, prNumber } });
+    return { merged: true, sha: "deadbeef" };
   }
 }

@@ -96,6 +96,27 @@ importers:
         specifier: workspace:*
         version: link:../../packages/tools
 
+  demos/m5:
+    dependencies:
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@marathon/connector-github':
+        specifier: workspace:*
+        version: link:../../packages/connector-github
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+      '@marathon/worker':
+        specifier: workspace:*
+        version: link:../../packages/worker
+
   packages/agent:
     dependencies:
       '@marathon/config':
@@ -172,6 +193,9 @@ importers:
       '@marathon/queue':
         specifier: workspace:*
         version: link:../queue
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../tools
 
 packages:
 

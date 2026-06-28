@@ -2,11 +2,15 @@ import { Pool } from "pg";
 import {
   assertTransition,
   isTerminal,
+  type ApprovalRequest,
+  type ApprovalStatus,
   type AuditWriter,
   type AuditEvent,
   type Agent,
   type AgentVersion,
   type Id,
+  type IdempotencyStore,
+  type NewApprovalRequest,
   type NewAuditEvent,
   type NewModelInvocation,
   type Role,
@@ -32,7 +36,7 @@ const STATUS_TIMESTAMP: Partial<Record<TaskStatus, string>> = {
  * foundations demo exercises plus the audit writer; more repositories land
  * with later milestones.
  */
-export class Database implements AuditWriter {
+export class Database implements AuditWriter, IdempotencyStore {
   private readonly pool: Pool;
 
   constructor(databaseUrl: string) {
@@ -303,6 +307,78 @@ export class Database implements AuditWriter {
     return rows[0].n as number;
   }
 
+  // --- approvals ---
+
+  async createApprovalRequest(input: NewApprovalRequest): Promise<ApprovalRequest> {
+    const { rows } = await this.pool.query(
+      `insert into approval_request(tenant_id, task_id, tool_invocation_id, requested_by_agent_id,
+                                    requested_from_user_id, action_summary, risk_level, expires_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8) returning *`,
+      [
+        input.tenantId,
+        input.taskId,
+        input.toolInvocationId ?? null,
+        input.requestedByAgentId ?? null,
+        input.requestedFromUserId ?? null,
+        input.actionSummary ?? null,
+        input.riskLevel ?? null,
+        input.expiresAt ?? null,
+      ],
+    );
+    return rowToApproval(rows[0]);
+  }
+
+  async getApprovalRequest(id: Id): Promise<ApprovalRequest | null> {
+    const { rows } = await this.pool.query(`select * from approval_request where id = $1`, [id]);
+    return rows[0] ? rowToApproval(rows[0]) : null;
+  }
+
+  /** Resolve a pending approval. Returns null if it was not pending (race-safe). */
+  async resolveApprovalRequest(
+    id: Id,
+    status: Exclude<ApprovalStatus, "pending">,
+    byUserId?: Id | null,
+  ): Promise<ApprovalRequest | null> {
+    const { rows } = await this.pool.query(
+      `update approval_request
+         set status = $2, resolved_at = now(), resolved_by_user_id = $3
+       where id = $1 and status = 'pending'
+       returning *`,
+      [id, status, byUserId ?? null],
+    );
+    return rows[0] ? rowToApproval(rows[0]) : null;
+  }
+
+  async listExpiredApprovals(now: Date): Promise<ApprovalRequest[]> {
+    const { rows } = await this.pool.query(
+      `select * from approval_request where status = 'pending' and expires_at is not null and expires_at <= $1`,
+      [now],
+    );
+    return rows.map(rowToApproval);
+  }
+
+  async countApprovalsByStatus(tenantId: Id, status: ApprovalStatus): Promise<number> {
+    const { rows } = await this.pool.query(
+      `select count(*)::int as n from approval_request where tenant_id = $1 and status = $2`,
+      [tenantId, status],
+    );
+    return rows[0].n as number;
+  }
+
+  // --- IdempotencyStore ---
+
+  async claim(key: string): Promise<boolean> {
+    const res = await this.pool.query(
+      `insert into idempotency_key(key) values ($1) on conflict (key) do nothing`,
+      [key],
+    );
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  async release(key: string): Promise<void> {
+    await this.pool.query(`delete from idempotency_key where key = $1`, [key]);
+  }
+
   async sumModelCostUsd(taskId: Id): Promise<number> {
     const { rows } = await this.pool.query(
       `select coalesce(sum(cost_usd), 0)::float8 as total from model_invocation where task_id = $1`,
@@ -391,6 +467,24 @@ function rowToTask(r: any): Task {
     completedAt: r.completed_at,
     failedAt: r.failed_at,
     cancelledAt: r.cancelled_at,
+  };
+}
+
+function rowToApproval(r: any): ApprovalRequest {
+  return {
+    id: r.id,
+    tenantId: r.tenant_id,
+    taskId: r.task_id,
+    toolInvocationId: r.tool_invocation_id,
+    requestedByAgentId: r.requested_by_agent_id,
+    requestedFromUserId: r.requested_from_user_id,
+    status: r.status,
+    actionSummary: r.action_summary,
+    riskLevel: r.risk_level,
+    expiresAt: r.expires_at,
+    createdAt: r.created_at,
+    resolvedAt: r.resolved_at,
+    resolvedByUserId: r.resolved_by_user_id,
   };
 }
 

@@ -5,8 +5,9 @@ Open-source platform for durable AI agents that work where teams already work �
 
 > Status: early implementation. The design is settled; code is being built milestone by
 > milestone (see `roadmap.md`). **M0 (foundations)**, **M1 (durable task spine)**,
-> **M2 (Pi harness seam + minimal model gateway)**, and **M3 (tool layer with embedded
-> permissioning + first tools)** are in place.
+> **M2 (Pi harness seam + minimal model gateway)**, **M3 (tool layer with embedded
+> permissioning + first tools)**, and **M5 (destructive-action approval + GitHub write
+> tools)** are in place. (M4, the Slack surface, is deferred.)
 
 ## Docs
 
@@ -49,10 +50,12 @@ demos/
   m1/        @marathon/demo-m1  — durable-spine demo (crash mid-run, resume once)
   m2/        @marathon/demo-m2  — agent loop via the runtime (fake model), cost, resume
   m3/        @marathon/demo-m3  — tools under policy: allow/deny, audit, no creds in trace
+  m5/        @marathon/demo-m5  — destructive-action approval (block/approve/reject/expire), idempotent
 ```
 
 Real adapters are runtime-verified locally (need keys/tokens in `.env`):
-`make smoke-pi` (live model call) and `make smoke-github` (reads a real repo). CI uses
+`make smoke-pi` (live model call), `make smoke-github` (reads a real repo), and
+`make smoke-github-write` (creates/comments/closes a real issue). CI uses
 fakes/fixtures for determinism.
 
 ## License
