@@ -47,8 +47,11 @@ export interface AuditRecord {
 }
 
 export interface ToolRecorder {
-  onInvocation(rec: ToolInvocationRecord): Promise<void> | void;
-  onAudit(event: AuditRecord): Promise<void> | void;
+  // Return value is awaited by the gateway; returning the underlying write promise
+  // (rather than discarding it) ensures records/audits are durably persisted before
+  // the tool call resolves.
+  onInvocation(rec: ToolInvocationRecord): unknown | Promise<unknown>;
+  onAudit(event: AuditRecord): unknown | Promise<unknown>;
 }
 
 export interface ToolCallContext {

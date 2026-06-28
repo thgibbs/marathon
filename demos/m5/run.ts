@@ -57,7 +57,7 @@ async function main(): Promise<void> {
           error: r.error,
         }),
       onAudit: (e: AuditRecord) =>
-        void db.write({
+        db.write({
           tenantId: e.tenantId,
           eventType: e.eventType,
           summary: e.summary,

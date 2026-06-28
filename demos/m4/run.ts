@@ -96,7 +96,7 @@ async function main(): Promise<void> {
             error: r.error,
           }),
         onAudit: (e) =>
-          void db.write({ tenantId: e.tenantId, eventType: e.eventType, summary: e.summary, targetType: e.targetType, targetId: e.targetId }),
+          db.write({ tenantId: e.tenantId, eventType: e.eventType, summary: e.summary, targetType: e.targetType, targetId: e.targetId }),
       },
     });
 
