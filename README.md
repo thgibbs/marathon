@@ -4,8 +4,9 @@ Open-source platform for durable AI agents that work where teams already work �
 **Slack** and **GitHub-backed markdown documents** — built on the **Pi** agent harness.
 
 > Status: early implementation. The design is settled; code is being built milestone by
-> milestone (see `roadmap.md`). **M0 (foundations)**, **M1 (durable task spine)**, and
-> **M2 (Pi harness seam + minimal model gateway)** are in place.
+> milestone (see `roadmap.md`). **M0 (foundations)**, **M1 (durable task spine)**,
+> **M2 (Pi harness seam + minimal model gateway)**, and **M3 (tool layer with embedded
+> permissioning + first tools)** are in place.
 
 ## Docs
 
@@ -41,14 +42,18 @@ packages/
   worker/    @marathon/worker   — orchestrator + agent worker (checkpoint/resume)
   model-gateway/ @marathon/model-gateway — model specs, routing, cost, keys
   agent/     @marathon/agent    — AgentRuntime seam: FakeAgentRuntime + real Pi adapter
+  tools/     @marathon/tools    — tool layer: policy, gateway (embedded permissioning), CLI
+  connector-github/ @marathon/connector-github — read-only GitHub tools (HTTP + fixtures)
 demos/
   m0/        @marathon/demo-m0  — foundations demo
   m1/        @marathon/demo-m1  — durable-spine demo (crash mid-run, resume once)
   m2/        @marathon/demo-m2  — agent loop via the runtime (fake model), cost, resume
+  m3/        @marathon/demo-m3  — tools under policy: allow/deny, audit, no creds in trace
 ```
 
-The real Pi adapter is runtime-verified locally with `make smoke-pi` (a live model
-call; needs a key in `.env`). CI uses the fake runtime for determinism.
+Real adapters are runtime-verified locally (need keys/tokens in `.env`):
+`make smoke-pi` (live model call) and `make smoke-github` (reads a real repo). CI uses
+fakes/fixtures for determinism.
 
 ## License
 

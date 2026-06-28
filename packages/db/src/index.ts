@@ -253,6 +253,56 @@ export class Database implements AuditWriter {
     return rows[0].n as number;
   }
 
+  async recordToolInvocation(rec: {
+    taskId: Id;
+    toolId: string;
+    status: string;
+    riskLevel?: string | null;
+    inputSummary?: string | null;
+    outputSummary?: string | null;
+    error?: string | null;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into tool_invocation(task_id, tool_id, status, risk_level, input_summary, output_summary, error)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        rec.taskId,
+        rec.toolId,
+        rec.status,
+        rec.riskLevel ?? null,
+        rec.inputSummary ?? null,
+        rec.outputSummary ?? null,
+        rec.error ?? null,
+      ],
+    );
+  }
+
+  async countToolInvocations(taskId: Id): Promise<number> {
+    const { rows } = await this.pool.query(
+      `select count(*)::int as n from tool_invocation where task_id = $1`,
+      [taskId],
+    );
+    return rows[0].n as number;
+  }
+
+  /** All recorded tool-invocation summaries for a task (for trace assertions). */
+  async toolInvocationSummaries(taskId: Id): Promise<string[]> {
+    const { rows } = await this.pool.query(
+      `select coalesce(input_summary, '') || ' ' || coalesce(output_summary, '') || ' ' || coalesce(error, '') as s
+       from tool_invocation where task_id = $1`,
+      [taskId],
+    );
+    return rows.map((r) => r.s as string);
+  }
+
+  async countAuditByType(tenantId: Id, eventType: string): Promise<number> {
+    const { rows } = await this.pool.query(
+      `select count(*)::int as n from audit_event where tenant_id = $1 and event_type = $2`,
+      [tenantId, eventType],
+    );
+    return rows[0].n as number;
+  }
+
   async sumModelCostUsd(taskId: Id): Promise<number> {
     const { rows } = await this.pool.query(
       `select coalesce(sum(cost_usd), 0)::float8 as total from model_invocation where task_id = $1`,

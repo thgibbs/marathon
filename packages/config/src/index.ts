@@ -29,6 +29,6 @@ export class EnvSecretStore implements SecretStore {
   async get(ref: string): Promise<string | undefined> {
     const name = ref.startsWith("secret/") ? ref.slice("secret/".length) : ref;
     const key = name.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
-    return this.env[key] ?? this.env[`${key}_API_KEY`];
+    return this.env[key] ?? this.env[`${key}_API_KEY`] ?? this.env[`${key}_TOKEN`];
   }
 }

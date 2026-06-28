@@ -78,6 +78,24 @@ importers:
         specifier: workspace:*
         version: link:../../packages/worker
 
+  demos/m3:
+    dependencies:
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@marathon/connector-github':
+        specifier: workspace:*
+        version: link:../../packages/connector-github
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+
   packages/agent:
     dependencies:
       '@marathon/config':
@@ -95,6 +113,15 @@ importers:
         version: 0.80.2(ws@8.21.0)(zod@4.4.3)
 
   packages/config: {}
+
+  packages/connector-github:
+    dependencies:
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../config
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../tools
 
   packages/core: {}
 
@@ -121,6 +148,15 @@ importers:
       pg:
         specifier: ^8.13.0
         version: 8.22.0
+
+  packages/tools:
+    dependencies:
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../config
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/worker:
     dependencies:
