@@ -71,3 +71,6 @@ jobs:
 
       - name: Automated demo (M6.1 governed tools)
         run: pnpm --filter @marathon/demo-m6-1 start
+
+      - name: Automated demo (M6.2 github webhook app)
+        run: pnpm --filter @marathon/demo-github-app start

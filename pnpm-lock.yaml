@@ -24,6 +24,42 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@22.20.0)
 
+  demos/github-app:
+    dependencies:
+      '@marathon/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@marathon/connector-github':
+        specifier: workspace:*
+        version: link:../../packages/connector-github
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@marathon/github-app':
+        specifier: workspace:*
+        version: link:../../packages/github-app
+      '@marathon/model-gateway':
+        specifier: workspace:*
+        version: link:../../packages/model-gateway
+      '@marathon/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
+      '@marathon/surface-github':
+        specifier: workspace:*
+        version: link:../../packages/surface-github
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+      '@marathon/worker':
+        specifier: workspace:*
+        version: link:../../packages/worker
+
   demos/m0:
     dependencies:
       '@marathon/config':
@@ -283,6 +319,33 @@ importers:
       pg:
         specifier: ^8.13.0
         version: 8.22.0
+
+  packages/github-app:
+    dependencies:
+      '@marathon/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@marathon/connector-github':
+        specifier: workspace:*
+        version: link:../connector-github
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../db
+      '@marathon/surface':
+        specifier: workspace:*
+        version: link:../surface
+      '@marathon/surface-github':
+        specifier: workspace:*
+        version: link:../surface-github
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../tools
+      '@marathon/worker':
+        specifier: workspace:*
+        version: link:../worker
 
   packages/model-gateway:
     dependencies:

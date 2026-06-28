@@ -49,12 +49,19 @@ demo-m6: db-up migrate
 demo-m6.1: db-up migrate
 	pnpm --filter @marathon/demo-m6-1 start
 
+demo-github-app: db-up migrate
+	pnpm --filter @marathon/demo-github-app start
+
 demo-slack-app: db-up migrate
 	pnpm --filter @marathon/demo-slack-app start
 
 # Run the LIVE Slack app (long-running; needs Slack + model keys in .env).
 slack-app: db-up migrate
 	set -a; . ./.env; set +a; pnpm --filter @marathon/demo-slack-app live
+
+# Run the LIVE GitHub document app (webhook receiver; needs a tunnel + keys).
+github-app: db-up migrate
+	set -a; . ./.env; set +a; pnpm --filter @marathon/demo-github-app live
 
 # Local-only smokes against real services (need keys/tokens). Not run in CI.
 smoke-pi:

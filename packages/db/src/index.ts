@@ -99,6 +99,20 @@ export class Database implements AuditWriter, IdempotencyStore {
     return rowToTenant(rows[0]);
   }
 
+  /** Find a tenant by GitHub owner (stored in settings), creating it if new. */
+  async findOrCreateTenantByGithubOwner(owner: string, name?: string): Promise<Tenant> {
+    const existing = await this.pool.query(
+      `select * from tenant where settings->>'github_owner' = $1 limit 1`,
+      [owner],
+    );
+    if (existing.rows[0]) return rowToTenant(existing.rows[0]);
+    const { rows } = await this.pool.query(
+      `insert into tenant(name, settings) values ($1, $2) returning *`,
+      [name ?? owner, JSON.stringify({ github_owner: owner })],
+    );
+    return rowToTenant(rows[0]);
+  }
+
   async findOrCreateAgent(tenantId: Id, name: string): Promise<Agent> {
     const existing = await this.pool.query(`select * from agent where tenant_id = $1 and name = $2`, [
       tenantId,

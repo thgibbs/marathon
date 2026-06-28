@@ -9,7 +9,8 @@ Open-source platform for durable AI agents that work where teams already work �
 > permissioning + first tools)**, **M4 (Slack surface)**, **M5 (destructive-action
 > approval + GitHub write tools)**, **M5.5 (live Slack app — Socket Mode listener)**, and
 > **M6 (GitHub document surface + document-driven workflow)** are in place — the full
-> MVP (M0–M6).
+> MVP (M0–M6) — plus the live-integration follow-ons **M6.1 (governed tools in the live
+> agent)** and **M6.2 (live GitHub document app — webhook receiver)**.
 >
 > **Talk to it:** `make slack-app` runs the live listener — then `@marathon …` in a
 > channel the bot is in to get a real, threaded, agent reply.
@@ -54,6 +55,7 @@ packages/
   surface-slack/ @marathon/surface-slack — Slack: signature, parse, delivery, Socket Mode
   surface-github/ @marathon/surface-github — GitHub webhooks: signature + event parsing
   slack-app/ @marathon/slack-app — live Slack app: bootstrap, dispatch, Socket Mode wiring
+  github-app/ @marathon/github-app — live GitHub document app: webhook receiver + dispatch
 demos/
   m0/        @marathon/demo-m0  — foundations demo
   m1/        @marathon/demo-m1  — durable-spine demo (crash mid-run, resume once)
@@ -62,6 +64,8 @@ demos/
   m4/        @marathon/demo-m4  — Slack mention -> task -> read tool -> threaded reply + feedback
   m5/        @marathon/demo-m5  — destructive-action approval (block/approve/reject/expire), idempotent
   m6/        @marathon/demo-m6  — document-driven workflow: mention -> draft PR -> merge -> execute
+  m6_1/      @marathon/demo-m6-1 — governed tools in the agent loop (allow/approve/audit)
+  github-app/ @marathon/demo-github-app — webhook receiver demo + live runner (make github-app)
 ```
 
 Real adapters are runtime-verified locally (need keys/tokens in `.env`):
