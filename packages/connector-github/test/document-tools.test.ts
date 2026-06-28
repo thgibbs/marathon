@@ -1,6 +1,6 @@
 import { EnvSecretStore } from "@marathon/config";
 import { describe, expect, it } from "vitest";
-import { FixturesGithubClient } from "../src/client";
+import { FixturesGithubClient, getRepoAccess } from "../src/client";
 import { makeDocumentTools } from "../src/document-tools";
 
 const ctx = { taskId: "t1", tenantId: "tn1", secrets: new EnvSecretStore({}) };
@@ -36,5 +36,46 @@ describe("document tools", () => {
       ctx,
     );
     expect(res.content).toBe("b\nc");
+  });
+
+  it("document.create renders into a template when requested", async () => {
+    const gh = new FixturesGithubClient({});
+    await tool("document.create", gh).execute(
+      { repo: "o/r", path: "docs/pm.md", content: "It broke.", template: "postmortem" },
+      ctx,
+    );
+    const put = gh.writes.find((w) => w.op === "putFile") as { args: { content: string } };
+    expect(put.args.content).toContain("## Root cause");
+    expect(put.args.content).toContain("It broke.");
+  });
+
+  it("document.reply_to_comment threads under a review comment", async () => {
+    const gh = new FixturesGithubClient({});
+    const res = await tool("document.reply_to_comment", gh).execute(
+      { repo: "o/r", number: 7, commentId: 99, body: "thanks" },
+      ctx,
+    );
+    expect(res.content).toMatch(/replied/);
+    expect(gh.writes.some((w) => w.op === "replyToReviewComment")).toBe(true);
+  });
+});
+
+describe("getRepoAccess", () => {
+  it("allows when agent can see the repo and the user has access", async () => {
+    const gh = new FixturesGithubClient({ userPermissions: { "o/r:alice": "write" } });
+    const a = await getRepoAccess(gh, "o/r", "alice");
+    expect(a).toEqual({ agentOk: true, userOk: true, userPermission: "write" });
+  });
+
+  it("denies a user without access", async () => {
+    const gh = new FixturesGithubClient({ userPermissions: { "o/r:stranger": "none" } });
+    const a = await getRepoAccess(gh, "o/r", "stranger");
+    expect(a.userOk).toBe(false);
+  });
+
+  it("denies when the agent token cannot see the repo", async () => {
+    const gh = new FixturesGithubClient({ repos: { "o/secret": { botAccess: false } } });
+    const a = await getRepoAccess(gh, "o/secret", "alice");
+    expect(a).toEqual({ agentOk: false, userOk: false, userPermission: "none" });
   });
 });

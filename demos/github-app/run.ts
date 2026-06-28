@@ -40,9 +40,11 @@ async function main(): Promise<void> {
   const queue = new Queue(url);
   try {
     const boot = await bootstrapGithubApp(db, { owner: `demo-owner-${Date.now()}` });
-    const gh = new FixturesGithubClient({});
+    // "thgibbs" defaults to write access; "stranger" is denied.
+    const gh = new FixturesGithubClient({ userPermissions: { [`${REPO}:stranger`]: "none" } });
     const deps: GithubAppDeps = {
       db,
+      client: gh,
       router: new InvocationRouter(db, new Orchestrator(db, queue)),
       gateway: new ToolGateway({
         registry: new ToolRegistry(makeDocumentTools(() => gh)),
@@ -61,12 +63,16 @@ async function main(): Promise<void> {
       defaultAgent: boot.defaultAgent,
     };
 
+    // Unique ids per run (delivery-id dedupe + router idempotency) so re-runs on a
+    // persistent dev DB don't dedupe to a prior run. CI's DB is ephemeral.
+    const u = Date.now();
+
     // 1. mention webhook -> draft a doc PR + reply
-    const mention = signed("issue_comment", "d-1", {
+    const mention = signed("issue_comment", `d-mention-${u}`, {
       action: "created",
       repository: { full_name: REPO, owner: { login: "thgibbs" } },
       issue: { number: 20 },
-      comment: { id: 7001, body: "@marathon quill draft a plan for rate limiting", user: { login: "thgibbs" } },
+      comment: { id: u, body: "@marathon quill draft a plan for rate limiting", user: { login: "thgibbs" } },
     });
     const r1 = await handleWebhookRequest(deps, SECRET, mention);
     assert(r1.status === 200, `mention webhook should 200, got ${r1.status}`);
@@ -85,7 +91,7 @@ async function main(): Promise<void> {
     console.log("[github-app demo] bad signature -> 401; duplicate delivery -> no-op");
 
     // 4. merge webhook -> execute (PR #1 from the fixtures client)
-    const merge = signed("pull_request", "d-2", {
+    const merge = signed("pull_request", `d-merge-${u}`, {
       action: "closed",
       repository: { full_name: REPO },
       pull_request: { number: 1, merged: true, merge_commit_sha: "abc123" },
@@ -98,6 +104,21 @@ async function main(): Promise<void> {
     const comments = gh.writes.filter((w) => w.op === "commentIssue").length;
     assert(comments >= 3, `expected >=3 comments (ack? draft reply, progress, result), got ${comments}`);
     console.log("[github-app demo] merged PR -> executed + commented");
+
+    // 5. mention from a user WITHOUT repo access -> denied (no PR, no task)
+    const prCountBefore = gh.writes.filter((w) => w.op === "createPullRequest").length;
+    const tasksBefore = await db.countTasks(boot.tenantId);
+    const denied = signed("issue_comment", `d-denied-${u}`, {
+      action: "created",
+      repository: { full_name: REPO, owner: { login: "thgibbs" } },
+      issue: { number: 21 },
+      comment: { id: u + 1, body: "@marathon quill draft something", user: { login: "stranger" } },
+    });
+    const r3 = await handleWebhookRequest(deps, SECRET, denied);
+    assert(r3.status === 200, "denied mention still returns 200");
+    assert(gh.writes.filter((w) => w.op === "createPullRequest").length === prCountBefore, "no PR for a user without access");
+    assert((await db.countTasks(boot.tenantId)) === tasksBefore, "no task for a user without access");
+    console.log("[github-app demo] mention from user without repo access -> denied (no PR/task)");
 
     console.log(`[github-app demo] artifacts=${await db.countDocumentArtifacts(boot.tenantId)} comments=${comments}`);
     console.log("demo-github-app OK");

@@ -53,13 +53,16 @@ async function main(): Promise<void> {
     const fakeAgent = new FakeAgentRuntime({ turns: [{ text: "# Rate limiting design\n\n## Plan\n1. token bucket per API key\n2. 429 on exceed" }] });
 
     // --- 1. inbound: @marathon mention on an issue ---
+    // Unique comment id per run so the router's idempotency key is fresh on a
+    // persistent dev DB (CI's DB is ephemeral); avoids deduping to a prior task.
+    const commentId = Date.now();
     const mentionAction = classifyGithubEvent(
       "issue_comment",
       {
         action: "created",
         repository: { full_name: REPO, owner: { login: "thgibbs" } },
         issue: { number: 12 },
-        comment: { id: 9001, body: "@marathon quill draft a plan to add rate limiting", user: { login: "thgibbs" } },
+        comment: { id: commentId, body: "@marathon quill draft a plan to add rate limiting", user: { login: "thgibbs" } },
       },
       { knownAgents: ["quill"] },
     );

@@ -1,5 +1,5 @@
 import type { AgentRuntime } from "@marathon/agent";
-import type { GithubDelivery } from "@marathon/connector-github";
+import { getRepoAccess, type GithubClient, type GithubDelivery } from "@marathon/connector-github";
 import { emptyCheckpoint, type Id } from "@marathon/core";
 import { Database } from "@marathon/db";
 import type { AgentDescriptor, NormalizedInvocation } from "@marathon/surface";
@@ -13,6 +13,8 @@ export interface GithubAppDeps {
   gateway: ToolGateway; // must include document.* tools
   delivery: GithubDelivery;
   runtime: AgentRuntime;
+  /** Used for repo-permission checks (agent + invoking user) before acting. */
+  client: GithubClient;
   tenantId: Id;
   agents: AgentDescriptor[];
   agentIdByName: Record<string, Id>;
@@ -30,6 +32,21 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
   const repo = String(invocation.sourceRef.repo);
   const number = Number(invocation.sourceRef.number);
   const modelRef = deps.modelRef ?? "openai:gpt-4o-mini";
+
+  // Repo-permission check (design §7.17): the agent AND the invoking user must be
+  // able to access the repo before we read or write anything.
+  const access = await getRepoAccess(deps.client, repo, String(invocation.userExternalId));
+  if (!access.agentOk) {
+    // The agent's own token can't see the repo — we can't even comment. Skip.
+    return;
+  }
+  if (!access.userOk) {
+    await deps.delivery.postProgress(
+      { repo, number },
+      `Sorry @${invocation.userExternalId} — I can't act here because you don't appear to have access to \`${repo}\`.`,
+    );
+    return;
+  }
 
   await deps.delivery.acknowledge({ repo, number });
 

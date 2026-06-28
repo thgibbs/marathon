@@ -1,3 +1,4 @@
+import { isDocTemplate, renderDocument } from "@marathon/surface";
 import type { Tool } from "@marathon/tools";
 import type { GithubClientFactory } from "./tools";
 
@@ -51,11 +52,16 @@ export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
       const repo = String(input.repo);
       const path = String(input.path);
       const base = typeof input.base === "string" ? input.base : "main";
+      const title = typeof input.title === "string" ? input.title : `Add ${path}`;
       const branch = `marathon/doc-${path.replace(/[^a-zA-Z0-9]+/g, "-")}-${Date.now()}`;
+      // Optionally render the body into a versioned document template (§7.17).
+      const body = isDocTemplate(input.template)
+        ? renderDocument(input.template, title, String(input.content))
+        : String(input.content);
       const { sha } = await client.getRef(repo, `heads/${base}`);
       await client.createBranch(repo, branch, sha);
-      await client.putFile(repo, path, String(input.content), branch, `docs: add ${path}`);
-      const pr = await client.createPullRequest(repo, typeof input.title === "string" ? input.title : `Add ${path}`, branch, base, "Drafted by Marathon — review and merge to execute.");
+      await client.putFile(repo, path, body, branch, `docs: add ${path}`);
+      const pr = await client.createPullRequest(repo, title, branch, base, "Drafted by Marathon — review and merge to execute.");
       return { content: `opened PR #${pr.number} ${pr.url}`, details: { number: pr.number, url: pr.url, branch, path } };
     },
   };
@@ -104,5 +110,24 @@ export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
     },
   };
 
-  return [readRegion, create, update, comment];
+  const replyToComment: Tool = {
+    name: "document.reply_to_comment",
+    description: "Reply to a pull-request review comment (threaded under it).",
+    riskLevel: "low",
+    destructive: false,
+    validate(input) {
+      if (typeof input.repo !== "string") return "repo is required";
+      if (typeof input.number !== "number") return "number (PR number) is required";
+      if (typeof input.commentId !== "number") return "commentId is required";
+      if (typeof input.body !== "string") return "body is required";
+      return null;
+    },
+    async execute(input, ctx) {
+      const client = await getClient(ctx);
+      const res = await client.replyToReviewComment(String(input.repo), Number(input.number), Number(input.commentId), String(input.body));
+      return { content: `replied (id ${res.id})`, details: res };
+    },
+  };
+
+  return [readRegion, create, update, comment, replyToComment];
 }

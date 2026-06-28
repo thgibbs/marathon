@@ -31,6 +31,31 @@ export interface GithubClient {
   createPullRequest(repo: string, title: string, head: string, base: string, body?: string): Promise<{ number: number; url: string }>;
   closePullRequest(repo: string, prNumber: number): Promise<void>;
   deleteRef(repo: string, branch: string): Promise<void>;
+  replyToReviewComment(repo: string, pullNumber: number, commentId: number, body: string): Promise<{ id: number }>;
+  // permission / identity (M6 repo-permission checks)
+  /** Repo metadata if the *agent's* token can see it; null if not accessible (404). */
+  getRepo(repo: string): Promise<{ private: boolean } | null>;
+  /** A user's permission on the repo: admin|write|read|none. */
+  getUserRepoPermission(repo: string, username: string): Promise<RepoPermission>;
+}
+
+export type RepoPermission = "admin" | "write" | "read" | "none";
+
+export interface RepoAccess {
+  agentOk: boolean;
+  userOk: boolean;
+  userPermission: RepoPermission;
+}
+
+/**
+ * Verify both the agent (its token) and the invoking user may access the repo
+ * before any document read/write (design §7.17). `userOk` requires at least read.
+ */
+export async function getRepoAccess(client: GithubClient, repo: string, username: string): Promise<RepoAccess> {
+  const repoInfo = await client.getRepo(repo);
+  const agentOk = repoInfo !== null;
+  const userPermission = agentOk ? await client.getUserRepoPermission(repo, username) : "none";
+  return { agentOk, userOk: userPermission !== "none", userPermission };
 }
 
 /** Real read-only GitHub client (Contents API). */
@@ -136,6 +161,33 @@ export class HttpGithubClient implements GithubClient {
   async deleteRef(repo: string, branch: string): Promise<void> {
     await this.api(`/repos/${repo}/git/refs/heads/${branch}`, { method: "DELETE" });
   }
+
+  async replyToReviewComment(repo: string, pullNumber: number, commentId: number, body: string): Promise<{ id: number }> {
+    const j = await this.api(`/repos/${repo}/pulls/${pullNumber}/comments/${commentId}/replies`, { method: "POST", body: { body } });
+    return { id: j.id };
+  }
+
+  async getRepo(repo: string): Promise<{ private: boolean } | null> {
+    try {
+      const j = await this.api(`/repos/${repo}`);
+      return { private: Boolean(j.private) };
+    } catch (e) {
+      // GitHub returns 404 (not 403) for repos a token cannot see.
+      if (/github 404/.test(String(e))) return null;
+      throw e;
+    }
+  }
+
+  async getUserRepoPermission(repo: string, username: string): Promise<RepoPermission> {
+    try {
+      const j = await this.api(`/repos/${repo}/collaborators/${encodeURIComponent(username)}/permission`);
+      const p = j.permission;
+      return p === "admin" || p === "write" || p === "read" ? p : "none";
+    } catch (e) {
+      if (/github 404/.test(String(e))) return "none";
+      throw e;
+    }
+  }
 }
 
 /** Deterministic client for tests/CI. */
@@ -144,6 +196,10 @@ export class FixturesGithubClient implements GithubClient {
     private readonly fixtures: {
       files?: Record<string, GithubFile>;
       contents?: Record<string, GithubEntry[]>;
+      /** repo -> access; default: agent can access. Set botAccess:false to deny the agent. */
+      repos?: Record<string, { private?: boolean; botAccess?: boolean }>;
+      /** "repo:username" -> permission; default: "write". */
+      userPermissions?: Record<string, RepoPermission>;
     },
   ) {}
 
@@ -198,7 +254,7 @@ export class FixturesGithubClient implements GithubClient {
   async putFile(
     repo: string,
     path: string,
-    _content: string,
+    content: string,
     branch: string,
     _message: string,
     sha?: string,
@@ -211,7 +267,7 @@ export class FixturesGithubClient implements GithubClient {
     }
     const contentSha = `sha-${this.issueSeq++}`;
     this.fileShas.set(key, contentSha);
-    this.writes.push({ op: "putFile", args: { repo, path, branch, sha } });
+    this.writes.push({ op: "putFile", args: { repo, path, branch, sha, content } });
     return { commitSha: `commit-${this.issueSeq}`, contentSha };
   }
 
@@ -227,5 +283,20 @@ export class FixturesGithubClient implements GithubClient {
 
   async deleteRef(repo: string, branch: string): Promise<void> {
     this.writes.push({ op: "deleteRef", args: { repo, branch } });
+  }
+
+  async replyToReviewComment(repo: string, pullNumber: number, commentId: number, body: string): Promise<{ id: number }> {
+    this.writes.push({ op: "replyToReviewComment", args: { repo, pullNumber, commentId, body } });
+    return { id: this.issueSeq++ };
+  }
+
+  async getRepo(repo: string): Promise<{ private: boolean } | null> {
+    const r = this.fixtures.repos?.[repo];
+    if (r?.botAccess === false) return null;
+    return { private: r?.private ?? false };
+  }
+
+  async getUserRepoPermission(repo: string, username: string): Promise<RepoPermission> {
+    return this.fixtures.userPermissions?.[`${repo}:${username}`] ?? "write";
   }
 }

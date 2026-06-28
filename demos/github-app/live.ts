@@ -38,6 +38,7 @@ async function main(): Promise<void> {
   const client = new HttpGithubClient(token);
   const deps: GithubAppDeps = {
     db,
+    client,
     router: new InvocationRouter(db, new Orchestrator(db, queue)),
     gateway: new ToolGateway({
       registry: new ToolRegistry(makeDocumentTools(httpGithubClientFactory())),
