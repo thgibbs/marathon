@@ -94,6 +94,11 @@ columns in core tables).
 MVP = **M0–M6** (both surfaces, durable agent tasks, GitHub tools, destructive-only
 approval, the document-driven workflow, basic feedback). M7–M9 round it out.
 
+> **Status (build progress).** ✅ **Done & CI-green:** M0, M1, M2, M3, M4, M5, **M5.5**,
+> M6, **M6.1**, **M6.2** — the MVP plus the live-integration follow-ons, each runtime-verified
+> against real OpenAI / GitHub / Slack. ⏳ **Next:** M7 (memory). See **§2b** for items the
+> build surfaced (notably: live-Pi approval suspend/resume, and governing Pi's built-in tools).
+
 **Definition of done (every milestone).** A milestone is not complete until both of
 these are green in CI:
 
@@ -519,19 +524,46 @@ Exit criteria — unit tests + automated demo:
 
 ---
 
+## 2b. Learned since build (new / re-prioritized work)
+
+Surfaced while implementing M0–M6.2. These update the plan based on what the code taught us;
+fold into M7–M9 sequencing as capacity allows.
+
+1. **Live-Pi approval suspend/resume** *(promote to its own milestone; depends on M5, M6.1).*
+   The approval engine exists at the orchestration layer, but suspending an in-flight Pi turn
+   and re-entering on approval is unbuilt. Run the §6.1 spike (re-prompt vs. fork), then wire
+   in-thread approve → resume into the live Slack/GitHub apps. **This is the headline gap.**
+2. **Govern Pi's built-in tools** *(security; pairs with M9).* `read/grep/find/ls` currently
+   bypass the `ToolGateway`. Either route built-ins through the gateway via the `tool_call`
+   hook, or replace them with governed equivalents — otherwise the chokepoint is bypassable.
+3. **Execution isolation** *(M9, now the top security gap).* No sandbox today; with #2 open,
+   enabled built-ins run unsandboxed and unaudited. Gondolin/Docker/OpenShell + credential
+   injection at execution.
+4. **Durable resume of a *real* Pi run** *(reliability).* `PiAgentRuntime` runs single-turn;
+   the per-turn checkpoint/resume path is only exercised by fake agents. Build a multi-turn
+   tool loop with per-turn checkpointing so a crashed in-flight model run resumes.
+5. **Document revision loop** *(M6 follow-on).* The agent drafts a doc PR but does not yet
+   revise it in response to review comments — add the read-comments → update-doc cycle.
+6. **Testing conventions to keep** *(process).* The **deterministic demo (fakes/fixtures, CI)
+   + live smoke (real services, local)** split worked well and caught real bugs. Rule learned
+   the hard way: **await all side effects in demos** — a fire-and-forget audit write made the
+   M3 demo flaky in CI (now fixed by awaiting recorder writes).
+
+---
+
 ## 3. Dependency / critical path
 
 ```
-M0 ─► M1 ─► M2 ─► M3 ─► M4 ─► M5 ─► M5.5 ─► M6  (= MVP)
-                   │            └► M7
+M0 ─► M1 ─► M2 ─► M3 ─► M4 ─► M5 ─► M5.5 ─► M6 ─► M6.1 ─► M6.2   ✅ all done (MVP + follow-ons)
+                   │            └► M7  ⏳ next
                    └────────────► M8 (can start after M3, matures after M5)
                                   M9 runs continuously, gates the MVP release
 ```
 **M5.5** (live Slack app) integrates M2–M5 into a runnable end-to-end listener.
-**M6.1 / M6.2** (§2a) are post-MVP live-integration follow-ons: governed tools in the
-live agent (Pi `tool_call` hook), and a GitHub webhook receiver for live documents.
-Critical path runs through the **§6.1 approval-resume spike** (blocks M2 design) and
-the **approval durable-wait** (M5). Start the spike during M0/M1.
+**M6.1 / M6.2** (§2a) are the post-MVP live-integration follow-ons (governed tools via custom-
+tool delegation; a GitHub webhook receiver). The originally-planned approval-resume spike was
+**not** on the built critical path — the approval engine lives at the orchestration layer (M5),
+and the live-Pi suspend/resume is now an explicit follow-on (**§2b #1**).
 
 ---
 
@@ -562,24 +594,33 @@ markdown (Google Docs, Notion — on request) · per-agent Slack identities · a
 
 ## 6. Key risks & open questions
 
-1. **Pi durable approval wait (highest, but de-risked).** §6.1 — Pi has no native multi-day
-   suspend; the approach is **block-persist-resume** (the `tool_call` hook blocks the
-   destructive call, Marathon persists the Pi session JSONL and tears down, then re-opens
-   the session on approval). **Spike in M0/M1** to pick the re-entry mechanism:
-   (a) re-prompt-to-continue, or (b) fork-before-the-blocked-call and re-run with policy now
-   allowing. See `pi-details.md` §6.3.
-2. **Pi tool-call interception — RESOLVED.** Pi exposes `tool_call` (block/mutate) and
-   `tool_result` (redact/log) hooks; embedded permissioning + credential injection are
-   confirmed (`pi-details.md` §3).
-3. **Pi has no built-in sandbox.** It runs with the user's full OS permissions. Marathon
-   must add OS-level isolation and route tool execution (esp. `bash`/write tools) through a
-   sandbox — Gondolin micro-VM, Docker, or OpenShell (M3, hardened in M9; `pi-details.md` §7).
+1. **Pi durable approval wait — PARTIALLY BUILT; the live-Pi half is the top open risk.**
+   The durable approval *engine* is built and tested at the Marathon **orchestration layer**
+   (block/approve/reject/expire, survives worker restart, idempotent — M5). **Not yet built:**
+   suspending an in-flight **Pi** turn and re-entering it on approval. Block-persist-resume is
+   the chosen approach, but the spike to pick the re-entry mechanism —
+   (a) re-prompt-to-continue or (b) fork-before-the-blocked-call — has **not** been run; M6.1
+   currently just returns "approval required" to the model. Promoted to a follow-on in §2b.
+   See `pi-details.md` §6.3.
+2. **Tool interception — RESOLVED, but via a different mechanism than planned.** Embedded
+   permissioning is implemented by registering Marathon tools as Pi **custom tools that
+   delegate to the `ToolGateway`** (the chokepoint: policy, credential injection, audit,
+   redaction). **Caveat:** Pi's **built-in** tools (`read/grep/find/ls`) bypass the gateway —
+   governing/replacing them is tied to the sandbox work (risk #3, M9). The `tool_call` hook
+   remains available if we later need to gate built-ins (`pi-details.md` §3 As-built).
+3. **Pi has no built-in sandbox — UNADDRESSED; now the top security gap.** It runs with the
+   user's full OS permissions, and (per risk #2) enabled built-in tools run ungoverned against
+   the worker filesystem. Marathon must add OS-level isolation and route tool execution (esp.
+   `bash`/write tools) through a sandbox — Gondolin micro-VM, Docker, or OpenShell (deferred to
+   M9; `pi-details.md` §7).
 4. **GitHub identity & mentions** — the bot's GitHub App login, comment-vs-review webhook
    coverage, and rate limits for the document surface (M6).
 5. **Default-agent selection** quality (M4) — start with simple capability/keyword routing;
    treat as iterative.
 6. **Cost/token attribution** via OpenRouter vs direct — mostly handled by reading Pi's cost
-   metadata + session stats; normalize provider differences in the minimal gateway (M2).
+   metadata; normalize provider differences in the minimal gateway (M2). *As-built:* cost is
+   read per call from the turn's assistant message (`usage.cost.total`) and captured as a
+   `ModelInvocation`; budget **enforcement** is M8.
 7. **Concurrent document edits** — base-SHA validation/rebase strategy before writes (M6).
 
 ---
