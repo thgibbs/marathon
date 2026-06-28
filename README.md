@@ -17,7 +17,8 @@ Open-source platform for durable AI agents that work where teams already work �
 
 ## Docs
 
-- [`design.md`](./design.md) — product + architecture design
+- [`design/`](./design/index.md) — product + architecture design (split into per-section
+  notes; start at [`design/index.md`](./design/index.md))
 - [`roadmap.md`](./roadmap.md) — build-ordered implementation plan (M0–M9; MVP = M0–M6)
 - [`diagram.md`](./diagram.md) / [`diagram.html`](./diagram.html) — architecture diagram
 - [`pi-details.md`](./pi-details.md) — Pi harness integration reference
