@@ -865,14 +865,29 @@ A long-running task should not be stored only in process memory.
 
 ### Agent harness (Pi)
 
-Agent steps run inside an **agent harness**. The initial harness is **Pi**. The harness owns the in-task agent loop — prompting, tool calling, step sequencing, progress emission, and per-call logging, retries, and redaction.
+Agent steps run inside an **agent harness**. The initial harness is **Pi**
+(`@earendil-works/pi-coding-agent`), embedded **in-process** in the worker via its SDK. The
+harness owns the in-task agent loop — prompting, tool calling, step sequencing, progress
+emission, and per-call logging, retries, and redaction. See `pi-details.md` for the full
+integration reference.
 
 Requirements:
 
-* Start with the **Pi harness**; keep it pluggable behind a thin interface.
-* The harness runs *inside* the durable Agent Worker. Marathon owns durability around it (queueing, leases, checkpoints, resumption, idempotency); Pi owns the agent loop.
-* Pi establishes the **tool-calling harness** — connector/tool definitions and permissioning conform to what Pi expects (see §7.7, §7.8).
-* Pi provides model-call **logging, retries, and redaction**, which keeps Marathon's Model Gateway minimal (see §9.2, §13).
+* Start with the **Pi harness** via its in-process SDK; keep it pluggable behind a thin
+  interface. (RPC mode is the out-of-process fallback; the read-only JSON event mode cannot
+  gate tools.)
+* The harness runs *inside* the durable Agent Worker. Marathon owns durability around it
+  (queueing, leases, checkpoints, resumption, idempotency); Pi owns the agent loop.
+* **Permissioning uses Pi's `tool_call` hook** (block or mutate a call) and `tool_result`
+  hook (redact/log); Marathon supplies the policy and injects credentials by mutating the
+  call input (see §7.8).
+* **The Pi session (a JSONL tree) is the durable agent checkpoint and the full trace.**
+  Persist it per task; it powers crash-resume, the inspectability dashboard, and replay
+  (see §11, §16).
+* Pi provides model-call **logging, retries, and redaction**, plus per-model **cost metadata
+  and session stats**, which keeps Marathon's Model Gateway minimal (see §9.2, §13).
+* **Pi has no built-in sandbox** — Marathon must run the harness and its tools under
+  OS-level isolation (see §12.6).
 
 ---
 
@@ -946,7 +961,7 @@ Tools run **through the Pi harness**, which exposes a single tool interface to t
 
 ## 7.8 Tool permissioning
 
-Tools are executed through the Pi harness, and **permissioning is embedded in the harness**: Pi enforces the policy on every tool call. Marathon owns *what* Pi enforces — it **defines the policy, injects credentials, orchestrates approvals (durable waits + in-place prompts), and records the audit log** — while Pi is the in-loop enforcement point, so the model can neither bypass nor rewrite it. Each tool should declare:
+Tools are executed through the Pi harness, and **permissioning is embedded in the harness**: Pi enforces the policy on every tool call. Marathon owns *what* Pi enforces — it **defines the policy, injects credentials, orchestrates approvals (durable waits + in-place prompts), and records the audit log** — while Pi is the in-loop enforcement point, so the model can neither bypass nor rewrite it. Concretely this is wired through Pi's `tool_call` hook (block/mutate each call and inject credentials) and `tool_result` hook (redact/log); see `pi-details.md` §3. Each tool should declare:
 
 * Name
 * Description
@@ -1655,7 +1670,7 @@ This is the heart of Marathon.
 
 ### Agent Worker
 
-The Agent Worker runs the **Pi harness** (§7.5): Marathon provides the durable wrapper (leasing, checkpointing, resumption) and Pi runs the agent loop inside it.
+The Agent Worker runs the **Pi harness** (§7.5), embedded in-process via its SDK: Marathon provides the durable wrapper (leasing, checkpointing, resumption) and Pi runs the agent loop inside it. The per-task **Pi session JSONL** is persisted as the durable checkpoint and trace.
 
 Responsibilities:
 
@@ -1680,7 +1695,9 @@ Responsibilities:
 
 * Abstract the initial providers (Claude, ChatGPT, OpenRouter)
 * Apply routing policies
-* Track cost per call (for budgets and reporting)
+* Track cost per call (for budgets and reporting) — **read from Pi's model cost metadata +
+  session stats** rather than re-metering
+* Inject **per-tenant API keys at runtime** (Pi `setRuntimeApiKey`), not from shared env/config
 * Pass budget enforcement through to the provider / OpenRouter where possible
 
 Logging, retries, fallbacks, redaction, and streaming come from Pi and the provider SDKs rather than being reimplemented here.
@@ -2334,6 +2351,14 @@ Requirements:
 * Hold no worker or open connection for the duration of the wait.
 * On expiry, move to a clear terminal state with explanation.
 
+**Mechanism on Pi (block-persist-resume).** Pi has no native "suspend a turn for days,"
+but its sessions are resumable. So a destructive action is handled by: the `tool_call` hook
+**blocks** the call (no execution, no process held) → Marathon persists the Pi **session
+JSONL**, sets `waiting_for_approval`, posts the in-place prompt, and tears down the worker →
+on approval, a worker **re-opens the session and re-enters** so the approved action runs. The
+re-entry mechanism (re-prompt-to-continue vs. fork-before-the-blocked-call) is a Pi
+integration detail to settle in the early spike; see `pi-details.md` §6.3.
+
 ---
 
 # 12. Security design
@@ -2456,6 +2481,24 @@ For privacy-sensitive deployments, allow prompt/response logging to be disabled 
 
 ---
 
+## 12.6 Execution isolation
+
+**Pi has no built-in sandbox** — it runs with the full permissions of its OS user, and its
+"project trust" only guards config loading, not runtime. Isolation is therefore Marathon's
+responsibility, layered on top of the in-harness policy hook (§7.8) and the agent trust
+hierarchy (§12.2):
+
+* Run the worker + Pi under **OS-level isolation** (container/VM) per deployment.
+* Route tool execution — especially the `bash`/CLI tool and write tools — through a
+  **sandbox**. Pi documents Gondolin (local micro-VM), plain Docker, and OpenShell (policy
+  sandbox with upstream credential injection).
+* Inject credentials at execution via the tool hook; never mount secrets where the agent (or
+  its `bash` tool) can read them.
+
+See `pi-details.md` §7 for options.
+
+---
+
 # 13. Model and cost design
 
 ## 13.1 Model abstraction
@@ -2490,7 +2533,7 @@ providers:
     enabled: true
 ```
 
-Much of this interface is provided by the Pi harness and the provider SDKs; Marathon's own model layer stays minimal (see §9.2).
+Much of this interface is provided by the Pi harness and the provider SDKs; Marathon's own model layer stays minimal (see §9.2). Pi exposes per-model **cost metadata** (price per 1M tokens) and session cost/token stats that Marathon reads for budgets; per-tenant keys are injected at runtime (`setRuntimeApiKey`), and OpenRouter is registered as an OpenAI-compatible provider (see `pi-details.md` §4).
 
 ---
 
@@ -2648,7 +2691,7 @@ Rules:
 Marathon supports tools from more than one source. MCP is **one** form of tool, not the only one.
 
 * **Built-in connectors** (GitHub, Slack, database, documents, …) are first-party, are *not* MCP servers, and ship with the best UX, docs, and permission models.
-* **Command-line tools** are a **primary** tool choice — agents can run approved CLIs directly (the Pi harness supplies a set of these). Many tasks are easiest to express as a command.
+* **Command-line tools** are a **primary** tool choice — agents can run approved CLIs directly (Pi's built-in `bash` tool provides this, under the §7.8 policy hook). Many tasks are easiest to express as a command.
 * **MCP servers** are how customers bring their *own* tools and connect them to Marathon, reusing the existing MCP ecosystem with low development burden.
 
 All three kinds of tool are exposed to agents through the **same tool layer in the Pi harness**, which enforces Marathon's permissioning uniformly regardless of tool source.
@@ -3098,8 +3141,9 @@ Recommended MVP stack:
 | API            | Fastify                              |
 | Web UI         | Next.js                              |
 | Worker         | TypeScript                           |
-| Agent harness  | Pi                                   |
+| Agent harness  | Pi (`@earendil-works/pi-coding-agent`, in-process SDK) |
 | Model access   | Claude, ChatGPT, OpenRouter (minimal gateway) |
+| Tool isolation | Container/VM + Gondolin or OpenShell (Pi has no sandbox) |
 | Database       | Postgres                             |
 | Queue          | Postgres + queue workers             |
 | Object storage | S3-compatible optional               |

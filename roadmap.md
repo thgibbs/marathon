@@ -58,13 +58,18 @@ interface SurfaceAdapter {
 `SourceRef` is opaque per surface (Slack: channel+thread_ts; GitHub: repo+path+line/comment id).
 The core engine imports this interface, never Slack/GitHub SDKs directly.
 
-### 1.2 Pi harness integration boundary (highest-risk contract — spike first, see §11)
-Must answer, before M2 design is final:
-- How tools are registered with Pi and how Marathon **intercepts each tool call** to
-  enforce permission + inject credentials (the embedded-permissioning hook).
-- How model providers are configured / how cost & tokens are reported back.
-- **How a run is suspended and resumed** for a durable approval wait that may last days
-  (the make-or-break question — see §11.1).
+### 1.2 Pi harness integration boundary (see `pi-details.md`)
+Marathon embeds Pi (`@earendil-works/pi-coding-agent`) **in-process** via its SDK. Most of
+this contract is now confirmed from the docs:
+- **Tool interception / permissioning — confirmed.** Pi's `tool_call` hook can block or
+  mutate each call (inject credentials), and `tool_result` can redact/log — the
+  embedded-permissioning mechanism (§1.3, M3).
+- **Models / cost — confirmed.** Providers via `getModel` / `registerProvider` (OpenRouter =
+  OpenAI-compatible); per-tenant keys via `setRuntimeApiKey`; cost/tokens read from Pi's
+  model cost metadata + session stats.
+- **Durable approval wait — the one open question.** Pi has no native multi-day suspend, so
+  we use **block-persist-resume** (block the call, persist the session JSONL, resume by
+  re-opening it). Only the re-entry mechanism is open — see risk §6.1.
 
 ### 1.3 `ToolPolicy` (what Pi enforces, supplied by Marathon)
 ```ts
@@ -169,20 +174,24 @@ Exit criteria — unit tests + automated demo:
 
 Human prerequisites:
 - Obtain **Pi harness access** — repo/package access, license, API docs, and any auth
-  token. (Blocks the §11.1 suspend/resume spike.)
+  token. (Blocks the §6.1 approval-resume spike.)
 - Create **model-provider accounts + API keys with billing and spend caps** — Anthropic
   (Claude), OpenAI (ChatGPT), OpenRouter — and load the keys into the secret store.
 - Run the demo **once with live keys** so deterministic provider fixtures can be recorded;
   CI uses the recordings thereafter.
 
 Build:
-- Integrate **Pi** as the agent loop inside the Agent Worker (per the §11.1 spike).
-- **Minimal Model Gateway:** Claude / ChatGPT / OpenRouter; routing config; per-call
-  **cost + token tracking** → `ModelInvocation`; budgets passed through to provider.
-- Full **trace logging on by default** (prompts/responses, configurable later).
-- Map Pi's step/loop boundaries onto `TaskStep` checkpoints.
+- Integrate **Pi in-process** (`@earendil-works/pi-coding-agent` SDK: `createAgentSession`)
+  as the agent loop inside the Agent Worker; subscribe to its event stream.
+- **Persist the Pi session JSONL per task** as the durable checkpoint + full trace; map
+  Pi's turn/step boundaries onto `TaskStep` checkpoints.
+- **Minimal Model Gateway:** Claude / ChatGPT / OpenRouter (OpenRouter as an
+  OpenAI-compatible provider); **inject per-tenant keys at runtime** (`setRuntimeApiKey`);
+  record `ModelInvocation` with **cost read from Pi** (model cost metadata + session stats).
+- Full **trace logging on by default** (the session JSONL; redaction via the `tool_result`
+  hook; configurable later).
 
-Depends on: M1, §11.1 spike.
+Depends on: M1, the §6.1 approval-resume spike.
 Exit criteria — unit tests + automated demo:
 - *Unit tests:* Pi-step ↔ TaskStep mapping, model-gateway routing, cost/token
   computation per provider (incl. OpenRouter normalization), trace-redaction toggle.
@@ -204,13 +213,16 @@ Human prerequisites:
   agents may run).
 
 Build:
-- **Tool layer in Pi:** per-call permission check, input-schema validation,
-  **destructive detection**, credential injection (never exposed to model), output
-  redaction, rate limits, structured result, `ToolInvocation` + audit logging.
+- **Tool layer in Pi** via the `tool_call` hook (permission check, destructive detection,
+  block, and credential injection by mutating input) and the `tool_result` hook (redaction
+  + `ToolInvocation`/audit logging). Input-schema validation + rate limits.
 - **Tool policy** model + tool grants on AgentVersion.
-- **Command-line tools** as a first-class tool type (primary), plus a **GitHub
-  read-only connector** (read file/PR/issue, search). MCP support stubbed behind the
-  same interface (full MCP later).
+- **Command-line tools** via Pi's built-in `bash` tool (primary), under the policy hook;
+  plus a **GitHub read-only connector** (read file/PR/issue, search) as custom tools. MCP
+  stubbed behind the same interface (full MCP later).
+- **Execution isolation** (Pi has no sandbox): run the worker+Pi in a container and route
+  tool execution (esp. `bash`/writes) through a sandbox — Gondolin / Docker / OpenShell.
+  (Hardened further in M9; see `design.md` §12.6.)
 - Risk levels + default policy table (`design.md` §7.8).
 
 Depends on: M2, §1.2/§1.3 contracts.
@@ -265,10 +277,12 @@ Human prerequisites:
   real-world harm.
 
 Build:
-- **Approval orchestration:** `waiting_for_approval` durable state, in-place Slack
-  prompt, resume on approve/reject/edit, expiration + re-notify, `ApprovalRequest` +
-  audit. Holds **no worker/process open** during the wait (per §11.1).
-- Wire Pi's destructive-detection → orchestrator pause/resume.
+- **Approval orchestration (block-persist-resume):** the `tool_call` hook blocks a
+  destructive call → persist the Pi session JSONL, set `waiting_for_approval`, post the
+  in-place prompt, tear down the worker (**no process held**); on approve, re-open the
+  session and re-enter (re-prompt or fork — per the §6.1 spike). Expiration + re-notify,
+  `ApprovalRequest` + audit.
+- Handle reject/edit paths; record the decision as a Pi `custom` session entry.
 - **GitHub write tools:** create issue / comment / open PR (**non-destructive → no
   approval**); one destructive example (e.g. merge / rollback) **gated**.
 - Write-action idempotency so a retry/duplicate never double-executes.
@@ -387,6 +401,8 @@ Build:
 - **Security pass on the trust boundaries** (`design.md` §12): untrusted surface/tool
   output, secrets never in prompts, policy outside the model, tenant isolation, the
   **agent trust hierarchy** (frontier model sanitizes context for smaller models).
+- **Harden execution isolation** — finalize the sandbox for tool execution (Gondolin /
+  Docker / OpenShell), since Pi provides none (`design.md` §12.6).
 - Prompt-injection tests (malicious doc body / comment / tool output).
 - Retention controls per tenant/data class; redaction rules; dead-letter UX.
 - Docker Compose quickstart, README, architecture docs, internal agent-config flow,
@@ -411,7 +427,7 @@ M0 ─► M1 ─► M2 ─► M3 ─► M4 ─► M5 ─► M6  (= MVP)
                    └────────────► M8 (can start after M3, matures after M5)
                                   M9 runs continuously, gates the MVP release
 ```
-Critical path runs through the **§11.1 Pi suspend/resume spike** (blocks M2 design) and
+Critical path runs through the **§6.1 approval-resume spike** (blocks M2 design) and
 the **approval durable-wait** (M5). Start the spike during M0/M1.
 
 ---
@@ -443,21 +459,25 @@ markdown (Google Docs, Notion — on request) · per-agent Slack identities · a
 
 ## 6. Key risks & open questions
 
-1. **Pi suspend/resume for durable approval waits (highest).** Does Pi support
-   serializable pause/resume mid-loop, or must Marathon drive Pi step-by-step and
-   re-enter per step? This shapes M2 and M5. **Spike in M0/M1.** Fallback: model the
-   agent loop as discrete orchestrator-scheduled steps so a wait is just "don't
-   schedule the next step until approved."
-2. **Pi's tool-call interception** — confirm Pi exposes a hook to authorize + inject
-   credentials per tool call (required for embedded permissioning). If not, wrap tools
-   so every call routes through a Marathon-controlled shim.
-3. **GitHub identity & mentions** — the bot's GitHub App login, comment-vs-review
-   webhook coverage, and rate limits for the document surface (M6).
-4. **Default-agent selection** quality (M4) — start with simple capability/keyword
-   routing; treat as iterative.
-5. **Cost/token attribution** when providers are reached via OpenRouter vs directly —
-   normalize in the minimal gateway (M2).
-6. **Concurrent document edits** — base-SHA validation/rebase strategy before writes (M6).
+1. **Pi durable approval wait (highest, but de-risked).** §6.1 — Pi has no native multi-day
+   suspend; the approach is **block-persist-resume** (the `tool_call` hook blocks the
+   destructive call, Marathon persists the Pi session JSONL and tears down, then re-opens
+   the session on approval). **Spike in M0/M1** to pick the re-entry mechanism:
+   (a) re-prompt-to-continue, or (b) fork-before-the-blocked-call and re-run with policy now
+   allowing. See `pi-details.md` §6.3.
+2. **Pi tool-call interception — RESOLVED.** Pi exposes `tool_call` (block/mutate) and
+   `tool_result` (redact/log) hooks; embedded permissioning + credential injection are
+   confirmed (`pi-details.md` §3).
+3. **Pi has no built-in sandbox.** It runs with the user's full OS permissions. Marathon
+   must add OS-level isolation and route tool execution (esp. `bash`/write tools) through a
+   sandbox — Gondolin micro-VM, Docker, or OpenShell (M3, hardened in M9; `pi-details.md` §7).
+4. **GitHub identity & mentions** — the bot's GitHub App login, comment-vs-review webhook
+   coverage, and rate limits for the document surface (M6).
+5. **Default-agent selection** quality (M4) — start with simple capability/keyword routing;
+   treat as iterative.
+6. **Cost/token attribution** via OpenRouter vs direct — mostly handled by reading Pi's cost
+   metadata + session stats; normalize provider differences in the minimal gateway (M2).
+7. **Concurrent document edits** — base-SHA validation/rebase strategy before writes (M6).
 
 ---
 

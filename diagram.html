@@ -190,15 +190,15 @@
       <div class="worker">
         <span class="lbl">Agent Worker — durable wrapper (leases · heartbeats · checkpoint/resume)</span>
         <div class="pi">
-          <span class="lbl">Pi harness — the agent runtime (swappable)</span>
-          <div class="loopline">agent loop · prompting · step sequencing · progress · per-call logging / retries / redaction</div>
+          <span class="lbl">Pi harness (@earendil-works/pi-coding-agent) — in-process agent runtime (swappable)</span>
+          <div class="loopline">agent loop · prompting · step sequencing · progress · per-call logging / retries / redaction<br>permissioning via <code>tool_call</code> / <code>tool_result</code> hooks · session JSONL = durable checkpoint + full trace</div>
 
           <div class="pi-exits">
             <!-- model exit -->
             <div class="exit">
               <div class="node" style="border-color:#7ea8c9">
                 <h3><span class="dot" style="background:var(--accent)"></span>Model access → Model Gateway <em style="color:var(--muted);font-style:normal">(minimal)</em></h3>
-                <p>routing + per-call <b>cost tracking</b>; budgets passed through to providers / OpenRouter. (logging/retries/redaction come from Pi)</p>
+                <p>routing + <b>cost read from Pi</b> (model cost metadata + session stats); per-tenant keys via <code>setRuntimeApiKey</code>; budgets passed through to providers / OpenRouter. (logging/retries/redaction come from Pi)</p>
               </div>
             </div>
             <!-- tool exit -->
@@ -280,6 +280,7 @@
     <span class="secure">🛡 Policy enforced outside the model — in Pi's tool layer &amp; the orchestrator</span>
     <span class="tb">⚠ Surface content, tool output &amp; model output are untrusted — data, not instructions</span>
     <span class="tb">🏢 Tenant isolation across tasks, data, secrets, registries</span>
+    <span class="tb">📦 Pi has no sandbox — Marathon isolates tool execution (container/VM + Gondolin / OpenShell)</span>
   </div>
 
   <!-- cross-cutting loops -->
@@ -330,15 +331,16 @@
   <div class="seq">
     <h4>3 · Destructive action with approval</h4>
     <div class="steps">
-      <span class="step">Pi tool layer detects destructive call</span><span class="sep">→</span>
+      <span class="step"><code>tool_call</code> hook blocks destructive call</span><span class="sep">→</span>
+      <span class="step">persist Pi session JSONL · tear down worker</span><span class="sep">→</span>
       <span class="step">Orchestrator: <code>waiting_for_approval</code> (durable, may last days)</span><span class="sep">→</span>
       <span class="step">prompt in place on surface</span><span class="sep">→</span>
       <span class="step">human approves</span><span class="sep">→</span>
-      <span class="step">Orchestrator resumes</span><span class="sep">→</span>
-      <span class="step">tool layer executes (injected creds)</span><span class="sep">→</span>
+      <span class="step">re-open Pi session · re-enter</span><span class="sep">→</span>
+      <span class="step">tool executes (injected creds)</span><span class="sep">→</span>
       <span class="step">audit + result</span>
     </div>
-    <p class="emph">Enforcement in the harness · durable human wait holds no process open · idempotency key prevents double-execute.</p>
+    <p class="emph">Block-persist-resume: enforcement in the harness · no process held during the wait · idempotency key prevents double-execute.</p>
   </div>
 
   <p class="footer">Marathon architecture · rendered from <code>diagram.md</code> · MVP surfaces: Slack + GitHub markdown (others greyed / later)</p>
