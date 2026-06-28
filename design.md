@@ -123,7 +123,7 @@ Examples:
 * Expensive reasoning model for planning
 * Embedding model for retrieval
 
-The initial providers are **Claude (Anthropic), ChatGPT (OpenAI), and OpenRouter**. Local/self-hosted models are not supported initially. Admins should be able to set budgets, provider preferences, fallback policies, and per-agent model rules.
+The initial providers are **Claude (Anthropic), ChatGPT (OpenAI), and OpenRouter**. Local/self-hosted models are not supported initially. The **current platform default is OpenAI (`gpt-4o-mini`)**; Claude and OpenRouter remain configurable per tenant/agent. Admins should be able to set budgets, provider preferences, fallback policies, and per-agent model rules.
 
 ---
 
@@ -2532,6 +2532,8 @@ providers:
     api_key_ref: secret/openrouter
     enabled: true
 ```
+
+The **current default model is `openai:gpt-4o-mini`** (`DEFAULT_MODEL_POLICY`); Claude/OpenRouter are configurable per tenant/agent.
 
 Much of this interface is provided by the Pi harness and the provider SDKs; Marathon's own model layer stays minimal (see §9.2). Pi exposes per-model **cost metadata** (price per 1M tokens) and session cost/token stats that Marathon reads for budgets; per-tenant keys are injected at runtime (`setRuntimeApiKey`), and OpenRouter is registered as an OpenAI-compatible provider (see `pi-details.md` §4).
 

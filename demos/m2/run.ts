@@ -15,7 +15,7 @@ import { loadConfig } from "@marathon/config";
 import { FakeAgentRuntime } from "@marathon/agent";
 import { surfaceEventKey } from "@marathon/core";
 import { Database, migrate } from "@marathon/db";
-import { resolveModelRef, type ModelPolicy } from "@marathon/model-gateway";
+import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
 import { Queue } from "@marathon/queue";
 import { makeAgentStepRunner, Orchestrator, parseCheckpoint, Worker } from "@marathon/worker";
 
@@ -56,8 +56,8 @@ async function main(): Promise<void> {
     });
     console.log(`[m2] submitted task ${task.id}`);
 
-    // minimal model policy + deterministic fake agent (2 turns)
-    const policy: ModelPolicy = { default: "anthropic:claude-haiku" };
+    // default model policy (OpenAI) + deterministic fake agent (2 turns)
+    const policy = DEFAULT_MODEL_POLICY;
     const runtime = new FakeAgentRuntime({
       turns: [
         { text: "working on it...", inputTokens: 120, outputTokens: 18 },

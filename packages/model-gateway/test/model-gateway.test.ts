@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   computeCostUsd,
+  DEFAULT_MODEL_POLICY,
   ModelRegistry,
   parseModelRef,
   resolveModelRef,
   type ModelSpec,
 } from "../src/index";
+
+describe("DEFAULT_MODEL_POLICY", () => {
+  it("defaults to OpenAI for now", () => {
+    expect(resolveModelRef(DEFAULT_MODEL_POLICY)).toBe("openai:gpt-4o-mini");
+    expect(parseModelRef(resolveModelRef(DEFAULT_MODEL_POLICY)).provider).toBe("openai");
+  });
+});
 
 describe("parseModelRef", () => {
   it("splits provider and model", () => {

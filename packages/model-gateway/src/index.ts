@@ -35,6 +35,16 @@ export interface ModelPolicy {
 }
 
 /**
+ * Platform default routing. OpenAI for now (credits available); Claude and
+ * OpenRouter remain configurable per tenant/agent.
+ */
+export const DEFAULT_MODEL_POLICY: ModelPolicy = {
+  default: "openai:gpt-4o-mini",
+  reasoning: "openai:gpt-4o",
+  cheap: "openai:gpt-4o-mini",
+};
+
+/**
  * Illustrative default specs keyed by real Pi model ids. Costs are a fallback —
  * at runtime Pi reports its own per-call cost (see PiAgentRuntime). Override per
  * deployment.
