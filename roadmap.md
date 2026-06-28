@@ -94,10 +94,11 @@ columns in core tables).
 MVP = **M0–M6** (both surfaces, durable agent tasks, GitHub tools, destructive-only
 approval, the document-driven workflow, basic feedback). M7–M9 round it out.
 
-> **Status (build progress).** ✅ **Done & CI-green:** M0, M1, M2, M3, M4, M5, **M5.5**,
-> M6, **M6.1**, **M6.2** — the MVP plus the live-integration follow-ons, each runtime-verified
-> against real OpenAI / GitHub / Slack. ⏳ **Next:** M7 (memory). See **§2b** for items the
-> build surfaced (notably: live-Pi approval suspend/resume, and governing Pi's built-in tools).
+> **Status (build progress).** ✅ **Done & CI-green:** M0–M6, **M5.5**, **M6.1** (governed
+> tools, now wired into the live Slack agent too), **M6.2**, **M7** (memory), **M8** (core
+> inspectability/cost/budgets) — each runtime-verified against real OpenAI / GitHub / Slack.
+> ⏳ **Remaining:** **M9** (hardening + sandbox) and **M10** (live destructive-action approval:
+> suspend/resume + in-line + Agent Hub). Governing Pi's built-in tools (§2b) feeds M9.
 
 **Definition of done (every milestone).** A milestone is not complete until both of
 these are green in CI:
@@ -577,15 +578,68 @@ Exit criteria — unit tests + automated demo:
 
 ---
 
+### M10 — Live destructive-action approval (suspend/resume) + Agent Hub
+
+**Goal:** when a live agent run hits a **destructive** action, it pauses durably, a human
+approves/rejects (in-thread or in a web hub), and the run resumes — exactly once. Folds in
+the headline gap (§2b #1) and the deferred inspectability UI (M8).
+
+**Approval philosophy (settled).** Approval is **destructive/irreversible only** (deploys,
+deletes, data changes, merge-to-protected, force-push). Additive/reversible actions —
+create a comment, open an issue, open a PR with a small edit, edit a document (undoable via
+PR) — are **not destructive and run autonomously, no approval**. This already matches the
+code: `enforce` gates on `tool.destructive`, not on a risk score.
+
+Human prerequisites:
+- For the hub: a place to **host the web app** + an **auth/SSO** provider (or use surface
+  OAuth); decide who may approve (role/owner).
+
+Build:
+- **Suspend/resume seam (the core; §2b #1).** On a destructive governed tool call, the agent
+  loop **blocks → persists the Pi session + a pending `ApprovalRequest` → tears down**; on
+  resolution a worker **re-opens the session and resumes** so the approved action runs
+  **exactly once** (reuses the M5 engine + idempotency). Run the §6.1 spike first to pick the
+  re-entry mechanism (re-prompt-to-continue vs. fork-before-the-blocked-call).
+- **`ApprovalChannel` abstraction** over the existing `ApprovalService` — `present(request)`
+  (notify + render) and resolve; surface-agnostic.
+- **In-line channel (Slack first).** Handle `interactive` (block_actions) envelopes on the
+  existing Socket Mode listener; post a Block Kit Approve/Reject prompt for the *specific
+  destructive action*, mapping the Slack user → Marathon user and enforcing that the approver
+  is authorized (`requested_from_user` / role). Include a deep link to the hub for full context.
+- **Agent Hub (web UI).** A queue of outstanding approvals across agents/surfaces with full
+  context rendered from the M8 data API (`getTaskReport`/timeline, proposed action/diff, cost,
+  risk), plus approve / reject / **edit-then-approve**; real auth + RBAC + audit
+  (`resolved_by_user_id`, who-saw-what). Also hosts the **inspectability dashboard** (M8
+  carry-over) and can show cross-surface task status.
+- Expiry/escalation already exist (M5) — surface them in both channels.
+
+Depends on: M5 (approval engine + durable waits), M6.1 (governed tools in the live run),
+M8 (data API the hub renders), M2/§6.1 (Pi session suspend/resume).
+Exit criteria — unit tests + automated demo (+ live smoke):
+- *Unit tests:* `ApprovalChannel` dispatch, Slack `block_actions` parse + approver authz,
+  pending-approvals queue query, suspend→resume resolves the same `ApprovalRequest` once.
+- *Automated demo* (`make demo-m10`): a (fake) agent run proposes a destructive tool →
+  task suspends with a pending approval → approve via the channel → run resumes and the action
+  executes **exactly once**; a second run → reject → action never runs; assert non-destructive
+  actions in the same run never prompted.
+- *Live smoke:* `@marathon …` that triggers a destructive GitHub action in Slack → Approve
+  button (or hub) → the action runs; reject → it doesn't.
+
+> **Staging.** The suspend/resume seam + Slack in-line is the smaller first half; the **hub**
+> (web app + auth) is the larger second half and may split into its own milestone — but both
+> render/resolve the *same* `ApprovalRequest`, so the seam is built once.
+
+---
+
 ## 2b. Learned since build (new / re-prioritized work)
 
 Surfaced while implementing M0–M6.2. These update the plan based on what the code taught us;
 fold into M7–M9 sequencing as capacity allows.
 
-1. **Live-Pi approval suspend/resume** *(promote to its own milestone; depends on M5, M6.1).*
-   The approval engine exists at the orchestration layer, but suspending an in-flight Pi turn
-   and re-entering on approval is unbuilt. Run the §6.1 spike (re-prompt vs. fork), then wire
-   in-thread approve → resume into the live Slack/GitHub apps. **This is the headline gap.**
+1. **Live-Pi approval suspend/resume** *(now scheduled: **M10**).* The approval engine exists
+   at the orchestration layer, but suspending an in-flight Pi turn and re-entering on approval
+   is unbuilt. Promoted to its own milestone (**M10** — suspend/resume seam + in-line + Agent
+   Hub). Run the §6.1 spike (re-prompt vs. fork) there. **This is the headline gap.**
 2. **Govern Pi's built-in tools** *(security; pairs with M9).* `read/grep/find/ls` currently
    bypass the `ToolGateway`. Either route built-ins through the gateway via the `tool_call`
    hook, or replace them with governed equivalents — otherwise the chokepoint is bypassable.
@@ -613,16 +667,16 @@ fold into M7–M9 sequencing as capacity allows.
 ## 3. Dependency / critical path
 
 ```
-M0 ─► M1 ─► M2 ─► M3 ─► M4 ─► M5 ─► M5.5 ─► M6 ─► M6.1 ─► M6.2   ✅ all done (MVP + follow-ons)
-                   │            └► M7  ⏳ next
-                   └────────────► M8 (can start after M3, matures after M5)
-                                  M9 runs continuously, gates the MVP release
+M0 ─► … ─► M5 ─► M5.5 ─► M6 ─► M6.1 ─► M6.2 ─► M7 ─► M8   ✅ done & CI-green
+                                                  ├► M9  (hardening + sandbox; gates release)
+                                                  └► M10 (live destructive-action approval:
+                                                          suspend/resume + in-line + Agent Hub)
 ```
-**M5.5** (live Slack app) integrates M2–M5 into a runnable end-to-end listener.
-**M6.1 / M6.2** (§2a) are the post-MVP live-integration follow-ons (governed tools via custom-
-tool delegation; a GitHub webhook receiver). The originally-planned approval-resume spike was
-**not** on the built critical path — the approval engine lives at the orchestration layer (M5),
-and the live-Pi suspend/resume is now an explicit follow-on (**§2b #1**).
+**M6.1** governed tools are now wired into the live Slack agent (read-only). **M10** builds the
+live-Pi **suspend/resume** seam (the §2b #1 headline gap) plus the in-line and Agent-Hub
+approval channels over the same `ApprovalRequest`; it also hosts M8's deferred inspectability
+UI. **M9** (sandbox/hardening) and **M10** can proceed in parallel; M9 gates a production
+release.
 
 ---
 

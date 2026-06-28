@@ -344,6 +344,21 @@ Default policy (approval is gated on *destructiveness*, not on read-vs-write):
 
 ## 7.9 Human approval
 
+**Approval is for destructive/irreversible actions only.** Additive, reversible actions —
+posting a comment, opening an issue, opening a pull request with a small edit, editing a
+document (undoable via a PR) — are **not** destructive and run **autonomously** (no approval).
+Approval is reserved for things like deploys, deletes, data changes, merge-to-protected, and
+force-push. This is enforced by each tool's `destructive` flag (§7.8), not by a risk score.
+
+Approvals are resolved through one of two **channels** (M10), both backed by the same durable
+`ApprovalRequest`:
+
+* **In-line** — an Approve/Reject prompt in the originating surface (e.g. Slack), for fast
+  resolution where the work was requested; carries a link to the hub for full context.
+* **Agent Hub (web UI)** — a queue of outstanding approvals with full context (the §16.3
+  task timeline, proposed diff, cost, risk) and edit-then-approve; required for the highest-
+  risk actions and for operators managing many agents.
+
 Approval requests should include:
 
 * Agent
