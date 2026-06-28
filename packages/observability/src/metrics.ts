@@ -5,7 +5,7 @@ import type { MetricsSnapshot } from "./types";
 export async function getMetrics(db: Database, tenantId: string): Promise<MetricsSnapshot> {
   const [tasksByStatus, jobsByStatus, toolRate, modelRate] = await Promise.all([
     db.countTasksByStatus(tenantId),
-    db.countJobsByStatus(),
+    db.countJobsByStatus(tenantId),
     db.invocationErrorRate(tenantId, "tool"),
     db.invocationErrorRate(tenantId, "model"),
   ]);

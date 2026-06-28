@@ -15,4 +15,9 @@ describe("evaluateBudget", () => {
     expect(evaluateBudget(10, { limitUsd: 10 }).state).toBe("exceeded");
     expect(evaluateBudget(12, { limitUsd: 10 }).state).toBe("exceeded");
   });
+  it("fails closed for a non-positive limit (no spend allowed)", () => {
+    expect(evaluateBudget(0, { limitUsd: 0 }).state).toBe("exceeded");
+    expect(evaluateBudget(0, { limitUsd: -5 }).state).toBe("exceeded");
+    expect(evaluateBudget(0.0001, { limitUsd: 0 }).state).toBe("exceeded");
+  });
 });

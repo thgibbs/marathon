@@ -639,8 +639,14 @@ export class Database implements AuditWriter, IdempotencyStore {
     return Object.fromEntries(rows.map((r: any) => [r.status, r.n]));
   }
 
-  async countJobsByStatus(): Promise<Record<string, number>> {
-    const { rows } = await this.pool.query(`select status, count(*)::int as n from job group by status`);
+  /** Job counts by status, scoped to a tenant (via the owning task). */
+  async countJobsByStatus(tenantId: Id): Promise<Record<string, number>> {
+    const { rows } = await this.pool.query(
+      `select j.status, count(*)::int as n
+       from job j join task t on t.id = j.task_id
+       where t.tenant_id = $1 group by j.status`,
+      [tenantId],
+    );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return Object.fromEntries(rows.map((r: any) => [r.status, r.n]));
   }

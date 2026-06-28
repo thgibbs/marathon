@@ -8,7 +8,7 @@
  * Requires Postgres at DATABASE_URL.
  */
 import { Database, migrate } from "@marathon/db";
-import { assertWithinBudget, BudgetExceededError, checkBudget, getCostRollup, getMetrics, getTaskReport } from "@marathon/observability";
+import { assertWithinBudget, BudgetExceededError, checkBudget, getCostRollup, getMetrics, getTaskReport, getTaskTimeline } from "@marathon/observability";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -38,8 +38,8 @@ async function main(): Promise<void> {
     await db.write({ tenantId: tenant.id, eventType: "task.completed", summary: "investigation complete", targetType: "task", targetId: task.id });
     await db.transitionTask(task.id, "completed");
 
-    // --- 1. inspectability: the task report / timeline ---
-    const report = (await getTaskReport(db, task.id))!;
+    // --- 1. inspectability: the task report / timeline (tenant-scoped) ---
+    const report = (await getTaskReport(db, tenant.id, task.id))!;
     assert(report.status === "completed", "report reflects task status");
     assert(report.modelCalls === 1 && report.toolCalls === 2, `expected 1 model + 2 tool calls, got ${report.modelCalls}/${report.toolCalls}`);
     assert(Math.abs(report.costUsd - 0.002) < 1e-6, `cost should be ~0.002, got ${report.costUsd}`);
@@ -50,6 +50,12 @@ async function main(): Promise<void> {
     const times = report.timeline.map((e) => e.at.getTime());
     assert(times.every((t, i) => i === 0 || t >= times[i - 1]!), "timeline is chronological");
     console.log(`[m8] task report: ${report.timeline.length} events, $${report.costUsd.toFixed(4)}, ${report.failures.length} failure(s)`);
+
+    // tenant isolation: another tenant cannot read this task's report/timeline
+    const other = await db.createTenant({ name: `demo-m8-other-${Date.now()}` });
+    assert((await getTaskReport(db, other.id, task.id)) === null, "cross-tenant report read must be denied");
+    assert((await getTaskTimeline(db, other.id, task.id)).length === 0, "cross-tenant timeline read must be denied");
+    console.log("[m8] cross-tenant report/timeline read -> denied");
 
     // --- 2. cost rollup + metrics ---
     const byModel = await getCostRollup(db, tenant.id, "model");

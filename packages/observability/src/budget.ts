@@ -11,7 +11,12 @@ export class BudgetExceededError extends Error {
 /** Pure evaluation of spend against a policy. */
 export function evaluateBudget(spentUsd: number, policy: BudgetPolicy): BudgetStatus {
   const limitUsd = policy.limitUsd;
-  const ratio = limitUsd > 0 ? spentUsd / limitUsd : 0;
+  // A non-positive (or non-finite) limit means "no spend allowed" — fail CLOSED,
+  // not open. Returning "ok" here would let a zero budget permit unlimited spend.
+  if (!(limitUsd > 0)) {
+    return { spentUsd, limitUsd, ratio: Infinity, state: "exceeded" };
+  }
+  const ratio = spentUsd / limitUsd;
   const warnRatio = policy.warnRatio ?? 0.8;
   const state = ratio >= 1 ? "exceeded" : ratio >= warnRatio ? "warn" : "ok";
   return { spentUsd, limitUsd, ratio, state };

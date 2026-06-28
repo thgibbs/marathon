@@ -9,7 +9,10 @@ function at(v: unknown): Date {
  * Assemble a per-task timeline (design §11, §16.3) by merging task steps, model
  * calls, tool calls, approvals, and task-scoped audit events in time order.
  */
-export async function getTaskTimeline(db: Database, taskId: string): Promise<TimelineEvent[]> {
+export async function getTaskTimeline(db: Database, tenantId: string, taskId: string): Promise<TimelineEvent[]> {
+  // Tenant isolation: never assemble a timeline for a task in another tenant.
+  const task = await db.getTask(taskId);
+  if (!task || task.tenantId !== tenantId) return [];
   const [steps, models, tools, approvals, audits] = await Promise.all([
     db.getTaskSteps(taskId),
     db.getModelInvocations(taskId),
@@ -66,10 +69,10 @@ export async function getTaskTimeline(db: Database, taskId: string): Promise<Tim
 const FAILED = new Set(["error", "failed", "rejected", "expired", "dead"]);
 
 /** A complete, explainable report for one task (the inspectability API). */
-export async function getTaskReport(db: Database, taskId: string): Promise<TaskReport | null> {
+export async function getTaskReport(db: Database, tenantId: string, taskId: string): Promise<TaskReport | null> {
   const task = await db.getTask(taskId);
-  if (!task) return null;
-  const timeline = await getTaskTimeline(db, taskId);
+  if (!task || task.tenantId !== tenantId) return null; // tenant isolation
+  const timeline = await getTaskTimeline(db, tenantId, taskId);
   const models = timeline.filter((e) => e.type === "model_call");
   const promptVersions = [
     ...new Set(models.map((e) => e.detail?.promptVersion).filter((v): v is string => typeof v === "string")),
