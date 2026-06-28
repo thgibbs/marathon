@@ -47,7 +47,8 @@ demos/
   m2/        @marathon/demo-m2  — agent loop via the runtime (fake model), cost, resume
 ```
 
-The real Pi adapter is exercised locally (needs a model key) with `make smoke-pi`.
+The real Pi adapter is runtime-verified locally with `make smoke-pi` (a live model
+call; needs a key in `.env`). CI uses the fake runtime for determinism.
 
 ## License
 

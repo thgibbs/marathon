@@ -12,7 +12,8 @@ import { PiAgentRuntime } from "@marathon/agent";
 import { emptyCheckpoint } from "@marathon/core";
 
 async function main(): Promise<void> {
-  const modelRef = process.env.SMOKE_MODEL ?? "anthropic:claude-haiku";
+  // Use a real Pi model id. Override with SMOKE_MODEL=provider:model.
+  const modelRef = process.env.SMOKE_MODEL ?? "openai:gpt-4o-mini";
   const runtime = new PiAgentRuntime({ secrets: new EnvSecretStore() });
 
   console.log(`[smoke-pi] calling ${modelRef} ...`);

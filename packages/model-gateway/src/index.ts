@@ -34,10 +34,14 @@ export interface ModelPolicy {
   [role: string]: string;
 }
 
-/** Illustrative default specs. Costs are configurable/overridable per deployment. */
+/**
+ * Illustrative default specs keyed by real Pi model ids. Costs are a fallback —
+ * at runtime Pi reports its own per-call cost (see PiAgentRuntime). Override per
+ * deployment.
+ */
 export const BUILTIN_MODELS: ModelSpec[] = [
-  { provider: "anthropic", model: "claude-sonnet", cost: { input: 3, output: 15 }, contextWindow: 200_000 },
-  { provider: "anthropic", model: "claude-haiku", cost: { input: 0.8, output: 4 }, contextWindow: 200_000 },
+  { provider: "anthropic", model: "claude-haiku-4-5", cost: { input: 0.8, output: 4 }, contextWindow: 200_000 },
+  { provider: "anthropic", model: "claude-3-7-sonnet", cost: { input: 3, output: 15 }, contextWindow: 200_000 },
   { provider: "openai", model: "gpt-4o", cost: { input: 2.5, output: 10 }, contextWindow: 128_000 },
   { provider: "openai", model: "gpt-4o-mini", cost: { input: 0.15, output: 0.6 }, contextWindow: 128_000 },
 ];

@@ -22,9 +22,9 @@ describe("parseModelRef", () => {
 });
 
 describe("resolveModelRef", () => {
-  const policy = { default: "openai:gpt-4o-mini", reasoning: "anthropic:claude-sonnet" };
+  const policy = { default: "openai:gpt-4o-mini", reasoning: "anthropic:claude-3-7-sonnet" };
   it("resolves a known role", () => {
-    expect(resolveModelRef(policy, "reasoning")).toBe("anthropic:claude-sonnet");
+    expect(resolveModelRef(policy, "reasoning")).toBe("anthropic:claude-3-7-sonnet");
   });
   it("falls back to default for unknown roles", () => {
     expect(resolveModelRef(policy, "missing")).toBe("openai:gpt-4o-mini");
@@ -53,7 +53,8 @@ describe("computeCostUsd", () => {
 describe("ModelRegistry", () => {
   it("looks up builtin specs and throws on unknown", () => {
     const reg = new ModelRegistry();
-    expect(reg.require("anthropic:claude-sonnet").cost.input).toBe(3);
+    expect(reg.require("anthropic:claude-3-7-sonnet").cost.input).toBe(3);
+    expect(reg.require("openai:gpt-4o-mini").cost.output).toBe(0.6);
     expect(() => reg.require("nope:nope")).toThrow();
   });
   it("accepts custom specs", () => {
