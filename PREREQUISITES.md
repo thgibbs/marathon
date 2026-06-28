@@ -69,6 +69,9 @@ the build can't do for itself). Consolidated from the per-milestone "Human prere
 
 - [ ] **CI** — enable GitHub Actions on the repo; grant it any needed secrets (the token has
       `workflow` scope already).
+- [ ] **Secret-leak prevention** — run `make hooks` (enables the gitleaks pre-commit scan;
+      `brew install gitleaks`) and enable GitHub **secret scanning + push protection** in repo
+      settings as the non-bypassable server-side backstop.
 - [ ] **Secret-store master key** — provision the key Marathon uses to encrypt secrets at rest
       (generated when we scaffold M0; you hold/rotate it).
 - [ ] **Tool-execution sandbox** — decide the isolation route (Pi has **no** sandbox): Gondolin

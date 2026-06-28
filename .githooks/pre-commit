@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Marathon pre-commit hook: scan staged changes for secrets with gitleaks.
+# Enabled via `git config core.hooksPath .githooks` (run `make hooks`).
+set -euo pipefail
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "⚠️  gitleaks not installed — skipping local secret scan."
+  echo "    Install it so this hook can protect you:"
+  echo "      brew install gitleaks    # macOS"
+  echo "      # or see https://github.com/gitleaks/gitleaks#installing"
+  echo "    (GitHub push protection is the server-side backstop; enable it too.)"
+  exit 0
+fi
+
+echo "🔒 gitleaks: scanning staged changes for secrets…"
+if ! gitleaks protect --staged --redact --config .gitleaks.toml; then
+  echo
+  echo "❌ gitleaks found a potential secret in your staged changes (above)."
+  echo "   Remove it (use the secret store / .env, never commit real keys)."
+  echo "   If it is a false positive, allowlist it in .gitleaks.toml."
+  echo "   To bypass intentionally (discouraged): git commit --no-verify"
+  exit 1
+fi
+echo "✅ gitleaks: no secrets detected."

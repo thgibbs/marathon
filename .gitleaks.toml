@@ -1,0 +1,30 @@
+# Marathon gitleaks config — secret scanning for the pre-commit hook (and CI).
+# Extends gitleaks' default ruleset and allowlists our INTENTIONAL test fixtures
+# (fake tokens used to prove redaction works) and the placeholder env file.
+
+title = "Marathon gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known non-secret placeholders and test fixtures"
+
+# Files that only ever contain placeholders / deliberately-fake secrets.
+paths = [
+  '''\.env\.example$''',
+  '''packages/core/test/redact\.test\.ts$''',
+]
+
+# Deliberately-fake tokens used in demos/tests (sentinels + redaction fixtures).
+regexes = [
+  '''ghp_SENTINEL0+''',
+  '''ghp_abcdefghijklmnopqrstuvwxyz123456''',
+  '''xoxb-1234567890-abcdEFGH''',
+  '''sk-abcdef0123456789ABCDEF''',
+]
+
+# The documented local-dev Postgres DSN (not a real secret).
+stopwords = [
+  "marathon:marathon@localhost",
+]

@@ -5,10 +5,20 @@ MARATHON_DB_PORT ?= 5432
 DATABASE_URL ?= postgres://marathon:marathon@localhost:$(MARATHON_DB_PORT)/marathon
 export DATABASE_URL MARATHON_DB_PORT
 
-.PHONY: install db-up db-down migrate typecheck test demo demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-github-app demo-slack-app slack-app github-app smoke-pi smoke-github smoke-github-write smoke-github-doc smoke-pi-tools smoke-slack down
+.PHONY: install hooks secret-scan db-up db-down migrate typecheck test demo demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-github-app demo-slack-app slack-app github-app smoke-pi smoke-github smoke-github-write smoke-github-doc smoke-pi-tools smoke-slack down
 
 install:
 	pnpm install
+
+# Enable the version-controlled git hooks (gitleaks secret scan on commit).
+hooks:
+	git config core.hooksPath .githooks
+	@command -v gitleaks >/dev/null 2>&1 || echo "note: install gitleaks for the hook to run — 'brew install gitleaks'"
+	@echo "git hooks enabled (core.hooksPath=.githooks)"
+
+# Scan the whole repo + history for secrets (what CI/the hook use).
+secret-scan:
+	gitleaks detect --redact --config .gitleaks.toml
 
 db-up:
 	docker compose up -d --wait db

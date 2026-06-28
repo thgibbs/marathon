@@ -29,6 +29,7 @@ Requires Node ≥ 22, pnpm, and Docker.
 
 ```bash
 pnpm install
+make hooks        # enable the gitleaks pre-commit secret scan (do this once)
 make demo         # boots Postgres, migrates, runs all milestone demos (m0, m1)
 pnpm test         # unit tests
 pnpm typecheck
@@ -37,6 +38,15 @@ pnpm typecheck
 Each demo ends with `demo-mN OK`. Run one with `make demo-m0` / `make demo-m1`. If host
 port 5432 is already in use (e.g. a local Postgres), pick another:
 `make demo MARATHON_DB_PORT=55432`. Stop the database with `make down`.
+
+### Secret scanning (pre-commit)
+
+Secrets live only in a git-ignored `.env` (see `.env.example`), never in code. To prevent
+accidental commits, `make hooks` enables a version-controlled **gitleaks** pre-commit hook
+(`.githooks/pre-commit`, config in `.gitleaks.toml`) that scans staged changes and blocks the
+commit if it finds a secret. Install gitleaks once (`brew install gitleaks`). Scan the whole
+repo + history anytime with `make secret-scan`. Pair with GitHub **push protection** as the
+server-side backstop.
 
 ## Layout
 
