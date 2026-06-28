@@ -7,8 +7,9 @@ Open-source platform for durable AI agents that work where teams already work �
 > milestone (see `roadmap.md`). **M0 (foundations)**, **M1 (durable task spine)**,
 > **M2 (Pi harness seam + minimal model gateway)**, **M3 (tool layer with embedded
 > permissioning + first tools)**, **M4 (Slack surface)**, **M5 (destructive-action
-> approval + GitHub write tools)**, and **M5.5 (live Slack app — Socket Mode listener)**
-> are in place.
+> approval + GitHub write tools)**, **M5.5 (live Slack app — Socket Mode listener)**, and
+> **M6 (GitHub document surface + document-driven workflow)** are in place — the full
+> MVP (M0–M6).
 >
 > **Talk to it:** `make slack-app` runs the live listener — then `@marathon …` in a
 > channel the bot is in to get a real, threaded, agent reply.
@@ -51,6 +52,7 @@ packages/
   connector-github/ @marathon/connector-github — GitHub tools (read + write; HTTP + fixtures)
   surface/   @marathon/surface  — SurfaceAdapter seam: invocation, agent selection, rendering
   surface-slack/ @marathon/surface-slack — Slack: signature, parse, delivery, Socket Mode
+  surface-github/ @marathon/surface-github — GitHub webhooks: signature + event parsing
   slack-app/ @marathon/slack-app — live Slack app: bootstrap, dispatch, Socket Mode wiring
 demos/
   m0/        @marathon/demo-m0  — foundations demo
@@ -59,6 +61,7 @@ demos/
   m3/        @marathon/demo-m3  — tools under policy: allow/deny, audit, no creds in trace
   m4/        @marathon/demo-m4  — Slack mention -> task -> read tool -> threaded reply + feedback
   m5/        @marathon/demo-m5  — destructive-action approval (block/approve/reject/expire), idempotent
+  m6/        @marathon/demo-m6  — document-driven workflow: mention -> draft PR -> merge -> execute
 ```
 
 Real adapters are runtime-verified locally (need keys/tokens in `.env`):

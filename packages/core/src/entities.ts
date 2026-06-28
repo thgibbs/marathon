@@ -147,3 +147,30 @@ export type NewApprovalRequest = {
   riskLevel?: RiskLevel | null;
   expiresAt?: Date | null;
 };
+
+export type DocumentRole = "produced" | "watched";
+
+export interface DocumentArtifact {
+  id: Id;
+  tenantId: Id;
+  surfaceType: string;
+  location: Record<string, unknown>;
+  title: string | null;
+  role: DocumentRole | null;
+  owningTaskId: Id | null;
+  owningAgentId: Id | null;
+  lastRevisionSeen: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type NewDocumentArtifact = {
+  tenantId: Id;
+  surfaceType?: string;
+  location: Record<string, unknown>;
+  title?: string | null;
+  role?: DocumentRole | null;
+  owningTaskId?: Id | null;
+  owningAgentId?: Id | null;
+  lastRevisionSeen?: string | null;
+};

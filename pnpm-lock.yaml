@@ -144,6 +144,36 @@ importers:
         specifier: workspace:*
         version: link:../../packages/worker
 
+  demos/m6:
+    dependencies:
+      '@marathon/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@marathon/connector-github':
+        specifier: workspace:*
+        version: link:../../packages/connector-github
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@marathon/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
+      '@marathon/surface-github':
+        specifier: workspace:*
+        version: link:../../packages/surface-github
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+      '@marathon/worker':
+        specifier: workspace:*
+        version: link:../../packages/worker
+
   demos/slack-app:
     dependencies:
       '@marathon/agent':
@@ -200,6 +230,9 @@ importers:
       '@marathon/config':
         specifier: workspace:*
         version: link:../config
+      '@marathon/surface':
+        specifier: workspace:*
+        version: link:../surface
       '@marathon/tools':
         specifier: workspace:*
         version: link:../tools
@@ -265,6 +298,12 @@ importers:
       '@marathon/core':
         specifier: workspace:*
         version: link:../core
+
+  packages/surface-github:
+    dependencies:
+      '@marathon/surface':
+        specifier: workspace:*
+        version: link:../surface
 
   packages/surface-slack:
     dependencies:

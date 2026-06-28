@@ -65,3 +65,6 @@ jobs:
 
       - name: Automated demo (Slack app / M5.5)
         run: pnpm --filter @marathon/demo-slack-app start
+
+      - name: Automated demo (M6)
+        run: pnpm --filter @marathon/demo-m6 start

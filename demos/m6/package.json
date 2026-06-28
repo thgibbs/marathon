@@ -1,0 +1,21 @@
+{
+  "name": "@marathon/demo-m6",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx run.ts",
+    "smoke": "tsx smoke-github-doc.ts"
+  },
+  "dependencies": {
+    "@marathon/agent": "workspace:*",
+    "@marathon/config": "workspace:*",
+    "@marathon/connector-github": "workspace:*",
+    "@marathon/core": "workspace:*",
+    "@marathon/db": "workspace:*",
+    "@marathon/queue": "workspace:*",
+    "@marathon/surface-github": "workspace:*",
+    "@marathon/tools": "workspace:*",
+    "@marathon/worker": "workspace:*"
+  }
+}

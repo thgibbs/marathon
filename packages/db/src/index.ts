@@ -8,7 +8,9 @@ import {
   type AuditEvent,
   type Agent,
   type AgentVersion,
+  type DocumentArtifact,
   type Id,
+  type NewDocumentArtifact,
   type IdempotencyStore,
   type NewApprovalRequest,
   type NewAuditEvent,
@@ -478,6 +480,46 @@ export class Database implements AuditWriter, IdempotencyStore {
     return rows[0].n as number;
   }
 
+  // --- document artifacts (M6) ---
+
+  async recordDocumentArtifact(input: NewDocumentArtifact): Promise<DocumentArtifact> {
+    const { rows } = await this.pool.query(
+      `insert into document_artifact(tenant_id, surface_type, location, title, role,
+                                     owning_task_id, owning_agent_id, last_revision_seen)
+       values ($1, $2, $3, $4, $5, $6, $7, $8) returning *`,
+      [
+        input.tenantId,
+        input.surfaceType ?? "github",
+        JSON.stringify(input.location),
+        input.title ?? null,
+        input.role ?? null,
+        input.owningTaskId ?? null,
+        input.owningAgentId ?? null,
+        input.lastRevisionSeen ?? null,
+      ],
+    );
+    return rowToDocumentArtifact(rows[0]);
+  }
+
+  /** Find a produced document by its repo + PR number (for merge handling). */
+  async findDocumentArtifactByPr(tenantId: Id, repo: string, prNumber: number): Promise<DocumentArtifact | null> {
+    const { rows } = await this.pool.query(
+      `select * from document_artifact
+       where tenant_id = $1 and location->>'repo' = $2 and (location->>'prNumber')::int = $3
+       order by created_at desc limit 1`,
+      [tenantId, repo, prNumber],
+    );
+    return rows[0] ? rowToDocumentArtifact(rows[0]) : null;
+  }
+
+  async countDocumentArtifacts(tenantId: Id): Promise<number> {
+    const { rows } = await this.pool.query(
+      `select count(*)::int as n from document_artifact where tenant_id = $1`,
+      [tenantId],
+    );
+    return rows[0].n as number;
+  }
+
   async sumModelCostUsd(taskId: Id): Promise<number> {
     const { rows } = await this.pool.query(
       `select coalesce(sum(cost_usd), 0)::float8 as total from model_invocation where task_id = $1`,
@@ -566,6 +608,22 @@ function rowToTask(r: any): Task {
     completedAt: r.completed_at,
     failedAt: r.failed_at,
     cancelledAt: r.cancelled_at,
+  };
+}
+
+function rowToDocumentArtifact(r: any): DocumentArtifact {
+  return {
+    id: r.id,
+    tenantId: r.tenant_id,
+    surfaceType: r.surface_type,
+    location: r.location ?? {},
+    title: r.title,
+    role: r.role,
+    owningTaskId: r.owning_task_id,
+    owningAgentId: r.owning_agent_id,
+    lastRevisionSeen: r.last_revision_seen,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
   };
 }
 

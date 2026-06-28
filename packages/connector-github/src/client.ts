@@ -17,6 +17,20 @@ export interface GithubClient {
   commentIssue(repo: string, issueNumber: number, body: string): Promise<{ id: number }>;
   closeIssue(repo: string, issueNumber: number): Promise<void>;
   mergePullRequest(repo: string, prNumber: number): Promise<{ merged: boolean; sha?: string }>;
+  // document writes (branch + file + PR)
+  getRef(repo: string, ref: string): Promise<{ sha: string }>;
+  createBranch(repo: string, branch: string, fromSha: string): Promise<void>;
+  putFile(
+    repo: string,
+    path: string,
+    content: string,
+    branch: string,
+    message: string,
+    sha?: string,
+  ): Promise<{ commitSha: string; contentSha: string }>;
+  createPullRequest(repo: string, title: string, head: string, base: string, body?: string): Promise<{ number: number; url: string }>;
+  closePullRequest(repo: string, prNumber: number): Promise<void>;
+  deleteRef(repo: string, branch: string): Promise<void>;
 }
 
 /** Real read-only GitHub client (Contents API). */
@@ -82,6 +96,46 @@ export class HttpGithubClient implements GithubClient {
     const j = await this.api(`/repos/${repo}/pulls/${prNumber}/merge`, { method: "PUT" });
     return { merged: Boolean(j.merged), sha: j.sha };
   }
+
+  async getRef(repo: string, ref: string): Promise<{ sha: string }> {
+    const j = await this.api(`/repos/${repo}/git/ref/${ref}`);
+    return { sha: j.object.sha };
+  }
+
+  async createBranch(repo: string, branch: string, fromSha: string): Promise<void> {
+    await this.api(`/repos/${repo}/git/refs`, {
+      method: "POST",
+      body: { ref: `refs/heads/${branch}`, sha: fromSha },
+    });
+  }
+
+  async putFile(
+    repo: string,
+    path: string,
+    content: string,
+    branch: string,
+    message: string,
+    sha?: string,
+  ): Promise<{ commitSha: string; contentSha: string }> {
+    const j = await this.api(`/repos/${repo}/contents/${encodeURI(path)}`, {
+      method: "PUT",
+      body: { message, content: Buffer.from(content, "utf8").toString("base64"), branch, sha },
+    });
+    return { commitSha: j.commit?.sha, contentSha: j.content?.sha };
+  }
+
+  async createPullRequest(repo: string, title: string, head: string, base: string, body?: string): Promise<{ number: number; url: string }> {
+    const j = await this.api(`/repos/${repo}/pulls`, { method: "POST", body: { title, head, base, body } });
+    return { number: j.number, url: j.html_url };
+  }
+
+  async closePullRequest(repo: string, prNumber: number): Promise<void> {
+    await this.api(`/repos/${repo}/pulls/${prNumber}`, { method: "PATCH", body: { state: "closed" } });
+  }
+
+  async deleteRef(repo: string, branch: string): Promise<void> {
+    await this.api(`/repos/${repo}/git/refs/heads/${branch}`, { method: "DELETE" });
+  }
 }
 
 /** Deterministic client for tests/CI. */
@@ -127,5 +181,51 @@ export class FixturesGithubClient implements GithubClient {
   async mergePullRequest(repo: string, prNumber: number): Promise<{ merged: boolean; sha?: string }> {
     this.writes.push({ op: "mergePullRequest", args: { repo, prNumber } });
     return { merged: true, sha: "deadbeef" };
+  }
+
+  private readonly fileShas = new Map<string, string>();
+  private prSeq = 1;
+  public refSha = "base-sha-0000";
+
+  async getRef(_repo: string, _ref: string): Promise<{ sha: string }> {
+    return { sha: this.refSha };
+  }
+
+  async createBranch(repo: string, branch: string, fromSha: string): Promise<void> {
+    this.writes.push({ op: "createBranch", args: { repo, branch, fromSha } });
+  }
+
+  async putFile(
+    repo: string,
+    path: string,
+    _content: string,
+    branch: string,
+    _message: string,
+    sha?: string,
+  ): Promise<{ commitSha: string; contentSha: string }> {
+    const key = `${repo}:${path}`;
+    const current = this.fileShas.get(key);
+    // stale-SHA rejection: updating with a sha that no longer matches.
+    if (sha !== undefined && current !== undefined && sha !== current) {
+      throw new Error(`github 409: file ${path} changed (stale sha)`);
+    }
+    const contentSha = `sha-${this.issueSeq++}`;
+    this.fileShas.set(key, contentSha);
+    this.writes.push({ op: "putFile", args: { repo, path, branch, sha } });
+    return { commitSha: `commit-${this.issueSeq}`, contentSha };
+  }
+
+  async createPullRequest(repo: string, title: string, head: string, base: string): Promise<{ number: number; url: string }> {
+    const number = this.prSeq++;
+    this.writes.push({ op: "createPullRequest", args: { repo, title, head, base } });
+    return { number, url: `https://example.test/${repo}/pull/${number}` };
+  }
+
+  async closePullRequest(repo: string, prNumber: number): Promise<void> {
+    this.writes.push({ op: "closePullRequest", args: { repo, prNumber } });
+  }
+
+  async deleteRef(repo: string, branch: string): Promise<void> {
+    this.writes.push({ op: "deleteRef", args: { repo, branch } });
   }
 }
