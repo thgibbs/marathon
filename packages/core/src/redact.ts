@@ -21,3 +21,18 @@ export function redactSecrets(text: string, opts: RedactOptions = {}): string {
   }
   return out;
 }
+
+const FENCE_RE = /<<<(?:UNTRUSTED|END)[^>]*>>>/g;
+
+/**
+ * Fence untrusted content (surface text, tool output, recalled memory) for a prompt
+ * (design §12.2). The content is wrapped in explicit markers, and any forged fence
+ * markers inside it are stripped, so injected text cannot "close" the fence and pose
+ * as instructions. This is one layer — the authoritative guarantee is that tool policy
+ * lives OUTSIDE the model (§7.8), so even a successful injection cannot run a
+ * destructive tool without approval.
+ */
+export function fenceUntrusted(kind: string, content: string): string {
+  const safe = String(content).replace(FENCE_RE, "");
+  return `<<<UNTRUSTED ${kind}>>>\n${safe}\n<<<END ${kind}>>>`;
+}

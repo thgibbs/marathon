@@ -276,6 +276,27 @@ importers:
         specifier: workspace:*
         version: link:../../packages/queue
 
+  demos/m9:
+    dependencies:
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@marathon/connector-github':
+        specifier: workspace:*
+        version: link:../../packages/connector-github
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@marathon/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+
   demos/slack-app:
     dependencies:
       '@marathon/agent':

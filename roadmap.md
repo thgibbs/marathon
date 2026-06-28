@@ -544,6 +544,17 @@ Exit criteria — unit tests + automated demo:
 ---
 
 ### M9 — Hardening, security & self-host polish
+
+> **Status — security core done & CI-green.** Defense-in-depth landed and tested
+> (`make demo-m9`): **untrusted-content fencing** (`fenceUntrusted`, wired into prompt
+> assembly), **policy-outside-the-model** (a fully-injected agent still can't run a
+> destructive tool — no bypass), **secret redaction** in tool-output traces, **no implicit
+> unsandboxed shell** (a `ToolSandbox` seam; `cli.run` refuses without `LocalSubprocessSandbox`/
+> a real backend), **tenant isolation** on the inspectability reads, and **rebase-before-write**
+> for concurrent doc edits (#6). **Remaining M9 (staged):** the real **sandbox runtime**
+> (Docker/Gondolin) + governing Pi's built-in tools (§2b #2); **retention** purge; the
+> **trust-hierarchy** model sanitizer (§12.2); and docs/self-host polish. These gate a
+> production release.
 **Goal:** trustworthy enough to self-host and demo as open source.
 
 Human prerequisites:

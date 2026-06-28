@@ -1,0 +1,15 @@
+{
+  "name": "@marathon/demo-m9",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "tsx run.ts" },
+  "dependencies": {
+    "@marathon/config": "workspace:*",
+    "@marathon/connector-github": "workspace:*",
+    "@marathon/core": "workspace:*",
+    "@marathon/db": "workspace:*",
+    "@marathon/observability": "workspace:*",
+    "@marathon/tools": "workspace:*"
+  }
+}

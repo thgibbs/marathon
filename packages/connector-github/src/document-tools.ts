@@ -109,9 +109,19 @@ export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
       const repo = String(input.repo);
       const path = String(input.path);
       const branch = String(input.branch);
-      const current = await client.readFileWithSha(repo, path, branch); // re-validate against the branch
-      await client.putFile(repo, path, String(input.content), branch, `docs: revise ${path}`, current.sha);
-      return { content: `revised ${path} on ${branch}`, details: { path, branch } };
+      // Rebase-before-write (M9 #6): commit against the latest SHA; if a concurrent
+      // edit lands between read and write (409), re-read and retry once.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const current = await client.readFileWithSha(repo, path, branch);
+        try {
+          await client.putFile(repo, path, String(input.content), branch, `docs: revise ${path}`, current.sha);
+          return { content: `revised ${path} on ${branch}`, details: { path, branch, rebased: attempt > 0 } };
+        } catch (e) {
+          if (attempt === 0 && /409|stale/i.test(String(e))) continue;
+          throw e;
+        }
+      }
+      throw new Error("document.revise: rebase retry exhausted");
     },
   };
 

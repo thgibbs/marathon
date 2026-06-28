@@ -24,7 +24,7 @@ import { Queue } from "@marathon/queue";
 // We build a small inline step runner that uses a read tool, so the task
 // genuinely "runs read tools" before responding.
 import { InvocationRouter, Orchestrator, parseCheckpoint, Worker } from "@marathon/worker";
-import { makeCliTool, ToolGateway, ToolRegistry, type ToolPolicy } from "@marathon/tools";
+import { LocalSubprocessSandbox, makeCliTool, ToolGateway, ToolRegistry, type ToolPolicy } from "@marathon/tools";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
     const router = new InvocationRouter(db, orchestrator);
 
     // --- 1. inbound Slack event: verify signature + dedupe + parse ---
-    const eventId = "Ev0M4DEMO";
+    const eventId = `Ev0M4-${Date.now()}`; // unique per run (CI DB is fresh; dev DB persists)
     const rawEvent = {
       type: "app_mention" as const,
       user: "U_TANTON",
@@ -81,7 +81,7 @@ async function main(): Promise<void> {
 
     // --- 3. worker runs the task: use a read tool, then respond ---
     const gateway = new ToolGateway({
-      registry: new ToolRegistry([makeCliTool(["echo"])]),
+      registry: new ToolRegistry([makeCliTool(["echo"], new LocalSubprocessSandbox())]),
       policy: { grants: [{ tool: "cli.run" }] } as ToolPolicy,
       secrets: new EnvSecretStore({}),
       recorder: {

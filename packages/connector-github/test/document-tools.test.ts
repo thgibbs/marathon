@@ -60,6 +60,31 @@ describe("document tools", () => {
     expect(gh.writes.filter((w) => w.op === "putFile")).toHaveLength(puts + 1);
   });
 
+  it("document.revise rebases (re-reads + retries) once on a conflict", async () => {
+    let sha = "sha-1";
+    let puts = 0;
+    const stub = {
+      async readFileWithSha() {
+        return { path: "docs/x.md", content: "cur", sha };
+      },
+      async putFile(_r: string, _p: string, _c: string, _b: string, _m: string, withSha?: string) {
+        puts++;
+        if (withSha === "sha-1") {
+          sha = "sha-2"; // a concurrent edit moved it
+          throw new Error("github 409: file changed (stale sha)");
+        }
+        return { commitSha: "c", contentSha: sha };
+      },
+    } as unknown as FixturesGithubClient;
+    const tools = makeDocumentTools(() => stub);
+    const res = await tools.find((t) => t.name === "document.revise")!.execute(
+      { repo: "o/r", path: "docs/x.md", content: "# v2", branch: "marathon/doc-x" },
+      ctx,
+    );
+    expect(puts).toBe(2); // first 409, retried once with the fresh sha
+    expect((res.details as { rebased: boolean }).rebased).toBe(true);
+  });
+
   it("document.reply_to_comment threads under a review comment", async () => {
     const gh = new FixturesGithubClient({});
     const res = await tool("document.reply_to_comment", gh).execute(

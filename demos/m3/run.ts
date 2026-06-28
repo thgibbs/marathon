@@ -16,6 +16,7 @@ import { EnvSecretStore } from "@marathon/config";
 import { FixturesGithubClient, makeGithubReadTools } from "@marathon/connector-github";
 import { Database, migrate } from "@marathon/db";
 import {
+  LocalSubprocessSandbox,
   makeCliTool,
   ToolBlockedError,
   ToolGateway,
@@ -54,7 +55,7 @@ async function main(): Promise<void> {
       contents: { "o/repo:": [{ name: "README.md", type: "file", path: "README.md" }] },
     });
     const registry = new ToolRegistry([
-      makeCliTool(["echo"]),
+      makeCliTool(["echo"], new LocalSubprocessSandbox()),
       ...makeGithubReadTools(() => ghClient),
     ]);
 

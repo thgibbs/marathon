@@ -1,18 +1,16 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type { Tool, ToolInput } from "./types";
-
-const execFileAsync = promisify(execFile);
+import { NoSandbox, type ToolSandbox } from "./sandbox";
 
 /**
  * A command-line tool — Marathon's primary tool type (design.md §14.5). Commands
- * are restricted to an allowlist of binaries. NOTE: this runs unsandboxed; real
- * isolation (Gondolin/OpenShell) is M9 (design.md §12.6).
+ * are restricted to an allowlist of binaries AND executed through a {@link ToolSandbox}.
+ * The default sandbox ({@link NoSandbox}) refuses, so there is **no implicit
+ * unsandboxed shell** — callers must opt into an execution backend (design.md §12.6).
  */
-export function makeCliTool(allowlist: string[]): Tool {
+export function makeCliTool(allowlist: string[], sandbox: ToolSandbox = new NoSandbox()): Tool {
   return {
     name: "cli.run",
-    description: "Run an allowlisted command-line program.",
+    description: "Run an allowlisted command-line program (in a sandbox).",
     riskLevel: "medium",
     destructive: false,
     validate(input: ToolInput): string | null {
@@ -26,8 +24,8 @@ export function makeCliTool(allowlist: string[]): Tool {
       const parts = String(input.command).trim().split(/\s+/);
       const bin = parts[0]!;
       const args = parts.slice(1);
-      const { stdout, stderr } = await execFileAsync(bin, args, { timeout: 5000, maxBuffer: 1024 * 1024 });
-      return { content: stdout || stderr, details: { argv: parts } };
+      const { stdout, stderr } = await sandbox.run(bin, args, { timeoutMs: 5000 });
+      return { content: stdout || stderr, details: { argv: parts, sandbox: sandbox.name } };
     },
   };
 }

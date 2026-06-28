@@ -78,5 +78,8 @@ jobs:
       - name: Automated demo (M8 observability)
         run: pnpm --filter @marathon/demo-m8 start
 
+      - name: Automated demo (M9 security)
+        run: pnpm --filter @marathon/demo-m9 start
+
       - name: Automated demo (M6.2 github webhook app)
         run: pnpm --filter @marathon/demo-github-app start
