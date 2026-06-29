@@ -555,10 +555,14 @@ Exit criteria — unit tests + automated demo:
 > command in an ephemeral, network-denied, credential-free, capability-stripped,
 > resource-limited container (`dockerRunArgs` unit-tested for the isolation flags; live
 > `make smoke-sandbox` verifies real execution + blocked egress); `sandboxFromEnv` selects the
-> backend via `MARATHON_SANDBOX` (default `none`). **Remaining M9 (staged):** wire the sandbox
-> into the live agent loop (Pi-in-sandbox + tool brokering) + govern Pi's built-in tools (§2b
-> #2); a microVM (Gondolin) backend; **retention** purge; the **trust-hierarchy** model
-> sanitizer (§12.2); and docs/self-host polish. These gate a production release.
+> backend via `MARATHON_SANDBOX` (default `none`); built-ins are off by default (§2b #2). The
+> **broker** for Pi-in-sandbox is being built in tested chunks: ✅ `Workspace` (ephemeral mount
+> dir), ✅ the host-side tool broker (`handleToolRequest`, output redacted across the boundary),
+> ✅ the broker **transport** (`serveToolBroker`/`ToolBrokerClient`, line-delimited JSON over a
+> stream). **Remaining M9 (staged):** wire **Pi-in-sandbox** to the broker (run the loop in the
+> container, code/FS tools on the workspace, credentialed tools brokered to the host); a microVM
+> (Gondolin) backend; **retention** purge; the **trust-hierarchy** model sanitizer (§12.2); and
+> docs/self-host polish. These gate a production release.
 **Goal:** trustworthy enough to self-host and demo as open source.
 
 Human prerequisites:
