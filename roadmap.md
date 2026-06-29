@@ -658,9 +658,11 @@ fold into M7–M9 sequencing as capacity allows.
    at the orchestration layer, but suspending an in-flight Pi turn and re-entering on approval
    is unbuilt. Promoted to its own milestone (**M10** — suspend/resume seam + in-line + Agent
    Hub). Run the §6.1 spike (re-prompt vs. fork) there. **This is the headline gap.**
-2. **Govern Pi's built-in tools** *(security; pairs with M9).* `read/grep/find/ls` currently
-   bypass the `ToolGateway`. Either route built-ins through the gateway via the `tool_call`
-   hook, or replace them with governed equivalents — otherwise the chokepoint is bypassable.
+2. **Govern Pi's built-in tools** *(security; M9 — partially done).* `read/grep/find/ls` bypass
+   the `ToolGateway`, so they are now **off by default** (`PiAgentRuntime.builtinTools`). The live
+   agent runs with only governed tools. Remaining: when running **Pi-in-sandbox** with a
+   workspace, re-enable built-ins (they then see only the workspace) and/or route them via the
+   `tool_call` hook.
 3. **Execution isolation** *(M9, now the top security gap).* No sandbox today; with #2 open,
    enabled built-ins run unsandboxed and unaudited. Gondolin/Docker/OpenShell + credential
    injection at execution.

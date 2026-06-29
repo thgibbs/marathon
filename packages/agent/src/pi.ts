@@ -41,6 +41,12 @@ export interface PiAgentOptions {
   sessionDir?: string;
   /** Marathon-governed tools to expose to the agent (M6.1). */
   governed?: GovernedToolsConfig;
+  /**
+   * Pi's built-in tools to enable (e.g. "read", "grep", "find", "ls"). **Default: none.**
+   * They run ungoverned against the harness filesystem (§2b #2), so they should only be
+   * enabled inside a sandboxed workspace (§12.6). Governed tools are always exposed.
+   */
+  builtinTools?: string[];
 }
 
 const PI_MODULE: string = "@earendil-works/pi-coding-agent";
@@ -134,7 +140,9 @@ export class PiAgentRuntime implements AgentRuntime {
       resourceLoader: loader,
       sessionManager,
       customTools,
-      tools: ["read", "grep", "find", "ls", ...governedNames],
+      // Built-ins are OFF by default (they bypass the gateway, §2b #2); enable only
+      // inside a sandboxed workspace. Governed (brokered) tools are always exposed.
+      tools: [...(this.opts.builtinTools ?? []), ...governedNames],
     });
 
     let streamed = "";

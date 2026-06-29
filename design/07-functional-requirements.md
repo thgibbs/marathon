@@ -221,9 +221,10 @@ Requirements:
 * **Permissioning is embedded in the harness.** *As-built:* Marathon registers each tool as a
   Pi **custom tool that delegates to the `ToolGateway`** (the gateway is the chokepoint —
   policy, credential injection, audit, redaction); destructive calls return an
-  approval-required signal. The originally-planned `tool_call`/`tool_result` hook approach
-  remains valid and is still the way to also govern Pi's **built-in** tools, which the custom-
-  tool approach does **not** cover yet (see §7.8, §12.6, `pi-details.md` §3 As-built).
+  approval-required signal. Pi's **built-in** tools (`read/grep/find/ls`) bypass the gateway, so
+  they are now **off by default** (`PiAgentRuntime.builtinTools`, default none) and enabled only
+  inside a sandboxed workspace (§12.6); the `tool_call` hook remains the path to fully govern
+  them when running Pi-in-sandbox (see §7.8, §12.6, `pi-details.md` §3 As-built).
 * **The Pi session (a JSONL tree) is the durable agent checkpoint and the full trace.**
   Persist it per task; it powers crash-resume, the inspectability dashboard, and replay
   (see §11, §16).
