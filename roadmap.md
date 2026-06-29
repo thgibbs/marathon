@@ -551,10 +551,14 @@ Exit criteria — unit tests + automated demo:
 > destructive tool — no bypass), **secret redaction** in tool-output traces, **no implicit
 > unsandboxed shell** (a `ToolSandbox` seam; `cli.run` refuses without `LocalSubprocessSandbox`/
 > a real backend), **tenant isolation** on the inspectability reads, and **rebase-before-write**
-> for concurrent doc edits (#6). **Remaining M9 (staged):** the real **sandbox runtime**
-> (Docker/Gondolin) + governing Pi's built-in tools (§2b #2); **retention** purge; the
-> **trust-hierarchy** model sanitizer (§12.2); and docs/self-host polish. These gate a
-> production release.
+> for concurrent doc edits (#6). **Docker sandbox backend landed:** `DockerSandbox` runs each
+> command in an ephemeral, network-denied, credential-free, capability-stripped,
+> resource-limited container (`dockerRunArgs` unit-tested for the isolation flags; live
+> `make smoke-sandbox` verifies real execution + blocked egress); `sandboxFromEnv` selects the
+> backend via `MARATHON_SANDBOX` (default `none`). **Remaining M9 (staged):** wire the sandbox
+> into the live agent loop (Pi-in-sandbox + tool brokering) + govern Pi's built-in tools (§2b
+> #2); a microVM (Gondolin) backend; **retention** purge; the **trust-hierarchy** model
+> sanitizer (§12.2); and docs/self-host polish. These gate a production release.
 **Goal:** trustworthy enough to self-host and demo as open source.
 
 Human prerequisites:
