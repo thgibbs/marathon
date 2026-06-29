@@ -78,3 +78,5 @@ diagram is in [`diagram.md`](../diagram.md); the Pi harness reference is in
 - [[25-recommended-first-implementation]] — what to build first + the first demo scenario.
 - [[26-marathon-positioning]] — how Marathon relates to adjacent tools.
 - [[27-final-design-recommendation]] — the durable agent task, restated.
+- [[28-meta-harness-organ-map]] — Marathon as a Layer-2 meta-harness: the seven organs →
+  components, and the **frontier-orchestrated loop** (plan → execute → verify → repeat).

@@ -97,8 +97,10 @@ approval, the document-driven workflow, basic feedback). M7–M9 round it out.
 > **Status (build progress).** ✅ **Done & CI-green:** M0–M6, **M5.5**, **M6.1** (governed
 > tools, now wired into the live Slack agent too), **M6.2**, **M7** (memory), **M8** (core
 > inspectability/cost/budgets) — each runtime-verified against real OpenAI / GitHub / Slack.
-> ⏳ **Remaining:** **M9** (hardening + sandbox) and **M10** (live destructive-action approval:
-> suspend/resume + in-line + Agent Hub). Governing Pi's built-in tools (§2b) feeds M9.
+> ⏳ **Remaining:** **M9** (hardening + sandbox — Docker backend + broker landed), **M10** (live
+> destructive-action approval: suspend/resume + in-line + Agent Hub), and **M11** (the
+> frontier-orchestrated **loop** — design §28). The **meta-harness organ map (design §28)** frames
+> Marathon as a Layer-2 orchestrator: strong on governor + state + isolation; the loop is M11.
 
 **Definition of done (every milestone).** A milestone is not complete until both of
 these are green in CI:
@@ -660,6 +662,45 @@ Exit criteria — unit tests + automated demo (+ live smoke):
 
 ---
 
+### M11 — Orchestrated agent loop (frontier plan/verify + sub-agents)
+
+**Goal:** an invocation runs a **frontier-orchestrated loop**, not a single agent turn — the
+meta-harness "loop" organ (design **§28.2**). A frontier "lead" model plans the work and
+validates each iteration; cheaper sub-agents execute it under isolation + governance; the loop
+runs to a verified outcome and reports back. (Folds in the **coordinator** organ — the lead
+picks the sub-agents.)
+
+Human prerequisites:
+- None new (reuses model + surface + sandbox setup). Set the **reasoning-tier** model for the
+  orchestrator and a budget cap per task.
+
+Build (per §28.2):
+- **Plan step** — a frontier orchestrator (reasoning tier, §7.19) turns goal + context (§7.18) +
+  recalled memory (§7.12) into a **plan** (success criteria, iteration shape, chosen sub-agents/
+  tools) and a **clean sub-agent prompt** (also the §12.2 sanitization point).
+- **Loop StepRunner** — iterate **execute → verify → {done | continue | escalate}**, each
+  iteration a checkpointed `TaskStep` (§11.2) so it resumes mid-loop; sub-agents run via
+  `AgentRuntime` in the **sandbox** (§12.6) under the **gateway** (§7.8).
+- **Verification** — frontier judgment **plus objective checks where available** (tests/types/
+  build as sandboxed tools). **Exit detection** (verifier done-signal) + **caps** (max
+  iterations + spend budget, M8) + **grounding** (state in workspace/checkpoint/memory).
+- **Escalation** → the durable human wait (M10 approval).
+- **Report** — progress + a loop summary (iterations, cost) to the originating surface(s);
+  write learnings to memory.
+
+Depends on: M2 (runtime), M7 (memory + prompt assembly), M8 (budgets/timeline), M9 (sandbox),
+M10 (escalation). Two model tiers via §7.19.
+Exit criteria — unit tests + automated demo:
+- *Unit tests:* loop control (done / continue-with-feedback / escalate / iteration-cap),
+  checkpoint resume mid-loop, exit detection.
+- *Automated demo* (`make demo-m11`, fakes): a goal needing 2 iterations — a fake frontier
+  *verifier rejects* iteration 1 (continue with feedback) and *accepts* iteration 2 (done) — a
+  fake sub-agent executes each; assert the loop converges, respects the cap, and reports.
+- *Live smoke:* a real frontier-orchestrated loop (reasoning model plans + verifies, sub-agent
+  executes a governed read) over a small real goal.
+
+---
+
 ## 2b. Learned since build (new / re-prioritized work)
 
 Surfaced while implementing M0–M6.2. These update the plan based on what the code taught us;
@@ -692,6 +733,10 @@ fold into M7–M9 sequencing as capacity allows.
    + live smoke (real services, local)** split worked well and caught real bugs. Rule learned
    the hard way: **await all side effects in demos** — a fire-and-forget audit write made the
    M3 demo flaky in CI (now fixed by awaiting recorder writes).
+8. **Adapter breadth — a 2nd harness** *(meta-harness organ #1, §28).* `AgentRuntime` abstracts
+   the harness but only `PiAgentRuntime` exists. Add a second adapter (e.g. Claude Code / Codex)
+   behind the seam to prove "harnesses are replaceable" — a real `FakeAgentRuntime`-shaped
+   integration validated by a live smoke. Pairs with the router (organ #2) choosing a harness.
 
 ---
 
