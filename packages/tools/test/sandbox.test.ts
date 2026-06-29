@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DockerSandbox, dockerRunArgs, LocalSubprocessSandbox, NoSandbox, sandboxFromEnv } from "../src/sandbox";
+import { DockerSandbox, dockerRunArgs, dockerStartArgs, LocalSubprocessSandbox, NoSandbox, sandboxFromEnv } from "../src/sandbox";
 
 describe("dockerRunArgs (isolation flags)", () => {
   const argv = dockerRunArgs("alpine:3.20", "echo", ["hi"]);
@@ -37,6 +37,27 @@ describe("dockerRunArgs (isolation flags)", () => {
     expect(ws).toContain("/host/work:/workspace:rw");
     expect(ws).toContain("/workspace");
     expect(dockerRunArgs("img", "ls", [])).not.toContain("-v");
+  });
+});
+
+describe("dockerStartArgs (persistent container)", () => {
+  const argv = dockerStartArgs("alpine:3.20", { workspaceDir: "/host/ws" });
+  const has = (...seq: string[]) => {
+    const i = argv.indexOf(seq[0]!);
+    return i >= 0 && seq.every((s, k) => argv[i + k] === s);
+  };
+  it("runs detached, hardened, with the workspace mounted, kept alive", () => {
+    expect(has("run", "-d", "--rm")).toBe(true);
+    expect(has("--network", "none")).toBe(true);
+    expect(argv).toContain("--read-only");
+    expect(has("--cap-drop", "ALL")).toBe(true);
+    expect(has("-v", "/host/ws:/workspace:rw")).toBe(true);
+    expect(has("-w", "/workspace")).toBe(true);
+    expect(argv.slice(-4)).toEqual(["alpine:3.20", "tail", "-f", "/dev/null"]);
+  });
+  it("passes no env/secrets", () => {
+    expect(argv).not.toContain("-e");
+    expect(argv).not.toContain("--env");
   });
 });
 

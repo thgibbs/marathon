@@ -53,17 +53,13 @@ export interface DockerSandboxOptions {
 }
 
 /**
- * Build the hardened `docker run` argv (design §12.6). Pure + exported so the
- * isolation flags can be asserted in CI without a Docker daemon.
- *
- * Hardening: ephemeral (`--rm`), **no network**, read-only rootfs + tmpfs scratch,
- * all capabilities dropped, `no-new-privileges`, non-root user, CPU/memory/pids
- * limits, and **no env/secrets passed in** (the sandbox is credential-free).
+ * The shared isolation flags (design §12.6): **no network**, read-only rootfs + tmpfs
+ * scratch, all capabilities dropped, `no-new-privileges`, non-root user, CPU/memory/pids
+ * limits — and **no env/secrets** (the sandbox is credential-free). Used by both the
+ * one-shot `docker run` and the persistent container.
  */
-export function dockerRunArgs(image: string, bin: string, args: string[], opts: DockerSandboxOptions = {}): string[] {
-  const a = [
-    "run",
-    "--rm",
+export function hardeningFlags(opts: DockerSandboxOptions = {}): string[] {
+  return [
     "--network",
     opts.network ?? "none",
     "--read-only",
@@ -82,6 +78,14 @@ export function dockerRunArgs(image: string, bin: string, args: string[], opts: 
     "--user",
     opts.user ?? "1000:1000",
   ];
+}
+
+/**
+ * Build the hardened one-shot `docker run` argv. Pure + exported so the isolation
+ * flags can be asserted in CI without a Docker daemon.
+ */
+export function dockerRunArgs(image: string, bin: string, args: string[], opts: DockerSandboxOptions = {}): string[] {
+  const a = ["run", "--rm", ...hardeningFlags(opts)];
   if (opts.workspaceDir) a.push("-v", `${opts.workspaceDir}:/workspace:rw`, "-w", "/workspace");
   else a.push("-w", "/tmp");
   a.push(image, bin, ...args);
@@ -106,6 +110,68 @@ export class DockerSandbox implements ToolSandbox {
       maxBuffer: 1024 * 1024,
     });
     return { stdout, stderr };
+  }
+}
+
+export interface DockerContainerOptions extends DockerSandboxOptions {
+  /** Host dir mounted read-write at /workspace (required). */
+  workspaceDir: string;
+}
+
+/** Build the persistent-container `docker run -d` argv (pure; CI-testable). */
+export function dockerStartArgs(image: string, opts: DockerContainerOptions): string[] {
+  return [
+    "run",
+    "-d",
+    "--rm",
+    ...hardeningFlags(opts),
+    "-v",
+    `${opts.workspaceDir}:/workspace:rw`,
+    "-w",
+    "/workspace",
+    image,
+    "tail",
+    "-f",
+    "/dev/null", // keep-alive; we exec commands into it
+  ];
+}
+
+/**
+ * A long-lived hardened container for **tool routing** (design §12.6, Pattern 2): the
+ * agent's built-in tools (read/write/bash/…) `exec` into it against the mounted
+ * workspace, while Pi + model + credentials stay on the host. Lifecycle: `start()`
+ * once per session → `exec()` per tool op → `stop()`.
+ */
+export class DockerContainer {
+  readonly name = "docker-container";
+  private containerId?: string;
+  constructor(private readonly opts: DockerContainerOptions) {}
+
+  private docker(): string {
+    return this.opts.dockerPath ?? "docker";
+  }
+
+  async start(): Promise<void> {
+    if (this.containerId) return;
+    const image = this.opts.image ?? "alpine:3.20";
+    const { stdout } = await execFileAsync(this.docker(), dockerStartArgs(image, this.opts), { timeout: 60_000 });
+    this.containerId = stdout.trim();
+  }
+
+  async exec(bin: string, args: string[], opts?: { timeoutMs?: number }): Promise<SandboxResult> {
+    if (!this.containerId) throw new Error("DockerContainer.exec: container not started");
+    const { stdout, stderr } = await execFileAsync(this.docker(), ["exec", this.containerId, bin, ...args], {
+      timeout: opts?.timeoutMs ?? 10_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return { stdout, stderr };
+  }
+
+  async stop(): Promise<void> {
+    if (!this.containerId) return;
+    const id = this.containerId;
+    this.containerId = undefined;
+    await execFileAsync(this.docker(), ["rm", "-f", id], { timeout: 30_000 }).catch(() => {});
   }
 }
 
