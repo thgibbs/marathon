@@ -562,10 +562,14 @@ Exit criteria — unit tests + automated demo:
 > stream), and ✅ an **e2e proof** (`make smoke-broker`): a real container (no network, no creds,
 > read-only, workspace-mounted) does FS work AND obtains governed-tool results only via the host
 > broker (destructive → approval_required) — a stand-in for Pi validates the whole host/sandbox
-> split. **Remaining M9 (staged):** swap the stand-in for **real Pi RPC** in the container
-> (vendor integration — also requires brokering the *model* call, since the sandbox has no
-> network/creds); a microVM (Gondolin) backend; **retention** purge; the **trust-hierarchy**
-> model sanitizer (§12.2); and docs/self-host polish. These gate a production release.
+> split. **Step-1 spike done** (`pi-details.md` §7): Pi calls the model itself, so the cleaner path
+> is **Pattern 2 — Pi on the host + a tool-routing extension** (model/auth stay host-side, no
+> model brokering) modeled on Pi's Gondolin example; the broker (chunks B–D) is the **Pattern 1 /
+> remote** path. **Remaining M9 (staged):** build the **DockerSandbox tool-routing extension**
+> (persistent-container lifecycle + override `read/write/edit/bash/grep/find/ls`, wired into
+> `PiAgentRuntime` via `extensionFactories`); a microVM (Gondolin) backend; **retention** purge;
+> the **trust-hierarchy** model sanitizer (§12.2); and docs/self-host polish. These gate a
+> production release.
 **Goal:** trustworthy enough to self-host and demo as open source.
 
 Human prerequisites:

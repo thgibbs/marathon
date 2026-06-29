@@ -334,6 +334,28 @@ inject credentials at execution via the hook, never mount them where the agent c
 This is a **new requirement to add to the plan's M3/M9 security work** (the design assumed an
 abstract isolation; Pi makes it our responsibility).
 
+> **Step-1 spike — verified against the installed 0.80.2** (`docs/rpc.md`, `docs/containerization.md`,
+> `examples/extensions/gondolin/`):
+> - **RPC mode** (`pi --mode rpc`) is JSONL over stdio: commands in (`prompt`/`steer`/`abort`/
+>   `set_model`/…), events out, and **`extension_ui_request`/`extension_ui_response`** for
+>   permission dialogs (the approval channel).
+> - **Pi calls the model itself** (provider/key set via `--provider/--model`). So **Pattern 1
+>   (whole Pi in a container)** needs the model key *inside* the container, or an OpenShell-style
+>   **`inference.local`** proxy that injects creds upstream. This is the model-call cost our
+>   broker (chunks B/C) was designed for.
+> - **Pattern 2 (recommended): Pi on the host + a tool-routing extension.** Pi stays on the host
+>   (**model + auth stay host-side — no model brokering**); an extension **overrides the built-in
+>   tools** so their execution is routed into an isolated env. Mechanism (from the Gondolin
+>   example): `pi.registerTool({ ...localBash, async execute(...){ /* run in the sandbox */ } })`
+>   for `read/write/edit/bash/grep/find/ls`, plus `pi.on("session_start"/"session_shutdown")` to
+>   boot/teardown the env and `pi.on("user_bash")` for `!` commands; cwd mounts at `/workspace`.
+>   Pi **exports `createBashTool`/`createReadTool`/… + `*Operations` interfaces** to implement
+>   against the backend.
+> - **Marathon decision:** build a **DockerSandbox tool-routing extension** modeled on Gondolin
+>   (Pattern 2) — reuses our `DockerSandbox` + `Workspace`, keeps the model/auth host-side, and
+>   needs a **persistent-container lifecycle** (`docker run -d` + `docker exec` per op + stop).
+>   The broker transport (chunks B/C) remains the path for **Pattern 1 / remote (OpenShell)**.
+
 ---
 
 ## 8. Settings & retries `[sdk]`

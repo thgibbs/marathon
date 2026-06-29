@@ -159,22 +159,30 @@ The sandboxed agent is **credential-free** and makes **no credentialed calls dir
 redact output) and returns the result. This is "upstream credential injection" — secrets never
 cross into the sandbox.
 
-### Pi integration — agent loop in the sandbox, tools brokered to the host
+### Pi integration — two patterns (the step-1 spike picked the second)
 
-Pi runs its built-in tools in-process, so we cannot both keep them and leave them ungoverned
-(the §7.8 as-built gap, roadmap §2b #2). The target architecture (hybrid) resolves both at once:
+Pi runs its built-in tools in-process and **calls the model itself**, so there are two ways to
+isolate (both documented by Pi; verified against 0.80.2 — `pi-details.md` §7):
 
-* The **durable spine stays on the host** — Orchestrator / Worker / DB / queue, leasing,
-  checkpoints — and holds credentials + the `ToolGateway`.
-* The **agent loop (Pi) runs in the sandbox** (Pi RPC mode, `pi --mode rpc`); its **built-in
-  file tools operate only on the mounted workspace**, so they become safe by construction.
-* **Governed tools are brokered over the RPC boundary**: a tool call crosses to the host, which
-  runs it through the gateway and returns a redacted result.
+* **Pattern 1 — whole Pi in the sandbox + broker.** Run the agent loop in the container (Pi RPC
+  mode); built-in tools see only the mounted workspace; governed tool calls are **brokered to the
+  host** `ToolGateway`. Cost: because Pi calls the model itself, the **model key must enter the
+  container** *or* an OpenShell-style `inference.local` proxy must inject it upstream. The broker
+  (`handleToolRequest` + transport, M9) is built for this; it's the right shape for **remote /
+  OpenShell** deployments.
+* **Pattern 2 — Pi on the host + a tool-routing extension (recommended for self-host).** Pi stays
+  on the host, so **the model call and all credentials stay host-side — no model brokering.** A Pi
+  **extension overrides the built-in tools** (`read/write/edit/bash/grep/find/ls`) so their
+  *execution* is routed into the sandbox (workspace mounted at `/workspace`), via
+  `pi.registerTool({ ...localBash, execute → run in the sandbox })` + `pi.on(session_start/shutdown)`
+  lifecycle (the **Gondolin example** is the template; Pi exports `createBashTool`/… + `*Operations`
+  interfaces to implement against a backend). Governed `github.*`/`document.*` tools remain
+  host-side through the gateway (M6.1). This closes the §2b #2 built-ins gap *and* avoids the
+  model-call problem.
 
-This closes both gaps together: no unsandboxed code execution, **and** Pi's built-ins are
-contained without a separate hook. *Interim stopgap* (weaker): keep Pi in-process on the host
-but disable built-ins and route only code tools through the sandbox — acceptable short-term, not
-the target (built-ins would still see the host FS).
+**Marathon target: Pattern 2** — a **DockerSandbox tool-routing extension** (reuses `DockerSandbox`
++ `Workspace`; needs a persistent-container lifecycle: `docker run -d` → `docker exec` per op →
+stop). Pattern 1's broker stays available for Pi-in-container / remote sandboxes.
 
 ### The `ToolSandbox` contract
 
