@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -165,6 +165,76 @@ export class DockerContainer {
       maxBuffer: 1024 * 1024,
     });
     return { stdout, stderr };
+  }
+
+  /**
+   * Lower-level exec used for tool routing (design §12.6, Pattern 2): streams output,
+   * supports stdin (`write`), a working directory, abort, and timeout, and **returns the
+   * exit code instead of throwing** on non-zero (a shell tool legitimately exits non-zero).
+   * No host env is forwarded — the sandbox is credential-free by construction.
+   */
+  async execStream(
+    argv: string[],
+    opts: {
+      onData?: (chunk: Buffer) => void;
+      input?: string | Buffer;
+      cwd?: string;
+      signal?: AbortSignal;
+      timeoutMs?: number;
+    } = {},
+  ): Promise<{ exitCode: number | null; stdout: Buffer; stderr: Buffer }> {
+    if (!this.containerId) throw new Error("DockerContainer.execStream: container not started");
+    const dockerArgs = [
+      "exec",
+      ...(opts.input !== undefined ? ["-i"] : []),
+      ...(opts.cwd ? ["-w", opts.cwd] : []),
+      this.containerId,
+      ...argv,
+    ];
+    return await new Promise((resolve, reject) => {
+      const child = spawn(this.docker(), dockerArgs, { stdio: ["pipe", "pipe", "pipe"] });
+      const out: Buffer[] = [];
+      const err: Buffer[] = [];
+      let settled = false;
+      let timedOut = false;
+      const timer =
+        opts.timeoutMs && opts.timeoutMs > 0
+          ? setTimeout(() => {
+              timedOut = true;
+              child.kill("SIGKILL");
+            }, opts.timeoutMs)
+          : undefined;
+      const onAbort = () => child.kill("SIGKILL");
+      opts.signal?.addEventListener("abort", onAbort, { once: true });
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        opts.signal?.removeEventListener("abort", onAbort);
+      };
+      child.stdout.on("data", (d: Buffer) => {
+        out.push(d);
+        opts.onData?.(d);
+      });
+      child.stderr.on("data", (d: Buffer) => {
+        err.push(d);
+        opts.onData?.(d);
+      });
+      child.on("error", (e) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(e);
+      });
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (timedOut) return reject(new Error(`docker exec timed out after ${opts.timeoutMs}ms`));
+        if (opts.signal?.aborted) return reject(new Error("aborted"));
+        resolve({ exitCode: code, stdout: Buffer.concat(out), stderr: Buffer.concat(err) });
+      });
+      if (opts.input !== undefined) child.stdin.write(opts.input);
+      child.stdin.end();
+    });
   }
 
   async stop(): Promise<void> {

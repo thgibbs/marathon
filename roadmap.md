@@ -567,11 +567,16 @@ Exit criteria — unit tests + automated demo:
 > split. **Step-1 spike done** (`pi-details.md` §7): Pi calls the model itself, so the cleaner path
 > is **Pattern 2 — Pi on the host + a tool-routing extension** (model/auth stay host-side, no
 > model brokering) modeled on Pi's Gondolin example; the broker (chunks B–D) is the **Pattern 1 /
-> remote** path. **Remaining M9 (staged):** build the **DockerSandbox tool-routing extension**
-> (persistent-container lifecycle + override `read/write/edit/bash/grep/find/ls`, wired into
-> `PiAgentRuntime` via `extensionFactories`); a microVM (Gondolin) backend; **retention** purge;
-> the **trust-hierarchy** model sanitizer (§12.2); and docs/self-host polish. These gate a
-> production release.
+> remote** path. ✅ **Persistent `DockerContainer`** lifecycle (`start`/`exec`/`execStream`/`stop`,
+> `make smoke-container`). ✅ **Pattern-2 tool routing landed:** `PiAgentRuntime` takes a `sandbox`
+> option that routes Pi's `bash`/`read`/`write`/`edit` into the container (Pi's
+> `create*ToolDefinition` + Docker-backed `*Operations`, supplied as `customTools` + allowlist since
+> built-ins are off) while governed tools stay host-side — unit-tested, and proven end-to-end by
+> `make smoke-pi-sandbox` (a real model run: agent `bash` reports the *container* hostname, a
+> governed tool the *host* hostname, and a sandboxed `write` writes through to the host workspace).
+> **Remaining M9 (staged):** route `grep`/`find`/`ls` too (today the model uses `bash`); a microVM
+> (Gondolin) backend; consistent uid mapping; **retention** purge; the **trust-hierarchy** model
+> sanitizer (§12.2); and docs/self-host polish. These gate a production release.
 **Goal:** trustworthy enough to self-host and demo as open source.
 
 Human prerequisites:
@@ -710,14 +715,15 @@ fold into M7–M9 sequencing as capacity allows.
    at the orchestration layer, but suspending an in-flight Pi turn and re-entering on approval
    is unbuilt. Promoted to its own milestone (**M10** — suspend/resume seam + in-line + Agent
    Hub). Run the §6.1 spike (re-prompt vs. fork) there. **This is the headline gap.**
-2. **Govern Pi's built-in tools** *(security; M9 — partially done).* `read/grep/find/ls` bypass
-   the `ToolGateway`, so they are now **off by default** (`PiAgentRuntime.builtinTools`). The live
-   agent runs with only governed tools. Remaining: when running **Pi-in-sandbox** with a
-   workspace, re-enable built-ins (they then see only the workspace) and/or route them via the
-   `tool_call` hook.
-3. **Execution isolation** *(M9, now the top security gap).* No sandbox today; with #2 open,
-   enabled built-ins run unsandboxed and unaudited. Gondolin/Docker/OpenShell + credential
-   injection at execution.
+2. **Govern Pi's built-in tools** *(security; M9 — largely done).* `read/grep/find/ls` bypass
+   the `ToolGateway`, so they are **off by default** (`PiAgentRuntime.builtinTools`). The live
+   agent runs with only governed tools, and the **`sandbox` option now routes
+   `bash`/`read`/`write`/`edit` into a hardened container** (Pattern 2) so they see only the
+   workspace. Remaining: route `grep`/`find`/`ls` the same way (today the model uses `bash`).
+3. **Execution isolation** *(M9 — landed).* `DockerSandbox` (one-shot) + persistent
+   `DockerContainer` + the Pattern-2 tool routing isolate agent-run code (no network, no host
+   creds, capability-stripped, resource-limited) against an ephemeral workspace; `NoSandbox`
+   refuses by default. Remaining: microVM (Gondolin/Firecracker) backend, consistent uid mapping.
 4. **Durable resume of a *real* Pi run** *(reliability).* `PiAgentRuntime` runs single-turn;
    the per-turn checkpoint/resume path is only exercised by fake agents. Build a multi-turn
    tool loop with per-turn checkpointing so a crashed in-flight model run resumes.

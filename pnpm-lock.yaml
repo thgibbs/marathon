@@ -278,6 +278,9 @@ importers:
 
   demos/m9:
     dependencies:
+      '@marathon/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
       '@marathon/config':
         specifier: workspace:*
         version: link:../../packages/config

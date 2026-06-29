@@ -5,8 +5,10 @@ import {
   ModelRegistry,
   resolveApiKey,
 } from "@marathon/model-gateway";
+import type { DockerContainer } from "@marathon/tools";
 import { governedOutcomeText, runGovernedTool } from "./governed";
-import type { AgentRuntime, AgentTurn, AgentTurnContext } from "./types";
+import { buildDockerSandboxTools } from "./sandbox-tools";
+import type { AgentRequest, AgentRuntime, AgentTurn, AgentTurnContext } from "./types";
 
 /**
  * Real Pi-harness adapter (@earendil-works/pi-coding-agent).
@@ -47,6 +49,17 @@ export interface PiAgentOptions {
    * enabled inside a sandboxed workspace (§12.6). Governed tools are always exposed.
    */
   builtinTools?: string[];
+  /**
+   * Route Pi's `bash`/`read`/`write`/`edit` tools into a hardened sandbox container
+   * (§12.6, Pattern 2). When set, those tools execute inside a fresh {@link DockerContainer}
+   * (no network, no host credentials) against a bind-mounted workspace, while governed
+   * tools stay host-side. `createContainer` returns a *not-yet-started* container bound to
+   * this task's workspace; the runtime owns `start()`/`stop()` for the turn.
+   */
+  sandbox?: {
+    createContainer: (req: AgentRequest) => Promise<DockerContainer> | DockerContainer;
+    shellPath?: string;
+  };
 }
 
 const PI_MODULE: string = "@earendil-works/pi-coding-agent";
@@ -131,6 +144,19 @@ export class PiAgentRuntime implements AgentRuntime {
       }
     }
 
+    // Sandbox tool routing (§12.6, Pattern 2): bash/read/write/edit execute inside a
+    // hardened container against a bind-mounted workspace; governed tools stay host-side.
+    let container: DockerContainer | undefined;
+    const sandboxNames: string[] = [];
+    if (this.opts.sandbox) {
+      container = await this.opts.sandbox.createContainer(ctx.request);
+      await container.start();
+      const { tools, names } = buildDockerSandboxTools(pi, container, { shellPath: this.opts.sandbox.shellPath });
+      customTools.push(...tools);
+      sandboxNames.push(...names);
+    }
+
+    try {
     const { session } = await pi.createAgentSession({
       cwd,
       agentDir,
@@ -141,8 +167,8 @@ export class PiAgentRuntime implements AgentRuntime {
       sessionManager,
       customTools,
       // Built-ins are OFF by default (they bypass the gateway, §2b #2); enable only
-      // inside a sandboxed workspace. Governed (brokered) tools are always exposed.
-      tools: [...(this.opts.builtinTools ?? []), ...governedNames],
+      // inside a sandboxed workspace. Sandboxed + governed tools are exposed explicitly.
+      tools: [...(this.opts.builtinTools ?? []), ...sandboxNames, ...governedNames],
     });
 
     let streamed = "";
@@ -198,6 +224,9 @@ export class PiAgentRuntime implements AgentRuntime {
       done: true,
       modelInvocation: { provider, model, inputTokens, outputTokens, costUsd, latencyMs, status: "ok" },
     };
+    } finally {
+      if (container) await container.stop().catch(() => {});
+    }
   }
 }
 

@@ -180,9 +180,21 @@ isolate (both documented by Pi; verified against 0.80.2 — `pi-details.md` §7)
   host-side through the gateway (M6.1). This closes the §2b #2 built-ins gap *and* avoids the
   model-call problem.
 
-**Marathon target: Pattern 2** — a **DockerSandbox tool-routing extension** (reuses `DockerSandbox`
-+ `Workspace`; needs a persistent-container lifecycle: `docker run -d` → `docker exec` per op →
-stop). Pattern 1's broker stays available for Pi-in-container / remote sandboxes.
+**Marathon target: Pattern 2 — built (M9).** `PiAgentRuntime` accepts a `sandbox` option; when
+set it routes Pi's `bash`/`read`/`write`/`edit` into a persistent **`DockerContainer`** (`docker
+run -d` keep-alive → `docker exec` per op → stop) bound to an ephemeral `Workspace`, while governed
+`github.*`/`document.*` tools stay host-side through the gateway (M6.1). Implementation notes:
+because Marathon keeps built-ins **off by default** (§2b #2) there is no name collision, so the
+sandboxed tools are supplied as **`customTools` + an active-tools allowlist** (using Pi's exported
+`create{Bash,Read,Write,Edit}ToolDefinition` + `*Operations`, the Gondolin pattern) rather than
+`registerTool`-override — same security outcome with a simpler in-process seam. The container is the
+**execution** boundary and the workspace the **data** boundary; `bash` runs via `sh -lc` inside the
+container, file writes pipe through stdin, and **no host env crosses the boundary** (credential-free
+by construction). Proven end-to-end by `make smoke-pi-sandbox` (a real model run: the agent's
+`bash` reports the *container* hostname while a governed tool reports the *host* hostname, and a
+sandboxed `write` writes through to the host workspace). Remaining: route `grep`/`find`/`ls`
+(today the model uses `bash` for these), the microVM backend, and consistent uid mapping. Pattern
+1's broker stays available for Pi-in-container / remote sandboxes.
 
 ### The `ToolSandbox` contract
 
