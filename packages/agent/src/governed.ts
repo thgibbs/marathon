@@ -1,4 +1,4 @@
-import { ToolBlockedError, type ToolCallContext, type ToolGateway, type ToolInput } from "@marathon/tools";
+import { handleToolRequest, type ToolCallContext, type ToolGateway, type ToolInput } from "@marathon/tools";
 
 export type GovernedOutcome =
   | { status: "ok"; content: string }
@@ -6,10 +6,9 @@ export type GovernedOutcome =
   | { status: "approval_required"; reason: string };
 
 /**
- * Run a tool through the Tool Gateway from inside an agent loop. The gateway is
- * the embedded permissioning chokepoint (policy, credential injection, audit,
- * redaction); this maps a blocked call to a structured outcome the agent/model
- * can act on (rather than an exception).
+ * Run a tool through the Tool Gateway from inside an agent loop, mapping a blocked
+ * call to a structured outcome (rather than an exception). Thin wrapper over the
+ * host-side broker (§12.6); rethrows on unexpected (non-policy) errors.
  */
 export async function runGovernedTool(
   gateway: ToolGateway,
@@ -17,17 +16,9 @@ export async function runGovernedTool(
   input: ToolInput,
   ctx: ToolCallContext,
 ): Promise<GovernedOutcome> {
-  try {
-    const res = await gateway.run(toolName, input, ctx);
-    return { status: "ok", content: res.content };
-  } catch (err) {
-    if (err instanceof ToolBlockedError) {
-      return err.decision === "needs_approval"
-        ? { status: "approval_required", reason: err.reason }
-        : { status: "denied", reason: err.reason };
-    }
-    throw err;
-  }
+  const res = await handleToolRequest(gateway, ctx, { tool: toolName, input });
+  if (res.status === "error") throw new Error(res.error);
+  return res;
 }
 
 /** Render a governed outcome as text to hand back to the model. */
