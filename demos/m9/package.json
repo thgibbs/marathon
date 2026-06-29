@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "scripts": { "start": "tsx run.ts", "smoke-sandbox": "tsx smoke-sandbox.ts" },
+  "scripts": { "start": "tsx run.ts", "smoke-sandbox": "tsx smoke-sandbox.ts", "smoke-broker": "tsx smoke-sandbox-broker.ts" },
   "dependencies": {
     "@marathon/config": "workspace:*",
     "@marathon/connector-github": "workspace:*",

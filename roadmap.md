@@ -559,10 +559,13 @@ Exit criteria — unit tests + automated demo:
 > **broker** for Pi-in-sandbox is being built in tested chunks: ✅ `Workspace` (ephemeral mount
 > dir), ✅ the host-side tool broker (`handleToolRequest`, output redacted across the boundary),
 > ✅ the broker **transport** (`serveToolBroker`/`ToolBrokerClient`, line-delimited JSON over a
-> stream). **Remaining M9 (staged):** wire **Pi-in-sandbox** to the broker (run the loop in the
-> container, code/FS tools on the workspace, credentialed tools brokered to the host); a microVM
-> (Gondolin) backend; **retention** purge; the **trust-hierarchy** model sanitizer (§12.2); and
-> docs/self-host polish. These gate a production release.
+> stream), and ✅ an **e2e proof** (`make smoke-broker`): a real container (no network, no creds,
+> read-only, workspace-mounted) does FS work AND obtains governed-tool results only via the host
+> broker (destructive → approval_required) — a stand-in for Pi validates the whole host/sandbox
+> split. **Remaining M9 (staged):** swap the stand-in for **real Pi RPC** in the container
+> (vendor integration — also requires brokering the *model* call, since the sandbox has no
+> network/creds); a microVM (Gondolin) backend; **retention** purge; the **trust-hierarchy**
+> model sanitizer (§12.2); and docs/self-host polish. These gate a production release.
 **Goal:** trustworthy enough to self-host and demo as open source.
 
 Human prerequisites:
