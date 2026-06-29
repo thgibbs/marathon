@@ -16,7 +16,7 @@
 import { FakeAgentRuntime } from "@marathon/agent";
 import { EnvSecretStore } from "@marathon/config";
 import { FixturesGithubClient, GithubDelivery, makeDocumentTools } from "@marathon/connector-github";
-import { Database, migrate } from "@marathon/db";
+import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { bootstrapGithubApp, handleWebhookRequest, watchDocument, type GithubAppDeps } from "@marathon/github-app";
 import { FakeMemoryStore } from "@marathon/memory";
 import { Queue } from "@marathon/queue";
@@ -55,10 +55,7 @@ async function main(): Promise<void> {
         registry: new ToolRegistry(makeDocumentTools(() => gh)),
         policy: { grants: [{ tool: "document.create" }, { tool: "document.revise" }, { tool: "document.comment" }] } as ToolPolicy,
         secrets: new EnvSecretStore({}),
-        recorder: {
-          onInvocation: (r) => db.recordToolInvocation({ taskId: r.taskId, toolId: r.toolName, status: r.status, riskLevel: r.riskLevel, inputSummary: r.inputSummary, outputSummary: r.outputSummary, error: r.error }),
-          onAudit: (e) => db.write({ tenantId: e.tenantId, eventType: e.eventType, summary: e.summary, targetType: e.targetType, targetId: e.targetId }),
-        },
+        recorder: dbToolRecorder(db),
       }),
       delivery: new GithubDelivery(gh),
       runtime: new FakeAgentRuntime({ turns: [{ text: "# Rate limiting design\n\n- token bucket per key" }] }),

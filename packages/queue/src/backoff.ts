@@ -1,18 +1,9 @@
 /** Error classification + retry backoff for the durable queue. */
 
-/** Mark an error as transient (worth retrying) explicitly. */
-export class TransientError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "TransientError";
-  }
-}
-
 const TRANSIENT_PATTERN =
   /(timeout|etimedout|econnreset|econnrefused|enotfound|rate.?limit|429|temporarily|throttl|overloaded|503|502|504)/i;
 
 export function classifyError(err: unknown): "transient" | "permanent" {
-  if (err instanceof TransientError) return "transient";
   const msg = err instanceof Error ? err.message : String(err);
   return TRANSIENT_PATTERN.test(msg) ? "transient" : "permanent";
 }
@@ -33,8 +24,4 @@ export function backoffMs(attempt: number, opts: BackoffOptions = {}): number {
   if (!opts.jitter) return Math.round(raw);
   // full jitter in [raw/2, raw]
   return Math.round(raw / 2 + Math.random() * (raw / 2));
-}
-
-export function shouldDeadLetter(attempts: number, maxAttempts: number): boolean {
-  return attempts >= maxAttempts;
 }

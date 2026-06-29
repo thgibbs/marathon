@@ -14,7 +14,7 @@
 import { EnvSecretStore } from "@marathon/config";
 import { FixturesGithubClient, makeGithubReadTools, makeGithubWriteTools } from "@marathon/connector-github";
 import { fenceUntrusted } from "@marathon/core";
-import { Database, migrate } from "@marathon/db";
+import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { getTaskReport } from "@marathon/observability";
 import { makeCliTool, ToolBlockedError, ToolGateway, ToolRegistry, type ToolPolicy } from "@marathon/tools";
 
@@ -50,10 +50,7 @@ async function main(): Promise<void> {
       // merge is GRANTED but destructive -> still needs approval; cli.run granted.
       policy: { grants: [{ tool: "github.read_file" }, { tool: "github.merge_pull_request" }, { tool: "cli.run" }] } as ToolPolicy,
       secrets: new EnvSecretStore({ GITHUB_TOKEN: SENTINEL }),
-      recorder: {
-        onInvocation: (r) => db.recordToolInvocation({ taskId: r.taskId, toolId: r.toolName, status: r.status, riskLevel: r.riskLevel, inputSummary: r.inputSummary, outputSummary: r.outputSummary, error: r.error }),
-        onAudit: (e) => db.write({ tenantId: e.tenantId, eventType: e.eventType, summary: e.summary, targetType: e.targetType, targetId: e.targetId }),
-      },
+      recorder: dbToolRecorder(db),
     });
     const ctx = { taskId: task.id, tenantId: tenant.id, agentId: agent.id };
 

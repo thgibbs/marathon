@@ -1,7 +1,6 @@
 import type { SecretStore } from "@marathon/config";
 import { redactSecrets, type RiskLevel } from "@marathon/core";
 import { enforce, type PolicyDecision, type PolicyResult } from "./policy";
-import type { RateLimiter } from "./rate-limit";
 import type { Tool, ToolInput, ToolPolicy, ToolResult } from "./types";
 
 export class ToolRegistry {
@@ -65,15 +64,14 @@ export interface ToolGatewayOptions {
   policy: ToolPolicy;
   secrets: SecretStore;
   recorder?: ToolRecorder;
-  rateLimiter?: RateLimiter;
   /** Redact secrets from recorded summaries (on by default). */
   redactTrace?: boolean;
 }
 
 /**
  * The single chokepoint for tool side effects (design.md §7.8): validate ->
- * rate-limit -> enforce policy -> inject credentials -> execute -> redact ->
- * record (ToolInvocation + audit). Credentials are resolved inside the tool via
+ * enforce policy -> inject credentials -> execute -> redact -> record
+ * (ToolInvocation + audit). Credentials are resolved inside the tool via
  * `ctx.secrets` and never written to the recorded summaries.
  */
 export interface RunOptions {
@@ -113,11 +111,6 @@ export class ToolGateway {
       throw new Error(`invalid input for ${toolName}: ${validationError}`);
     }
 
-    if (this.opts.rateLimiter && !this.opts.rateLimiter.allow(`${ctx.taskId}:${toolName}`)) {
-      await this.record({ taskId: ctx.taskId, toolName, status: "blocked", riskLevel: tool.riskLevel, inputSummary, error: "rate limited" });
-      await this.audit(ctx, "policy.denied", `rate limited: ${toolName}`);
-      throw new ToolBlockedError(`rate limited: ${toolName}`, "deny");
-    }
 
     const decision = enforce(this.opts.policy, tool, input);
     // A granted approval lets a destructive call through; deny is always terminal.

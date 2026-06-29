@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { backoffMs, classifyError, shouldDeadLetter, TransientError } from "../src/backoff";
+import { backoffMs, classifyError } from "../src/backoff";
 
 describe("classifyError", () => {
-  it("treats TransientError as transient", () => {
-    expect(classifyError(new TransientError("nope"))).toBe("transient");
-  });
-
   it("matches common transient messages", () => {
     expect(classifyError(new Error("request timeout"))).toBe("transient");
     expect(classifyError(new Error("429 rate limit exceeded"))).toBe("transient");
@@ -33,13 +29,5 @@ describe("backoffMs", () => {
       expect(v).toBeGreaterThanOrEqual(200);
       expect(v).toBeLessThanOrEqual(400);
     }
-  });
-});
-
-describe("shouldDeadLetter", () => {
-  it("dead-letters once attempts reach the max", () => {
-    expect(shouldDeadLetter(4, 5)).toBe(false);
-    expect(shouldDeadLetter(5, 5)).toBe(true);
-    expect(shouldDeadLetter(6, 5)).toBe(true);
   });
 });

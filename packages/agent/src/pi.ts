@@ -31,8 +31,6 @@ export interface GovernedToolsConfig {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   gateway: any; // @marathon/tools ToolGateway (kept loose to avoid a hard dep cycle)
   tools: GovernedToolSpec[];
-  /** Fallback ctx; per-call ctx is taken from the turn's request when available. */
-  ctx?: { taskId: string; tenantId: string; agentId?: string };
   onApprovalRequired?: (toolName: string, input: Record<string, unknown>, reason: string) => Promise<void> | void;
 }
 
@@ -100,8 +98,8 @@ export class PiAgentRuntime implements AgentRuntime {
       // falling back to a configured ctx for single-shot uses.
       const govCtx = {
         taskId: ctx.request.taskId,
-        tenantId: ctx.request.tenantId ?? this.opts.governed.ctx?.tenantId ?? "",
-        agentId: ctx.request.agentId ?? this.opts.governed.ctx?.agentId,
+        tenantId: ctx.request.tenantId ?? "",
+        agentId: ctx.request.agentId,
       };
       for (const spec of specs) {
         // Model-facing tool names must match ^[A-Za-z0-9_-]+$ (no dots); map back

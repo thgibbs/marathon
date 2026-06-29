@@ -12,7 +12,7 @@
 import { runGovernedTool } from "@marathon/agent";
 import { EnvSecretStore } from "@marathon/config";
 import { FixturesGithubClient, makeGithubReadTools, makeGithubWriteTools } from "@marathon/connector-github";
-import { Database, migrate } from "@marathon/db";
+import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { Queue } from "@marathon/queue";
 import { ToolGateway, ToolRegistry, type ToolPolicy } from "@marathon/tools";
 import { ApprovalService, executeApproved, proposeToolCall } from "@marathon/worker";
@@ -42,10 +42,7 @@ async function main(): Promise<void> {
       registry: new ToolRegistry([...makeGithubReadTools(() => gh), ...makeGithubWriteTools(() => gh)]),
       policy: { grants: [{ tool: "github.read_file" }, { tool: "github.merge_pull_request" }] } as ToolPolicy,
       secrets: new EnvSecretStore({ GITHUB_TOKEN: "ghp_SENTINEL000000000000000000000000000" }),
-      recorder: {
-        onInvocation: (r) => db.recordToolInvocation({ taskId: r.taskId, toolId: r.toolName, status: r.status, riskLevel: r.riskLevel, inputSummary: r.inputSummary, outputSummary: r.outputSummary, error: r.error }),
-        onAudit: (e) => db.write({ tenantId: e.tenantId, eventType: e.eventType, summary: e.summary, targetType: e.targetType, targetId: e.targetId }),
-      },
+      recorder: dbToolRecorder(db),
     });
     const ctx = { taskId: task.id, tenantId: tenant.id, agentId: agent.id };
     const approvals = new ApprovalService(db);

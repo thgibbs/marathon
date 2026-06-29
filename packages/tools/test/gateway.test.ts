@@ -1,6 +1,5 @@
 import { EnvSecretStore } from "@marathon/config";
 import { describe, expect, it } from "vitest";
-import { RateLimiter } from "../src/rate-limit";
 import {
   ToolBlockedError,
   ToolGateway,
@@ -99,17 +98,5 @@ describe("ToolGateway", () => {
       secrets: new EnvSecretStore({}),
     });
     await expect(gw.run("echo", {}, ctx)).rejects.toThrow(/invalid input/);
-  });
-
-  it("enforces rate limits", async () => {
-    let now = 0;
-    const gw = new ToolGateway({
-      registry: new ToolRegistry([echoTool]),
-      policy: { grants: [{ tool: "echo" }] },
-      secrets: new EnvSecretStore({}),
-      rateLimiter: new RateLimiter(1, 1000, () => now),
-    });
-    await gw.run("echo", { text: "a" }, ctx);
-    await expect(gw.run("echo", { text: "b" }, ctx)).rejects.toThrow(/rate limited/);
   });
 });

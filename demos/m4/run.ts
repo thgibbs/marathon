@@ -10,7 +10,7 @@
  * `make smoke-slack`. Requires Postgres at DATABASE_URL.
  */
 import { EnvSecretStore } from "@marathon/config";
-import { Database, migrate } from "@marathon/db";
+import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { type StructuredResult, type AgentDescriptor } from "@marathon/surface";
 import {
   computeSlackSignature,
@@ -84,20 +84,7 @@ async function main(): Promise<void> {
       registry: new ToolRegistry([makeCliTool(["echo"], new LocalSubprocessSandbox())]),
       policy: { grants: [{ tool: "cli.run" }] } as ToolPolicy,
       secrets: new EnvSecretStore({}),
-      recorder: {
-        onInvocation: (r) =>
-          db.recordToolInvocation({
-            taskId: r.taskId,
-            toolId: r.toolName,
-            status: r.status,
-            riskLevel: r.riskLevel,
-            inputSummary: r.inputSummary,
-            outputSummary: r.outputSummary,
-            error: r.error,
-          }),
-        onAudit: (e) =>
-          db.write({ tenantId: e.tenantId, eventType: e.eventType, summary: e.summary, targetType: e.targetType, targetId: e.targetId }),
-      },
+      recorder: dbToolRecorder(db),
     });
 
     const stepRunner = async ({ checkpoint }: { checkpoint: { completedSteps: string[]; findings: string[] } }) => {

@@ -14,15 +14,13 @@
  */
 import { EnvSecretStore } from "@marathon/config";
 import { FixturesGithubClient, makeGithubReadTools } from "@marathon/connector-github";
-import { Database, migrate } from "@marathon/db";
+import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import {
   LocalSubprocessSandbox,
   makeCliTool,
   ToolBlockedError,
   ToolGateway,
   ToolRegistry,
-  type AuditRecord,
-  type ToolInvocationRecord,
   type ToolPolicy,
 } from "@marathon/tools";
 
@@ -64,27 +62,7 @@ async function main(): Promise<void> {
       grants: [{ tool: "cli.run" }, { tool: "github.read_file", constraints: { allowedRepos: ["o/repo"] } }],
     };
 
-    const recorder = {
-      onInvocation: (r: ToolInvocationRecord) =>
-        db.recordToolInvocation({
-          taskId: r.taskId,
-          toolId: r.toolName,
-          status: r.status,
-          riskLevel: r.riskLevel,
-          inputSummary: r.inputSummary,
-          outputSummary: r.outputSummary,
-          error: r.error,
-        }),
-      onAudit: (e: AuditRecord) =>
-        db.write({
-          tenantId: e.tenantId,
-          eventType: e.eventType,
-          summary: e.summary,
-          targetType: e.targetType,
-          targetId: e.targetId,
-          actorAgentId: e.actorAgentId,
-        }),
-    };
+    const recorder = dbToolRecorder(db);
 
     const gateway = new ToolGateway({
       registry,

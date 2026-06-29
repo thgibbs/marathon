@@ -14,14 +14,8 @@
  */
 import { EnvSecretStore } from "@marathon/config";
 import { FixturesGithubClient, makeGithubWriteTools } from "@marathon/connector-github";
-import { Database, migrate } from "@marathon/db";
-import {
-  ToolGateway,
-  ToolRegistry,
-  type AuditRecord,
-  type ToolInvocationRecord,
-  type ToolPolicy,
-} from "@marathon/tools";
+import { Database, dbToolRecorder, migrate } from "@marathon/db";
+import { ToolGateway, ToolRegistry, type ToolPolicy } from "@marathon/tools";
 import { ApprovalService, executeApproved, proposeToolCall } from "@marathon/worker";
 
 function assert(cond: boolean, msg: string): void {
@@ -45,27 +39,7 @@ async function main(): Promise<void> {
     const policy: ToolPolicy = {
       grants: [{ tool: "github.create_issue" }, { tool: "github.merge_pull_request" }],
     };
-    const recorder = {
-      onInvocation: (r: ToolInvocationRecord) =>
-        db.recordToolInvocation({
-          taskId: r.taskId,
-          toolId: r.toolName,
-          status: r.status,
-          riskLevel: r.riskLevel,
-          inputSummary: r.inputSummary,
-          outputSummary: r.outputSummary,
-          error: r.error,
-        }),
-      onAudit: (e: AuditRecord) =>
-        db.write({
-          tenantId: e.tenantId,
-          eventType: e.eventType,
-          summary: e.summary,
-          targetType: e.targetType,
-          targetId: e.targetId,
-          actorAgentId: e.actorAgentId,
-        }),
-    };
+    const recorder = dbToolRecorder(db);
     const gateway = new ToolGateway({ registry, policy, secrets: new EnvSecretStore({}), recorder });
     const approvals = new ApprovalService(db);
 

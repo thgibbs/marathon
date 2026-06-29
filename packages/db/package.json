@@ -10,6 +10,7 @@
   "dependencies": {
     "@marathon/config": "workspace:*",
     "@marathon/core": "workspace:*",
+    "@marathon/tools": "workspace:*",
     "pg": "^8.13.0"
   }
 }

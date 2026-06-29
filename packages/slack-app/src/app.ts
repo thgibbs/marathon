@@ -1,7 +1,7 @@
 import { EnvSecretStore, loadConfig } from "@marathon/config";
 import { PiAgentRuntime } from "@marathon/agent";
 import { httpGithubClientFactory, makeGithubReadTools } from "@marathon/connector-github";
-import { Database, migrate } from "@marathon/db";
+import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
 import { Queue } from "@marathon/queue";
@@ -50,11 +50,7 @@ export async function startSlackApp(): Promise<void> {
     registry: new ToolRegistry(makeGithubReadTools(httpGithubClientFactory())),
     policy: { grants: [{ tool: "github.read_file" }, { tool: "github.list_contents" }] },
     secrets,
-    recorder: {
-      onInvocation: (r) =>
-        db.recordToolInvocation({ taskId: r.taskId, toolId: r.toolName, status: r.status, riskLevel: r.riskLevel, inputSummary: r.inputSummary, outputSummary: r.outputSummary, error: r.error }),
-      onAudit: (e) => db.write({ tenantId: e.tenantId, eventType: e.eventType, summary: e.summary, targetType: e.targetType, targetId: e.targetId }),
-    },
+    recorder: dbToolRecorder(db),
   });
   const runtime = new PiAgentRuntime({
     secrets,

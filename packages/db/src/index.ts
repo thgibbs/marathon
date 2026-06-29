@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import type { ToolRecorder } from "@marathon/tools";
 import {
   assertTransition,
   isTerminal,
@@ -663,6 +664,34 @@ export class Database implements AuditWriter, IdempotencyStore {
     const errored = rows[0].errored as number;
     return { total, errored, rate: total ? errored / total : 0 };
   }
+}
+
+/**
+ * A {@link ToolGateway} recorder that persists tool invocations + audit events to
+ * the database. DRYs the recorder wiring shared by the apps and demos.
+ */
+export function dbToolRecorder(db: Database): ToolRecorder {
+  return {
+    onInvocation: (r) =>
+      db.recordToolInvocation({
+        taskId: r.taskId,
+        toolId: r.toolName,
+        status: r.status,
+        riskLevel: r.riskLevel,
+        inputSummary: r.inputSummary,
+        outputSummary: r.outputSummary,
+        error: r.error,
+      }),
+    onAudit: (e) =>
+      db.write({
+        tenantId: e.tenantId,
+        eventType: e.eventType,
+        summary: e.summary,
+        targetType: e.targetType,
+        targetId: e.targetId,
+        actorAgentId: e.actorAgentId,
+      }),
+  };
 }
 
 // --- row mappers (snake_case → camelCase) ---
