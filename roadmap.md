@@ -569,8 +569,11 @@ Build:
 - **Security pass on the trust boundaries** (`design.md` §12): untrusted surface/tool
   output, secrets never in prompts, policy outside the model, tenant isolation, the
   **agent trust hierarchy** (frontier model sanitizes context for smaller models).
-- **Harden execution isolation** — finalize the sandbox for tool execution (Gondolin /
-  Docker / OpenShell), since Pi provides none (`design.md` §12.6).
+- **Harden execution isolation** — implement the sandbox runtime per the design in
+  **`design/12-security-design.md` §12.6**: run the agent loop in a sandbox (Pi RPC) with a
+  credential-free, egress-denied, ephemeral workspace; **broker credentialed tools to the host**
+  gateway; **isolate code/FS tools** in the sandbox. Backends: Docker first, then microVM
+  (Gondolin/Firecracker) / OpenShell. (Seam built in M9 core; `NoSandbox` refuses by default.)
 - Prompt-injection tests (malicious doc body / comment / tool output).
 - **Concurrent document edits** — rebase-before-write on a stale base SHA (today we safely
   *reject*; risk #7). *(M6 carry-over #6.)*

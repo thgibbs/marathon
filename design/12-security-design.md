@@ -122,24 +122,119 @@ For privacy-sensitive deployments, allow prompt/response logging to be disabled 
 
 ---
 
-## 12.6 Execution isolation
+## 12.6 Execution isolation (the sandbox runtime)
 
-> *Status: designed, not yet implemented — the top remaining security gap (roadmap M9).* The
-> MVP runs Pi with no sandbox, and (per §7.8 as-built) Pi's enabled **built-in** tools
-> (`read/grep/find/ls`) run **ungoverned and unaudited** against the worker's filesystem. `bash`
-> is intentionally not enabled yet. Closing this means both a sandbox *and* routing built-ins
-> through the gateway (or replacing them).
+> **Status.** The **seam** is built (M9 core): a `ToolSandbox` interface with a default
+> `NoSandbox` that *refuses* — so there is no implicit unsandboxed shell — plus a
+> `LocalSubprocessSandbox` for trusted dev. The **runtime** below (Docker / microVM brokering)
+> is the remaining M9 work and **gates a production release**. This section is the target design.
 
 **Pi has no built-in sandbox** — it runs with the full permissions of its OS user, and its
-"project trust" only guards config loading, not runtime. Isolation is therefore Marathon's
-responsibility, layered on top of the in-harness policy hook (§7.8) and the agent trust
-hierarchy (§12.2):
+"project trust" guards config loading, not runtime. Because the agent is injection-influenceable
+(§12.2), any tool that **executes code or touches the filesystem** is the highest-risk surface.
+Isolation exists to contain a compromised/injected agent's *tool execution*.
 
-* Run the worker + Pi under **OS-level isolation** (container/VM) per deployment.
-* Route tool execution — especially the `bash`/CLI tool and write tools — through a
-  **sandbox**. Pi documents Gondolin (local micro-VM), plain Docker, and OpenShell (policy
-  sandbox with upstream credential injection).
-* Inject credentials at execution via the tool hook; never mount secrets where the agent (or
-  its `bash` tool) can read them.
+### Threat model — what isolation must contain
 
-See `pi-details.md` §7 for options.
+Policy-outside-the-model (§7.8) already prevents an injected agent from invoking a *destructive
+governed tool* without approval, and credentials are injected only at execution (§12.3).
+Isolation closes the remaining gap — **code / shell / filesystem execution** — which otherwise
+could: read another tenant's data, the host filesystem, env, or secrets; **exfiltrate** over the
+network; tamper with or persist on the host; escalate privileges; or exhaust resources (DoS).
+
+**Goal:** a fully-compromised agent's code execution can touch only an **ephemeral, scoped
+workspace** — with no secrets, no host access, and no unapproved network egress.
+
+### Core principle — broker credentialed tools on the host; isolate code in the sandbox
+
+Tools fall into two execution classes, run in different places:
+
+| Class | Examples | Runs | Why |
+| --- | --- | --- | --- |
+| **Brokered** (credentialed network/API) | `github.*`, `document.*`, Slack | on the **host**, via the `ToolGateway` | credentials + policy must stay host-side; never enter the sandbox |
+| **Isolated** (code / shell / filesystem) | `cli.run` (bash), future code-exec, Pi's built-in `read/grep/find/ls` | **inside** the sandbox | untrusted code must be contained — no creds, scoped FS, egress denied |
+
+The sandboxed agent is **credential-free** and makes **no credentialed calls directly**: it
+*requests* a governed tool, the host gateway executes it (inject creds → policy/approval →
+redact output) and returns the result. This is "upstream credential injection" — secrets never
+cross into the sandbox.
+
+### Pi integration — agent loop in the sandbox, tools brokered to the host
+
+Pi runs its built-in tools in-process, so we cannot both keep them and leave them ungoverned
+(the §7.8 as-built gap, roadmap §2b #2). The target architecture (hybrid) resolves both at once:
+
+* The **durable spine stays on the host** — Orchestrator / Worker / DB / queue, leasing,
+  checkpoints — and holds credentials + the `ToolGateway`.
+* The **agent loop (Pi) runs in the sandbox** (Pi RPC mode, `pi --mode rpc`); its **built-in
+  file tools operate only on the mounted workspace**, so they become safe by construction.
+* **Governed tools are brokered over the RPC boundary**: a tool call crosses to the host, which
+  runs it through the gateway and returns a redacted result.
+
+This closes both gaps together: no unsandboxed code execution, **and** Pi's built-ins are
+contained without a separate hook. *Interim stopgap* (weaker): keep Pi in-process on the host
+but disable built-ins and route only code tools through the sandbox — acceptable short-term, not
+the target (built-ins would still see the host FS).
+
+### The `ToolSandbox` contract
+
+The seam exists; backends implement the full contract:
+
+* **Lifecycle** — `provision(spec)` (ephemeral env) → `exec(cmd)` (one or many) → `teardown()`
+  (destroy). **One sandbox per task**; never shared across tenants without a reset.
+* **Filesystem** — read-only base image; a writable **workspace** (the task's materials, e.g. a
+  shallow clone at a pinned SHA) + ephemeral scratch; **no host mounts**, no access to `/`, env,
+  or the secret store.
+* **Network** — **deny by default**; an optional per-policy egress allowlist; the only standing
+  channel is the **broker socket** back to the host for governed tool calls.
+* **Credentials** — none in the image, FS, or env (brokered tools get creds host-side only).
+* **Resource limits** — CPU, memory, wall-clock, max processes (anti-fork-bomb), disk quota;
+  killed on breach/timeout. Ties to budgets (§13.3, M8).
+* **Output** — captured stdout/stderr + exit code, size-capped and **redacted** (§12.2) before
+  it re-enters the model context.
+* **Reproducibility** — pinned base-image digest + pinned workspace revision.
+
+### Isolation backends (tiered; the interface hides the mechanism)
+
+| Backend | Isolation | Needs | Use when |
+| --- | --- | --- | --- |
+| `NoSandbox` (default) | none — **refuses** | — | code tools disabled (safe default; M9 core) |
+| **Docker / OCI** | process + FS + network namespaces; cgroup limits | a container runtime | default self-host — strong and ubiquitous |
+| **microVM** (Gondolin / Firecracker) | hardware virtualization | KVM/QEMU (Gondolin: Node ≥ 23.6) | hostile / untrusted-code multi-tenant — strongest |
+| **OpenShell** | syscall/policy sandbox + upstream cred injection | OpenShell | policy control without a full VM |
+
+Recommended path: **Docker first**, **microVM** for hostile multi-tenant, OpenShell as an
+alternative (see `pi-details.md` §7).
+
+### Workspace lifecycle
+
+Provision a sandbox → materialize an **ephemeral workspace** (shallow clone at the pinned SHA /
+the relevant files) → run the agent loop → capture outputs → **broker any writes** back through
+governed tools (which apply approval for destructive changes, §7.9) → **destroy** the sandbox and
+workspace. Nothing persists; the next task starts clean.
+
+### Failure handling — fail closed
+
+* Sandbox **provisioning failure** → the task fails closed (code/shell tools denied); **never**
+  silently fall back to host execution.
+* Sandbox not configured → `NoSandbox` refuses (the M9-core default).
+* Policy may **require a minimum isolation level** per tool/tenant/risk (e.g. `cli.run` requires
+  ≥ Docker; an untrusted-repo task requires a microVM).
+
+### Configuration & testing
+
+* Deployment selects the backend (`none` | `docker` | `microvm` | `openshell`), resource limits,
+  and the egress allowlist; policy may pin a minimum level.
+* **CI** uses a `FakeSandbox` for contract/policy unit tests; the **`NoSandbox`-refuses**
+  behavior is asserted in `demo-m9`. Real backends aren't run in CI (no Docker-in-Docker / KVM)
+  — they're covered by an **opt-in local smoke** (`make smoke-sandbox`).
+
+### Required
+
+* Any code/FS tool executes **only** through a configured `ToolSandbox`; the default refuses.
+* The sandbox is **credential-free**, **egress-denied** (except the broker), **resource-limited**,
+  **ephemeral**, **non-host-mounted**, and **per-tenant isolated**.
+* Credentialed tools are **brokered on the host**; outputs are redacted before re-entering the
+  model context.
+* Pi's built-in file tools see **only** the sandbox workspace.
+* **Fail closed** on provisioning/limit errors; pin the base image + workspace revision.

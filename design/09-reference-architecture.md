@@ -121,6 +121,13 @@ Responsibilities:
 
 Workers should be stateless except for currently leased work.
 
+**Execution isolation (target, §12.6).** The durable spine (worker/orchestrator/DB) and the
+`ToolGateway` — which hold credentials — stay on the **host**. The **agent loop runs in a
+sandbox** (Pi RPC mode) with a credential-free, egress-denied, ephemeral workspace; **code/FS
+tools execute in the sandbox**, while **credentialed tools are brokered back to the host** gateway
+(creds + policy + approval + redaction stay host-side). Today this is a seam (`ToolSandbox`,
+default `NoSandbox` refuses); the Docker/microVM runtime is M9.
+
 ---
 
 ### Model Gateway (minimal)
