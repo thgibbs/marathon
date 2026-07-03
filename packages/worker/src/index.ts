@@ -1,5 +1,6 @@
 export { makeSyntheticStepRunner } from "./steps";
 export * from "./agent-step";
+export * from "./build-step";
 export * from "./approvals";
 export * from "./prompt";
 export * from "./router";

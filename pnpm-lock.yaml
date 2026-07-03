@@ -78,6 +78,36 @@ importers:
         specifier: workspace:*
         version: link:../../packages/tools
 
+  demos/k4:
+    dependencies:
+      '@marathon/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@marathon/code-handoff':
+        specifier: workspace:*
+        version: link:../../packages/code-handoff
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@marathon/connector-github':
+        specifier: workspace:*
+        version: link:../../packages/connector-github
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@marathon/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+      '@marathon/worker':
+        specifier: workspace:*
+        version: link:../../packages/worker
+
   demos/m0:
     dependencies:
       '@marathon/config':
@@ -551,6 +581,9 @@ importers:
       '@marathon/agent':
         specifier: workspace:*
         version: link:../agent
+      '@marathon/code-handoff':
+        specifier: workspace:*
+        version: link:../code-handoff
       '@marathon/core':
         specifier: workspace:*
         version: link:../core

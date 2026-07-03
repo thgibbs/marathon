@@ -99,7 +99,9 @@ export class Worker {
       await this.queue.ack(job.id, token);
       return "completed";
     } catch (err) {
-      if (err instanceof SimulatedCrash) {
+      // Matched by name, not instanceof: runtimes (e.g. ScriptedBuildRuntime's
+      // ScriptedCrash) simulate mid-run deaths without importing the worker.
+      if (err instanceof Error && err.name === "SimulatedCrash") {
         // abandon the lease — exactly what a real crash does. Recovered on timeout.
         return "crashed";
       }

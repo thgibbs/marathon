@@ -18,6 +18,21 @@ features.
 Progress against the tracks below, most recent first. The "Current mismatch" lists in each
 track describe the codebase *before* its work landed; completed tracks carry a status note.
 
+- **Track 4: Worker Runtime and Durable Resume — done (K4, 2026-07-02).**
+  `PiAgentRuntime` is now a real multi-turn session runner: per-task session JSONL under
+  `sessionDir/<taskId>/`, a point-in-time session snapshot after every completed Pi turn
+  (turn atomicity — resume from a snapshot discards the incomplete turn), and per-turn
+  checkpoint/tool-event hooks on the runtime seam (`onTurnCheckpoint`/`onEvent`, with
+  per-turn model-usage accounting). `makeBuildStepRunner` (`packages/worker`) owns the
+  BUILD-stage workspace lifecycle: fresh `CodeWorkspace` at `base_sha` per run, checkpointed
+  diff replayed on resume (over-cap diffs spill to `diffDir` as `workspaceDiffRef`),
+  `CodeTaskRegistry` binding for the handoff tool, capped tool events into findings, and
+  teardown always. `ScriptedBuildRuntime` gives CI a deterministic multi-turn loop with the
+  same contract. `make demo-k4` kills a worker mid-BUILD after a per-turn checkpoint and
+  asserts a fresh worker resumes with no re-run turns and exactly one PR; `make smoke-k4`
+  proves the same with a REAL Pi run (sandboxed Docker tools), SIGKILLed at its first turn
+  checkpoint and resumed to a single PR. Durable waits/clarifications stay with Track 8.
+
 - **Track 3: Data Model and Core Types — done (2026-07-02).** Migration 0008 adds
   `proposed_effect`, replaces `risk_level` with `risk_axes` on `tool_invocation` and
   `approval_request`, adds `approval_request.proposed_effect_id`, retires `blocked` from the
@@ -39,9 +54,9 @@ track describe the codebase *before* its work landed; completed tracks carry a s
   to the merge commit and inherited delivery targets; `packages/surface/src/fanout.ts`
   delivers to every target idempotently. `make demo-k1` proves the path.
 
-Not started: Tracks 4–13 (worker durable resume, gateway effect routing, document-workflow
+Not started: Tracks 5–13 except K4 (gateway effect routing, document-workflow
 iteration paths, sandbox toolchain image, prompt/context continuity, memory migration,
-Forge YAML config/quickstart, model routing, status/cost UX, kernel demos beyond K1).
+Forge YAML config/quickstart, model routing, status/cost UX, kernel demos beyond K1/K4).
 
 ## Current Alignment Snapshot
 
@@ -254,6 +269,10 @@ Required changes:
 - Update row mappers and database methods for new fields.
 
 ## Track 4: Worker Runtime and Durable Resume
+
+> **Status (2026-07-02): implemented** — see "Completed Work" above. The "stop after
+> durable wait / clarification" runtime behavior lands with Track 8's waiting states;
+> the resume seam it needs (re-open session + continue) is in place.
 
 Design target:
 
