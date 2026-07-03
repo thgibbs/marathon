@@ -32,19 +32,62 @@ export interface Checkpoint {
 export const emptyCheckpoint = (): Checkpoint => ({ completedSteps: [], findings: [] });
 
 /**
- * Tolerantly parse a stored checkpoint value, defaulting missing/garbage base
- * fields and passing the optional BUILD-stage fields through as stored.
+ * Tolerantly parse a stored checkpoint value: missing/garbage base fields
+ * default to empty, and each optional BUILD-stage field is shape-validated —
+ * a malformed field is dropped rather than passed through mistyped, so resume
+ * code can trust what the type says. This is a trust boundary: the stored
+ * JSONB may be from an older writer or hand-edited.
  */
 export function parseCheckpoint(value: unknown): Checkpoint {
   if (!value || typeof value !== "object") return emptyCheckpoint();
   const v = value as Record<string, unknown>;
   const strings = (x: unknown): string[] =>
     Array.isArray(x) ? x.filter((e): e is string => typeof e === "string") : [];
-  return {
-    ...(v as Partial<Checkpoint>),
+  const str = (x: unknown): string | undefined => (typeof x === "string" ? x : undefined);
+  const int = (x: unknown): number | undefined =>
+    typeof x === "number" && Number.isInteger(x) ? x : undefined;
+
+  const cp: Checkpoint = {
     completedSteps: strings(v.completedSteps),
     findings: strings(v.findings),
   };
+  // Assign optionals only when valid, so absent and malformed look the same.
+  const set = <K extends keyof Checkpoint>(key: K, val: Checkpoint[K] | undefined): void => {
+    if (val !== undefined) cp[key] = val;
+  };
+  set("phase", str(v.phase));
+  set("turnIndex", int(v.turnIndex));
+  set("sessionRef", str(v.sessionRef));
+  set("baseSha", str(v.baseSha));
+  set("workspaceDiffRef", str(v.workspaceDiffRef));
+  set("workspaceDiff", str(v.workspaceDiff));
+  set("verification", parseVerification(v.verification));
+  set("planRef", parsePlanRef(v.planRef));
+  if (Array.isArray(v.completedEffects)) set("completedEffects", strings(v.completedEffects));
+  return cp;
+}
+
+function parseVerification(x: unknown): VerificationResult[] | undefined {
+  if (!Array.isArray(x)) return undefined;
+  // Drop malformed entries, keep the valid rest.
+  return x.filter(
+    (e): e is VerificationResult =>
+      !!e &&
+      typeof e === "object" &&
+      typeof (e as VerificationResult).command === "string" &&
+      typeof (e as VerificationResult).exitCode === "number" &&
+      typeof (e as VerificationResult).summary === "string",
+  );
+}
+
+function parsePlanRef(x: unknown): PlanRef | undefined {
+  if (!x || typeof x !== "object") return undefined;
+  const p = x as PlanRef;
+  return typeof p.repo === "string" &&
+    typeof p.docPath === "string" &&
+    typeof p.mergeCommitSha === "string"
+    ? { repo: p.repo, docPath: p.docPath, mergeCommitSha: p.mergeCommitSha }
+    : undefined;
 }
 
 export interface StepContext {

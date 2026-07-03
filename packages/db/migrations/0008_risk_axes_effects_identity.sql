@@ -38,10 +38,27 @@ create table proposed_effect (
 create index proposed_effect_task_idx on proposed_effect(task_id);
 create index proposed_effect_tenant_idx on proposed_effect(tenant_id);
 
+-- Backfill existing rows with the same legacy mapping as core's
+-- riskAxesFromLegacy(), so prior history keeps its risk classification in
+-- timelines. The rows don't carry `destructive`, so reversibility is
+-- approximated from the level (high/critical tools were the destructive ones);
+-- the exfil and audience axes cannot be inferred and default safe.
 alter table tool_invocation add column risk_axes jsonb;
+update tool_invocation set risk_axes = jsonb_build_object(
+    'reversible', risk_level not in ('high','critical'),
+    'crossesTrustBoundary', false,
+    'audience', 'team',
+    'costly', risk_level in ('high','critical'))
+  where risk_level is not null;
 alter table tool_invocation drop column risk_level;
 
 alter table approval_request add column risk_axes jsonb;
+update approval_request set risk_axes = jsonb_build_object(
+    'reversible', risk_level not in ('high','critical'),
+    'crossesTrustBoundary', false,
+    'audience', 'team',
+    'costly', risk_level in ('high','critical'))
+  where risk_level is not null;
 alter table approval_request drop column risk_level;
 alter table approval_request
   add column proposed_effect_id uuid references proposed_effect(id) on delete set null;

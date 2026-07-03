@@ -40,4 +40,24 @@ describe("checkpoint codec", () => {
     };
     expect(parseCheckpoint(cp)).toEqual(cp);
   });
+
+  it("drops malformed BUILD-stage fields instead of passing them through mistyped", () => {
+    expect(
+      parseCheckpoint({
+        completedSteps: ["turn:0"],
+        findings: [],
+        turnIndex: "one", // wrong type
+        baseSha: 123, // wrong type
+        verification: [{ command: "pnpm test" }, { command: "make lint", exitCode: 1, summary: "red" }],
+        planRef: { repo: "acme/app" }, // missing fields
+        completedEffects: ["ok", 7],
+        unknownJunk: { nested: true },
+      }),
+    ).toEqual({
+      completedSteps: ["turn:0"],
+      findings: [],
+      verification: [{ command: "make lint", exitCode: 1, summary: "red" }],
+      completedEffects: ["ok"],
+    });
+  });
 });

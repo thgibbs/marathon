@@ -9,6 +9,7 @@ import {
   type AuditEvent,
   type Agent,
   type AgentVersion,
+  type Checkpoint,
   type CodeChange,
   type CodeChangeState,
   type DeliveryTarget,
@@ -286,7 +287,7 @@ export class Database implements AuditWriter, IdempotencyStore {
   async completeStep(
     taskId: Id,
     stepType: string,
-    checkpoint: Record<string, unknown>,
+    checkpoint: Checkpoint,
     modelInvocations: Array<Omit<NewModelInvocation, "taskId">> = [],
   ): Promise<void> {
     const client = await this.pool.connect();
