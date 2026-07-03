@@ -9,6 +9,14 @@ export interface GithubEntry {
   path: string;
 }
 
+/** One entry of a commit tree built from a captured workspace diff (§29.4 step 4). */
+export interface GitTreeEntry {
+  path: string;
+  mode: "100644" | "100755" | "120000";
+  /** Blob sha for adds/modifies; null deletes the path (relative to the base tree). */
+  sha: string | null;
+}
+
 export interface GithubClient {
   readFile(repo: string, path: string, ref?: string): Promise<GithubFile>;
   readFileWithSha(repo: string, path: string, ref?: string): Promise<GithubFile & { sha: string }>;
@@ -29,10 +37,28 @@ export interface GithubClient {
     message: string,
     sha?: string,
   ): Promise<{ commitSha: string; contentSha: string }>;
-  createPullRequest(repo: string, title: string, head: string, base: string, body?: string): Promise<{ number: number; url: string }>;
+  createPullRequest(
+    repo: string,
+    title: string,
+    head: string,
+    base: string,
+    body?: string,
+    opts?: { draft?: boolean },
+  ): Promise<{ number: number; url: string }>;
   closePullRequest(repo: string, prNumber: number): Promise<void>;
   deleteRef(repo: string, branch: string): Promise<void>;
   replyToReviewComment(repo: string, pullNumber: number, commentId: number, body: string): Promise<{ id: number }>;
+  // code handoff (K1, design §29.4-§29.5): commit a captured diff host-side via the
+  // Git Data API, push the task branch, and create-or-update the code PR.
+  getCommit(repo: string, sha: string): Promise<{ sha: string; treeSha: string }>;
+  createBlob(repo: string, contentBase64: string): Promise<{ sha: string }>;
+  createTree(repo: string, baseTreeSha: string, entries: GitTreeEntry[]): Promise<{ sha: string }>;
+  createCommit(repo: string, message: string, treeSha: string, parentShas: string[]): Promise<{ sha: string }>;
+  /** Move a branch ref; force approximates `--force-with-lease` (a task owns its own branch). */
+  updateRef(repo: string, branch: string, sha: string, force: boolean): Promise<void>;
+  findPullRequestByHead(repo: string, head: string): Promise<{ number: number; url: string; draft: boolean } | null>;
+  updatePullRequest(repo: string, prNumber: number, patch: { title?: string; body?: string }): Promise<void>;
+  addLabels(repo: string, issueNumber: number, labels: string[]): Promise<void>;
   // permission / identity (M6 repo-permission checks)
   /** Repo metadata if the *agent's* token can see it; null if not accessible (404). */
   getRepo(repo: string): Promise<{ private: boolean } | null>;
@@ -155,13 +181,74 @@ export class HttpGithubClient implements GithubClient {
     return { commitSha: j.commit?.sha, contentSha: j.content?.sha };
   }
 
-  async createPullRequest(repo: string, title: string, head: string, base: string, body?: string): Promise<{ number: number; url: string }> {
-    const j = await this.api(`/repos/${repo}/pulls`, { method: "POST", body: { title, head, base, body } });
+  async createPullRequest(
+    repo: string,
+    title: string,
+    head: string,
+    base: string,
+    body?: string,
+    opts?: { draft?: boolean },
+  ): Promise<{ number: number; url: string }> {
+    const j = await this.api(`/repos/${repo}/pulls`, {
+      method: "POST",
+      body: { title, head, base, body, draft: opts?.draft ?? false },
+    });
     return { number: j.number, url: j.html_url };
   }
 
   async closePullRequest(repo: string, prNumber: number): Promise<void> {
     await this.api(`/repos/${repo}/pulls/${prNumber}`, { method: "PATCH", body: { state: "closed" } });
+  }
+
+  async getCommit(repo: string, sha: string): Promise<{ sha: string; treeSha: string }> {
+    const j = await this.api(`/repos/${repo}/git/commits/${sha}`);
+    return { sha: j.sha, treeSha: j.tree.sha };
+  }
+
+  async createBlob(repo: string, contentBase64: string): Promise<{ sha: string }> {
+    const j = await this.api(`/repos/${repo}/git/blobs`, {
+      method: "POST",
+      body: { content: contentBase64, encoding: "base64" },
+    });
+    return { sha: j.sha };
+  }
+
+  async createTree(repo: string, baseTreeSha: string, entries: GitTreeEntry[]): Promise<{ sha: string }> {
+    const j = await this.api(`/repos/${repo}/git/trees`, {
+      method: "POST",
+      body: {
+        base_tree: baseTreeSha,
+        tree: entries.map((e) => ({ path: e.path, mode: e.mode, type: "blob", sha: e.sha })),
+      },
+    });
+    return { sha: j.sha };
+  }
+
+  async createCommit(repo: string, message: string, treeSha: string, parentShas: string[]): Promise<{ sha: string }> {
+    const j = await this.api(`/repos/${repo}/git/commits`, {
+      method: "POST",
+      body: { message, tree: treeSha, parents: parentShas },
+    });
+    return { sha: j.sha };
+  }
+
+  async updateRef(repo: string, branch: string, sha: string, force: boolean): Promise<void> {
+    await this.api(`/repos/${repo}/git/refs/heads/${branch}`, { method: "PATCH", body: { sha, force } });
+  }
+
+  async findPullRequestByHead(repo: string, head: string): Promise<{ number: number; url: string; draft: boolean } | null> {
+    const owner = repo.split("/")[0];
+    const j = await this.api(`/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${head}`)}`);
+    const pr = Array.isArray(j) ? j[0] : undefined;
+    return pr ? { number: pr.number, url: pr.html_url, draft: Boolean(pr.draft) } : null;
+  }
+
+  async updatePullRequest(repo: string, prNumber: number, patch: { title?: string; body?: string }): Promise<void> {
+    await this.api(`/repos/${repo}/pulls/${prNumber}`, { method: "PATCH", body: patch });
+  }
+
+  async addLabels(repo: string, issueNumber: number, labels: string[]): Promise<void> {
+    await this.api(`/repos/${repo}/issues/${issueNumber}/labels`, { method: "POST", body: { labels } });
   }
 
   async deleteRef(repo: string, branch: string): Promise<void> {
@@ -261,7 +348,13 @@ export class FixturesGithubClient implements GithubClient {
   }
 
   async createBranch(repo: string, branch: string, fromSha: string): Promise<void> {
+    const key = `${repo}:${branch}`;
+    const existing = this.branchShas.get(key);
+    // Re-creating at the same sha is a no-op; at a different sha GitHub 422s.
+    if (existing !== undefined && existing !== fromSha)
+      throw new Error(`github 422: reference already exists: ${branch}`);
     this.writes.push({ op: "createBranch", args: { repo, branch, fromSha } });
+    this.branchShas.set(key, fromSha);
   }
 
   async putFile(
@@ -284,10 +377,19 @@ export class FixturesGithubClient implements GithubClient {
     return { commitSha: `commit-${this.issueSeq}`, contentSha };
   }
 
-  async createPullRequest(repo: string, title: string, head: string, base: string): Promise<{ number: number; url: string }> {
+  async createPullRequest(
+    repo: string,
+    title: string,
+    head: string,
+    base: string,
+    body?: string,
+    opts?: { draft?: boolean },
+  ): Promise<{ number: number; url: string }> {
     const number = this.prSeq++;
-    this.writes.push({ op: "createPullRequest", args: { repo, title, head, base } });
-    return { number, url: `https://example.test/${repo}/pull/${number}` };
+    const url = `https://example.test/${repo}/pull/${number}`;
+    this.writes.push({ op: "createPullRequest", args: { repo, title, head, base, body, draft: opts?.draft ?? false } });
+    this.openPrs.set(`${repo}:${head}`, { number, url, draft: opts?.draft ?? false, title, body });
+    return { number, url };
   }
 
   async closePullRequest(repo: string, prNumber: number): Promise<void> {
@@ -311,5 +413,61 @@ export class FixturesGithubClient implements GithubClient {
 
   async getUserRepoPermission(repo: string, username: string): Promise<RepoPermission> {
     return this.fixtures.userPermissions?.[`${repo}:${username}`] ?? "write";
+  }
+
+  // --- code handoff (K1) ---
+
+  /** Open PRs by "repo:head" (for create-or-update assertions). */
+  public readonly openPrs = new Map<
+    string,
+    { number: number; url: string; draft: boolean; title?: string; body?: string }
+  >();
+  /** Branch heads by "repo:branch" (set by createBranch/updateRef). */
+  public readonly branchShas = new Map<string, string>();
+  /** Labels by "repo:number". */
+  public readonly labels = new Map<string, string[]>();
+  private gitSeq = 1;
+
+  async getCommit(repo: string, sha: string): Promise<{ sha: string; treeSha: string }> {
+    return { sha, treeSha: `tree-of-${sha}` };
+  }
+
+  async createBlob(repo: string, contentBase64: string): Promise<{ sha: string }> {
+    this.writes.push({ op: "createBlob", args: { repo, contentBase64 } });
+    return { sha: `blob-${this.gitSeq++}` };
+  }
+
+  async createTree(repo: string, baseTreeSha: string, entries: GitTreeEntry[]): Promise<{ sha: string }> {
+    this.writes.push({ op: "createTree", args: { repo, baseTreeSha, entries } });
+    return { sha: `tree-${this.gitSeq++}` };
+  }
+
+  async createCommit(repo: string, message: string, treeSha: string, parentShas: string[]): Promise<{ sha: string }> {
+    this.writes.push({ op: "createCommit", args: { repo, message, treeSha, parentShas } });
+    return { sha: `commit-${this.gitSeq++}` };
+  }
+
+  async updateRef(repo: string, branch: string, sha: string, force: boolean): Promise<void> {
+    const key = `${repo}:${branch}`;
+    if (!this.branchShas.has(key)) throw new Error(`github 422: ref not found: ${branch}`);
+    this.writes.push({ op: "updateRef", args: { repo, branch, sha, force } });
+    this.branchShas.set(key, sha);
+  }
+
+  async findPullRequestByHead(repo: string, head: string): Promise<{ number: number; url: string; draft: boolean } | null> {
+    return this.openPrs.get(`${repo}:${head}`) ?? null;
+  }
+
+  async updatePullRequest(repo: string, prNumber: number, patch: { title?: string; body?: string }): Promise<void> {
+    this.writes.push({ op: "updatePullRequest", args: { repo, prNumber, ...patch } });
+    for (const pr of this.openPrs.values()) {
+      if (pr.number === prNumber) Object.assign(pr, patch);
+    }
+  }
+
+  async addLabels(repo: string, issueNumber: number, labels: string[]): Promise<void> {
+    this.writes.push({ op: "addLabels", args: { repo, issueNumber, labels } });
+    const key = `${repo}:${issueNumber}`;
+    this.labels.set(key, [...(this.labels.get(key) ?? []), ...labels]);
   }
 }

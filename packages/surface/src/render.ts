@@ -13,6 +13,9 @@ export function renderResultText(result: StructuredResult): string {
   if (result.openQuestions?.length) {
     lines.push(`\n*Open questions:*\n${result.openQuestions.map((q) => `• ${q}`).join("\n")}`);
   }
+  if (result.crossLinks?.length) {
+    lines.push(`\n_also delivered to: ${result.crossLinks.join(", ")}_`);
+  }
   if (typeof result.costUsd === "number") {
     lines.push(`\n_cost: $${result.costUsd.toFixed(4)}_`);
   }

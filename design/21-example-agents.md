@@ -1,5 +1,70 @@
 # 21. Example agents
 
+## 21.0 Forge: the flagship kernel agent (ships first)
+
+The kernel runs **one agent** (§0.4) that spans the whole loop — it drafts the design doc
+*and* writes the code. Bruce/Ada/Grace/Linus/Quill below are **direction**, not kernel.
+
+Purpose:
+
+> Run the §0.1 loop end-to-end on the deployment's one configured repo: turn a Slack ask
+> into a design-doc PR, iterate on review, and implement the merged plan as a green-tested
+> code PR (§29).
+
+Definition (the actual YAML shape, §6.2):
+
+```yaml
+name: forge
+display_name: Forge
+description: Drafts design docs from Slack asks and implements merged plans as code PRs.
+harness: pi                       # deployment default; claude-code once K7 lands
+
+repo: your-org/your-repo          # the ONE configured target repo (§0.4)
+
+instructions: |
+  You run one loop: ask → design doc → review → merged plan → code → PR.
+  For any non-trivial ask, draft a design document first (a markdown PR) —
+  never jump straight to code. Answer trivial questions directly in the thread.
+  Ask clarifying questions early, in the thread, before drafting.
+  Implement exactly the merged plan. If the plan turns out to be wrong, say so
+  in the thread and propose a doc revision — never silently diverge from it.
+  Verify before handing off: run the repo's verify commands and iterate until
+  green. If you cannot get green within budget, submit a draft PR and report
+  the failure honestly — never claim tests pass when they don't.
+  Keep PRs small and focused; put open questions in the PR body.
+
+tools:
+  - slack thread context          # via the context builder (§7.18)
+  - document.*                    # draft / revise / comment / reply (§14.6)
+  - github reads                  # issues, PRs, code search (§14.2)
+  - github.submit_code_changes    # the BUILD→DELIVER handoff (§29)
+  - bash / read / write / edit    # sandboxed (§12.6)
+  - get_task_status
+
+models:
+  default: openai:gpt-4o-mini     # deployment default (§7.19)
+```
+
+Grants and rules — enforced **by construction** (§7.8), the prompt just explains them:
+
+* One repo; the `marathon/` branch namespace; **no default-branch writes** (branch
+  protection); `.github/workflows/**` and other protected paths refused; diff-size caps
+  (§29.4).
+* Egress: replies to the originating thread and writes to the configured repo (the OQ-4
+  calibration); **no external tools registered** — external egress cannot happen.
+* Budget: a hard per-task cost cap; an iteration cap on the verify loop.
+
+Failure behavior (the honest paths):
+
+* Red verify at the cap → **draft PR** + `marathon:unverified` + a failure summary (§29.3).
+* Blocked on ambiguity → ask in the thread and end the turn (§11.6); never guess silently.
+* Merge conflict on the code PR → report it; a human (or an explicit revision comment)
+  resolves it (§29.6).
+* Gateway denial (typed errors — §29.4) → adjust and retry in-session; if impossible, report
+  the denial verbatim.
+
+---
+
 ## 21.1 Bruce: Engineering investigation agent
 
 Purpose:
@@ -13,7 +78,7 @@ Tools:
 * GitHub PR reader
 * Datadog logs
 * Runbook search
-* GitHub issue creation (non-destructive — no approval)
+* GitHub issue creation (reversible, repo audience — autonomous, §7.8)
 
 Good tasks:
 
@@ -36,7 +101,7 @@ Tools:
 * GitHub PR reader
 * Repo search
 * CI status
-* Comment on PR (non-destructive — no approval)
+* Comment on PR (reversible, repo audience — autonomous, §7.8)
 
 Good tasks:
 
@@ -82,7 +147,7 @@ Tools:
 * GitHub releases
 * CI status
 * Jira/Linear
-* Slack posting (non-destructive — no approval; deployments do require approval)
+* Slack posting (autonomous in the originating thread; posts outside it route to a proposal — §7.8). Deployments are high-risk: proposed via `propose_effect`, never direct (§7.9)
 
 Good tasks:
 
@@ -103,7 +168,7 @@ Purpose:
 Tools:
 
 * Markdown file reader
-* Document create/update via pull request (non-destructive; a human merges)
+* Document create/update via pull request (native review — a human merges; §7.8)
 * PR / issue / review comment + reply
 * GitHub and Slack readers for source material
 

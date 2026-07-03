@@ -31,7 +31,7 @@ Bruce should:
 2. Extract GitHub PR link.
 3. Read PR metadata and diff summary.
 4. Produce a risk summary.
-5. Comment on the PR with the summary (non-destructive — no approval needed).
+5. Comment on the PR with the summary (reversible, same-repo audience — autonomous under §7.8).
 6. Log the full task trace.
 7. Accept thumbs up/down feedback.
 

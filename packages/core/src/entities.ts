@@ -69,15 +69,27 @@ export interface AgentVersion {
   publishedAt: Date | null;
 }
 
+/**
+ * One place progress and results are delivered to (design §10.8): the same
+ * shape as `source_ref`, tagged with its surface. A task's targets default to
+ * [the source]; the loop task chain (K2) extends them (e.g. + the doc PR).
+ */
+export interface DeliveryTarget {
+  surfaceType: SurfaceType;
+  ref: Record<string, unknown>;
+}
+
 export interface Task {
   id: Id;
   tenantId: Id;
   agentId: Id | null;
   agentVersionId: Id | null;
   invokingUserId: Id | null;
+  /** The task this one was chained from (e.g. doc task → implementation task). */
+  sourceTaskId: Id | null;
   sourceType: SurfaceType;
   sourceRef: Record<string, unknown>;
-  deliveryTargets: Record<string, unknown> | null;
+  deliveryTargets: DeliveryTarget[] | null;
   status: TaskStatus;
   inputText: string | null;
   summary: string | null;
@@ -146,6 +158,54 @@ export type NewApprovalRequest = {
   actionSummary?: string | null;
   riskLevel?: RiskLevel | null;
   expiresAt?: Date | null;
+};
+
+/** The merged plan an implementation task builds from (design §29.1). */
+export interface PlanRef {
+  repo: string;
+  docPath: string;
+  mergeCommitSha: string;
+}
+
+/** One verify command as run in-session (design §29.3). */
+export interface VerificationResult {
+  command: string;
+  exitCode: number;
+  summary: string;
+}
+
+export type CodeChangeState =
+  | "building" | "submitted_draft" | "submitted_ready" | "merged" | "closed";
+
+/**
+ * The first-class record of one BUILD → DELIVER handoff (design §10.19, §29.8).
+ * One row per implementation task; revisions (§29.6) update it.
+ */
+export interface CodeChange {
+  id: Id;
+  tenantId: Id;
+  taskId: Id;
+  repo: string;
+  planRef: PlanRef;
+  baseSha: string;
+  branch: string;
+  /** Idempotency anchor for submit (§29.4): same tree twice is a no-op. */
+  treeHash: string | null;
+  prNumber: number | null;
+  prUrl: string | null;
+  state: CodeChangeState;
+  verification: VerificationResult[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type NewCodeChange = {
+  tenantId: Id;
+  taskId: Id;
+  repo: string;
+  planRef: PlanRef;
+  baseSha: string;
+  branch: string;
 };
 
 export type DocumentRole = "produced" | "watched";

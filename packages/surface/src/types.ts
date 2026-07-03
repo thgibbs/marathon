@@ -22,6 +22,8 @@ export interface StructuredResult {
   openQuestions?: string[];
   /** Silent cost footer (design.md §13.3). */
   costUsd?: number | null;
+  /** The other places this result was delivered to (K2 fan-out cross-links). */
+  crossLinks?: string[];
 }
 
 export interface AgentDescriptor {

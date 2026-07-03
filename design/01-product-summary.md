@@ -20,7 +20,7 @@ Bruce may then:
 2. Search recent GitHub changes.
 3. Query observability tools.
 4. Check an incident runbook.
-5. Ask for approval only before a destructive action (e.g., triggering a rollback); opening an issue or posting an update is non-destructive and needs none.
+5. Propose any high-risk effect for human review — a rollback is irreversible, so it becomes a `propose_effect` that a human approves and a non-model executor performs (§7.9); reversible, audience-bounded actions like opening an issue or posting an update in this thread run autonomously.
 6. Summarize findings in the Slack thread.
 7. Store task traces, tool calls, costs, and feedback for later review.
 

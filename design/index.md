@@ -2,8 +2,9 @@
 
 Marathon is an open-source platform for **durable AI agents that work where teams already
 work** — Slack and GitHub-backed markdown documents — built on the **Pi** agent harness.
-Agents are summoned by `@mention`, run as durable background tasks, use governed tools, ask
-for human approval before destructive actions, and report back in-thread or as document
+Agents are summoned by `@mention`, run as durable background tasks, use governed tools, act
+autonomously for reversible, audience-bounded work — while high-risk effects go through
+**propose → review → execute** (§7.9) — and report back in-thread or as document
 comments / pull requests.
 
 This guide is the canonical product + architecture design. It was split from a single
@@ -12,8 +13,10 @@ The build-ordered implementation plan is in [`roadmap.md`](../roadmap.md); the a
 diagram is in [`diagram.md`](../diagram.md); the Pi harness reference is in
 [`pi-details.md`](../pi-details.md).
 
-> **Reading order.** New here? Start with [[01-product-summary]], [[05-product-principles]],
-> and [[06-core-user-journeys]] for the *what/why*, then [[09-reference-architecture]] and
+> **Reading order.** New here? Start with **[[00-core-kernel]]** — the prioritization lens
+> over everything else: the one loop that must work correctly for the first customers, what
+> ships minimal, and what is deferred. Then [[01-product-summary]], [[05-product-principles]],
+> and [[06-core-user-journeys]] for the *what/why*, and [[09-reference-architecture]] and
 > [[07-functional-requirements]] for the *how*. Implementers should pair this with
 > [`roadmap.md`](../roadmap.md).
 >
@@ -24,6 +27,8 @@ diagram is in [`diagram.md`](../diagram.md); the Pi harness reference is in
 
 ## Product & users
 
+- [[00-core-kernel]] — **the loop that must work** (ask → draft doc PR → iterate → build code
+  → deliver PR); kernel vs. minimal vs. deferred, and the kernel gap list (K1–K7).
 - [[01-product-summary]] — what Marathon is, in one section.
 - [[02-product-goals]] — the primary goals the product must hit.
 - [[03-non-goals]] — explicitly out of scope for the initial product.
@@ -38,7 +43,7 @@ diagram is in [`diagram.md`](../diagram.md); the Pi harness reference is in
 - [[07-functional-requirements]] — surfaces, registry/discovery, task lifecycle, harness,
   feedback, tools + permissioning, approval, model routing, cost, memory, admin/CLI/SDK,
   surface abstraction, document surface, **prompt & context assembly (§7.18)**, **model
-  selection (§7.19)**.
+  selection (§7.19)**, **identity linking (§7.20)**.
 - [[08-non-functional-requirements]] — reliability, security, scalability, latency,
   observability, portability, extensibility, compliance.
 
@@ -46,14 +51,17 @@ diagram is in [`diagram.md`](../diagram.md); the Pi harness reference is in
 
 - [[09-reference-architecture]] — high-level architecture and core services.
 - [[10-data-model]] — entities: Tenant, User/Identity, Agent/AgentVersion, Task/TaskStep,
-  Model/Tool invocations, ApprovalRequest, Feedback, AuditEvent, DocumentArtifact, …
+  Model/Tool invocations, ApprovalRequest, ProposedEffect, Feedback, AuditEvent,
+  DocumentArtifact, …
 - [[11-task-execution-model]] — state machine, checkpointing, idempotency, retries,
   dead-letter, durable human waits.
 
 ## Cross-cutting concerns
 
-- [[12-security-design]] — trust boundaries, prompt-injection defenses, secrets,
-  authorization, retention, **execution isolation (§12.6)**.
+- [[12-security-design]] — trust boundaries, prompt-injection defenses, **exfiltration /
+  confused-deputy (§12.2)**, secrets, authorization, retention, **execution isolation (§12.6)**.
+  The trust-model decision (capability-first + **Proposed Effects**) is in
+  [`policy.md`](../policy.md).
 - [[13-model-and-cost-design]] — model abstraction, routing strategies, cost controls.
 - [[14-connector-design]] — connector interface, GitHub / database / Slack / document
   connectors, built-in vs MCP tool sources.
@@ -68,7 +76,9 @@ diagram is in [`diagram.md`](../diagram.md); the Pi harness reference is in
 
 ## Scope, plan & appendices
 
-- [[19-mvp-scope]] — MVP promise, requirements, and explicit cuts.
+- ~~19-mvp-scope~~ — **deleted (2026-07-02)**: superseded by [[00-core-kernel]], which is the
+  scope lens now (kernel vs. minimal vs. deferred). The old MVP (roadmap M0–M6) is recorded
+  as history in the roadmap's status notes.
 - [[20-roadmap]] — pointer to the build-ordered [`roadmap.md`](../roadmap.md).
 - [[21-example-agents]] — Bruce, Ada, Grace, Linus, Quill.
 - [[22-design-tradeoffs]] — the key decisions and why (one bot vs many, service account vs
@@ -80,3 +90,8 @@ diagram is in [`diagram.md`](../diagram.md); the Pi harness reference is in
 - [[27-final-design-recommendation]] — the durable agent task, restated.
 - [[28-meta-harness-organ-map]] — Marathon as a Layer-2 meta-harness: the seven organs →
   components, and the **frontier-orchestrated loop** (plan → execute → verify → repeat).
+- [[29-code-handoff]] — the **BUILD → DELIVER execution contract** (the kernel's central
+  path): plan merge → pinned workspace → verify → `submit_code_changes` (gateway reads the
+  diff from the workspace) → branch → code PR → delivery + revisions.
+- [[open-questions]] — tracker for acknowledged-but-unsettled design questions (identity
+  linking, suspend/resume spike, memory write gating, …).

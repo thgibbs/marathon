@@ -20,15 +20,15 @@ Task Queue
   v
 Agent Workers (durable wrapper)
   |
-  +--> Pi harness  (agent loop + tool layer with embedded permissioning)
+  +--> Agent harness: Pi (in-process) | Claude Code (headless, in-sandbox) — tools delegate to the ToolGateway
   |       |
   |       +--> Model access --> Model Gateway (minimal) --> Claude / ChatGPT / OpenRouter
   |       |
-  |       +--> Tool layer (permissioning) --> GitHub / Database / Datadog / Docs connectors,
+  |       +--> ToolGateway (host-side plumbing) --> GitHub / Database / Datadog / Docs connectors,
   |       |                                    command-line tools, MCP servers
   |       |       (credentials injected by Marathon; never exposed to the model)
   |       |
-  |       +--> destructive action --> Task Orchestrator: durable approval wait
+  |       +--> high-risk effect --> propose_effect --> durable review wait --> executor acts on approval
   |
   +--> Memory/Retrieval Service
   |
@@ -106,14 +106,14 @@ This is the heart of Marathon.
 
 ### Agent Worker
 
-The Agent Worker runs the **Pi harness** (§7.5), embedded in-process via its SDK: Marathon provides the durable wrapper (leasing, checkpointing, resumption) and Pi runs the agent loop inside it. The per-task **Pi session JSONL** is persisted as the durable checkpoint and trace.
+The Agent Worker runs the **configured harness** behind the `AgentRuntime` seam (§7.5) — **Pi** embedded in-process, or **Claude Code headless** as a sandboxed subprocess: Marathon provides the durable wrapper (leasing, checkpointing, resumption) and the harness runs the agent loop inside it. The per-task **harness session JSONL** is persisted as the durable checkpoint and trace.
 
 Responsibilities:
 
 * Execute agent task steps
 * Load context
-* Run the agent loop in the Pi harness (model calls + tool calls)
-* Enforce tool permissioning in the harness tool layer (policy/credentials from Marathon)
+* Run the agent loop in the configured harness (model calls + tool calls)
+* Route every governed tool call through the `ToolGateway` (credentials, read ledger, egress routing — §7.8)
 * Emit progress updates
 * Save intermediate state
 * Respect cancellation
@@ -123,7 +123,8 @@ Workers should be stateless except for currently leased work.
 
 **Execution isolation (target, §12.6).** The durable spine (worker/orchestrator/DB) and the
 `ToolGateway` — which hold credentials — stay on the **host**. The **agent loop runs in a
-sandbox** (Pi RPC mode) with a credential-free, egress-denied, ephemeral workspace; **code/FS
+sandbox** (Pi RPC mode, or the Claude Code subprocess — Pattern 1, §12.6) with a
+credential-free, egress-denied, ephemeral workspace; **code/FS
 tools execute in the sandbox**, while **credentialed tools are brokered back to the host** gateway
 (creds + policy + approval + redaction stay host-side). Today this is a seam (`ToolSandbox`,
 default `NoSandbox` refuses); the Docker/microVM runtime is M9.
@@ -140,7 +141,7 @@ Responsibilities:
 * Apply routing policies
 * Track cost per call (for budgets and reporting) — **read from Pi per call** (the turn's
   assistant-message `usage.cost.total`) rather than re-metering. *As-built:* capture is done
-  (a `ModelInvocation` row per turn); budget **enforcement** is deferred to M8.
+  (a `ModelInvocation` row per turn); budgets are enforced from actuals (M8).
 * Inject **per-tenant API keys at runtime** (Pi `setRuntimeApiKey`), not from shared env/config
 * Pass budget enforcement through to the provider / OpenRouter where possible
 
@@ -148,28 +149,22 @@ Logging, retries, fallbacks, redaction, and streaming come from Pi and the provi
 
 ---
 
-### Tool layer (embedded in the Pi harness)
+### ToolGateway (the host-side tool chokepoint)
 
-Tools run **inside the Pi harness**, not through a separate gateway service. The harness is the single chokepoint for side effects, and **permissioning is embedded in it**. Marathon configures and audits this layer; Pi enforces it on every call.
+Every governed tool executes in Marathon's **`ToolGateway`** — an in-process chokepoint, not a separate service. Pi runs the agent loop; each Marathon tool is a Pi custom tool whose `execute` delegates to the gateway. The gateway is **plumbing, not a policy brain** (`policy.md` §11.1): *what an agent may do* is enforced by credential scope, resource-native permissions, and the egress policy (§7.8); *which tools it has* is fixed at construction time (registration).
 
-Enforced in the harness (per tool call):
+Per tool call, the gateway:
 
-* Enforce tool permissions (policy supplied by Marathon)
-* Validate tool input schema
-* Detect when an action is destructive and requires approval
-* Execute the connector / CLI / MCP call with Marathon-injected credentials
-* Redact sensitive outputs
-* Apply rate limits
-* Return a structured result
+* Validates the input schema (and that the tool was registered for this task)
+* Records reads in the task's **source-sensitivity ledger** (feeds the egress policy — §7.8)
+* Routes egress per policy: autonomous / native review / `propose_effect` / **denied** (§7.8, §7.9)
+* Selects and injects the **tenant's** credentials — never exposed to the model or the sandbox
+* Executes the connector / CLI / MCP call; redacts sensitive output; applies rate/budget caps
+* Writes the audit and cost/usage records (Postgres); honors the emergency kill switch
 
-Owned by Marathon (around the harness):
+**Approval orchestration** stays at the task layer: a high-risk proposal is enqueued asynchronously, and on approval the non-model executor performs the exact approved artifact (§7.9, §11.6).
 
-* The tool **policy** and tool grants — the model cannot change them
-* **Credentials / secrets** — injected at execution, never exposed to the model
-* **Approval orchestration** — durable waits and in-place prompts on the surface; a destructive call pauses the task and resumes when a human approves (see §11.6)
-* **Audit logging** and **cost / usage records** in Postgres
-
-The agent loop cannot bypass the harness tool layer, and the model cannot rewrite the policy it enforces.
+The agent loop cannot bypass the gateway, and the model cannot rewrite what it enforces.
 
 ---
 
@@ -189,15 +184,20 @@ Responsibilities:
 ### Memory/Retrieval Service
 
 Implements the swappable **`MemoryStore`** seam (§7.12): scope×term memory behind pluggable
-adapters (**pgvector** default, **Mem0** as the first external backend).
+adapters (**pgvector** default, **Mem0** as the first external backend). Holds **generated**
+memory only — external documents are tool reads with their own ACLs (§7.12), never ingested.
 
 Responsibilities:
 
-* `remember` / `recall` / `forget` / `list` over **tenant / project / agent / thread** scopes,
-  searching short- and long-term together
+* `remember` / `recall` / `forget` / `list` over **tenant / project / user / thread** scopes,
+  searching short- and long-term together (agent is relevance metadata, not a scope)
+* **Audience-gate recall** (task audience ⊆ scope audience — §7.12) and report recalled
+  scopes to the egress policy as sources (§7.8)
+* Enforce **write gating**: narrowest applicable scope; tenant-scoped writes require
+  confirmation
 * Embed content (OpenAI `text-embedding-3-small` for the pgvector adapter)
-* Enforce **tenant isolation** + **project (repo) permission** filters (§7.17)
-* Rank recall by relevance blended with recency, within a token budget
+* Enforce **tenant isolation**; rank recall by relevance blended with recency (agent tags
+  boost relevance), within a token budget
 * Retain/expire per policy; redact sensitive content
 
 ---

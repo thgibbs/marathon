@@ -86,7 +86,7 @@ Cons:
 
 Recommendation:
 
-> Use a simple **Postgres-backed queue** first, but keep task interfaces workflow-engine-compatible.
+> Use a **Postgres-backed queue**, period. The semantics are **Temporal-shaped** (durable jobs, leases, visibility timeouts, retries, at-least-once delivery + idempotent effects) without the engine — and there is **no swap-compatibility hedge**: Marathon's durability model (opaque Pi session checkpoints, between-turn resume — §11.6) is not workflow-engine replay, so a later swap would be a rewrite regardless. Own the reliability code (built in M1).
 
 ---
 
@@ -120,7 +120,7 @@ Cons:
 
 Recommendation:
 
-> Support multiple tool sources behind the **one tool layer in the Pi harness** (which enforces permissioning): built-in (non-MCP) connectors for common systems, **command-line tools** as a primary choice (some supplied by Pi), and MCP so customers can bring their own tools.
+> Support multiple tool sources behind **one chokepoint — the `ToolGateway`** (credentials, read ledger, egress routing, redaction, audit): built-in (non-MCP) connectors for common systems, **command-line tools** as a primary choice (some supplied by Pi), and MCP so customers can bring their own tools.
 
 ---
 

@@ -67,12 +67,13 @@ Timeline example:
 ```text
 10:03:01 Task created
 10:03:02 Slack thread loaded
-10:03:04 Intent classified
 10:03:10 GitHub searched
 10:03:18 PR #4812 read
-10:03:29 Datadog queried
-10:03:42 Final response posted
-10:04:11 User gave thumbs up
+10:04:02 Datadog queried (rate-limited; retried with backoff)
+10:06:40 Rollback proposed (propose_effect) — waiting_for_approval
+10:52:13 Proposal approved by @tanton; executor performed the rollback
+10:52:20 Final response posted
+10:58:44 User gave thumbs up
 ```
 
 ---

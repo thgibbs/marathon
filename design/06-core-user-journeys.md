@@ -9,7 +9,7 @@ Admin flow:
 3. Admin connects Slack workspace.
 4. Admin grants Slack app permissions.
 5. Admin configures model provider.
-6. Admin creates first agent.
+6. Admin defines the first agent (a YAML file — see §6.2).
 7. Admin invites users or enables selected channels.
 8. User invokes the first agent.
 
@@ -21,7 +21,7 @@ Success criterion:
 
 ## 6.2 Create an agent
 
-> Initial scope: internal. Agents are created by the Marathon team, not by customers; this flow is documented for direction.
+> Initial scope: agents are defined in a **simple YAML config format** (the example below), loaded from the deployment's config — written by the operator/admin, versioned in git, applied by redeploy/restart. Deliberately hard to change at first: **no GUI, no hot-swapping, no external SDK**. The admin-UI flow below is documented for direction only.
 
 Agent owner flow:
 
@@ -49,17 +49,17 @@ instructions: |
   You are Bruce, an engineering investigation agent.
   Be concise. State uncertainty clearly.
   Use tools before making claims about recent production state.
-  Act autonomously for non-destructive work (reading, commenting, opening issues/PRs).
-  Ask for approval only before destructive actions (deploys, deletes, data changes).
+  Act autonomously for reversible, audience-bounded work (reading, commenting, opening issues/PRs).
+  Propose high-risk effects (deploys, deletes, data changes) for human review — never execute them directly.
 
 allowed_channels:
   - eng
   - incidents
 
 models:
-  default: openai:gpt-4.1-mini
-  reasoning: anthropic:claude-sonnet
-  cheap: openai:gpt-4.1-nano
+  default: openai:gpt-4o-mini
+  reasoning: openai:gpt-4o
+  cheap: openai:gpt-4o-mini
 
 tools:
   - slack.read_thread
@@ -67,9 +67,12 @@ tools:
   - github.read_pr
   - datadog.query
   - runbooks.search
-  - github.create_issue        # non-destructive — no approval
-  - deploy.rollback:
-      approval_required: true   # destructive — approval required
+  - github.create_issue        # reversible, repo audience — autonomous
+  # High-risk effects are never direct tools (§7.9). A rollback is proposed:
+  #   propose_effect(effect_type: deploy_rollback, target: checkout-api, ...)
+  # and performed by the non-model executor only after human approval.
+effects:
+  - deploy_rollback             # effect type this agent may propose
 ```
 
 ---
@@ -151,24 +154,24 @@ This enables agent owners to understand failures and improve agents.
 
 ## 6.5 Human approval flow
 
-Approval is requested only for **destructive** actions. For example, after investigating, Bruce proposes a rollback:
+Human review is requested only for **high-risk** effects — irreversible, cross-trust-boundary, public/external, or costly (§7.8). A rollback is irreversible, so Bruce cannot execute it directly; he *proposes* it (§7.9):
 
 ```text
-I'd like to roll back checkout-api — this is a destructive action, so I need approval.
+I'd like to roll back checkout-api — that's irreversible, so I've proposed it for approval.
 
-Action:
+Proposed effect:
 Roll back checkout-api to version 2026.06.26.3
 
 Approve?
 [Approve] [Reject] [Edit]
 ```
 
-(Opening an issue or posting a summary would not prompt this — those are non-destructive and run automatically.)
+(Opening an issue or posting a summary in this thread would not prompt this — those are reversible and audience-bounded, and run automatically.)
 
 If approved:
 
-1. Approval is recorded.
-2. Tool call executes.
+1. The approval is recorded, bound to the exact proposed artifact (payload hash — §7.9).
+2. The non-model executor performs the effect.
 3. Result is logged.
 4. Slack thread is updated.
 
@@ -178,7 +181,7 @@ If rejected:
 2. Rejection is logged.
 3. Agent may ask for an alternative.
 
-Approval should be requested and granted **in place** — inline in the Slack thread or the document (PR/comment) thread where the work is happening — not in a separate dashboard. Approval is only requested for destructive actions (§5.4); non-destructive work proceeds without it.
+Review should be requested and granted **in place** — inline in the Slack thread or the document (PR/comment) thread where the work is happening (the Agent Hub is a complementary queue over the same proposal records — §7.9). Review is requested only for high-risk effects (§5.4); reversible, audience-bounded work proceeds without it.
 
 ---
 
@@ -186,7 +189,7 @@ Approval should be requested and granted **in place** — inline in the Slack th
 
 A task fails because Datadog rate-limited the agent.
 
-The agent should **retry automatically** (with backoff) for transient failures like this — it does not ask the user. The task state is checkpointed so the retry resumes where it left off. The agent only pauses to involve a human when the next step would be **destructive**, or when retries are exhausted:
+The agent should **retry automatically** (with backoff) for transient failures like this — it does not ask the user. The task state is checkpointed so the retry resumes where it left off. The agent only pauses to involve a human when the next step is a **high-risk effect** (which routes to a proposal — §7.9), or when retries are exhausted:
 
 ```text
 Bruce:
@@ -224,7 +227,7 @@ Marathon should:
 5. Reply in the comment thread to acknowledge.
 6. Load the anchored region (the file, the diff hunk, or surrounding section as needed).
 7. Do the work; post the result as a comment reply.
-8. If asked to edit the document, open a pull request with the change (non-destructive); a human reviews and merges it (the agent does not merge on its own).
+8. If asked to edit the document, open a pull request with the change (native review — §7.8); a human reviews and merges it (the agent does not merge on its own).
 9. Offer feedback controls and record total cost.
 
 ---
@@ -237,6 +240,6 @@ For non-trivial work, the document *is* the workflow. A typical flow:
 2. The agent drafts a **design document** — a markdown file proposed as a pull request — describing the plan, scope, and risks.
 3. People review and comment on the PR; the agent revises in response.
 4. A human **approves by merging** the PR (the merge is the approval signal).
-5. The agent then executes the approved plan, posting progress back to the Slack thread and the PR, and asking for approval only on destructive steps.
+5. The agent then executes the approved plan, posting progress back to the Slack thread and the PR, routing any high-risk step through a proposal (§7.9).
 
 This makes the plan reviewable and auditable *before* execution, and keeps the durable record of intent in version control.

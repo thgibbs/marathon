@@ -5,7 +5,7 @@ MARATHON_DB_PORT ?= 5432
 DATABASE_URL ?= postgres://marathon:marathon@localhost:$(MARATHON_DB_PORT)/marathon
 export DATABASE_URL MARATHON_DB_PORT
 
-.PHONY: install hooks secret-scan db-up db-down migrate typecheck test demo demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-github-app demo-slack-app slack-app github-app smoke-pi smoke-github smoke-github-write smoke-github-doc smoke-pi-tools smoke-mem0 smoke-sandbox smoke-broker smoke-container smoke-pi-sandbox smoke-slack down
+.PHONY: install hooks secret-scan db-up db-down migrate typecheck test demo demo-k1 demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-github-app demo-slack-app slack-app github-app smoke-pi smoke-github smoke-github-write smoke-github-doc smoke-pi-tools smoke-mem0 smoke-sandbox smoke-broker smoke-container smoke-pi-sandbox smoke-slack down
 
 install:
 	pnpm install
@@ -34,6 +34,11 @@ typecheck:
 
 test:
 	pnpm test
+
+# Kernel demos (design §0.6, roadmap §2c) come first: the loop is the critical path.
+# K1: fake merged plan -> workspace edits -> verify -> handoff -> branch + PR (design §29).
+demo-k1:
+	pnpm --filter @marathon/demo-k1 start
 
 demo-m0: db-up migrate
 	pnpm --filter @marathon/demo-m0 start
@@ -117,6 +122,6 @@ smoke-slack:
 	pnpm --filter @marathon/demo-m4 smoke
 
 # Runs the full demo chain (grows as milestones land).
-demo: demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-github-app demo-slack-app
+demo: demo-k1 demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-github-app demo-slack-app
 
 down: db-down

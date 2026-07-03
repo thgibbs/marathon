@@ -2,41 +2,34 @@
 
 ## 18.1 Repository structure
 
-Recommended monorepo:
+The monorepo, as built (pnpm workspaces):
 
 ```text
 marathon/
-  apps/
-    api/
-    web/
-    worker/
-    slack-gateway/
   packages/
-    sdk-python/
-    sdk-js/
-    connector-sdk/
-    model-gateway/
-    tool-gateway/
-    shared-types/
-  connectors/
-    github/
-    slack/
-    postgres/
-    datadog/
-    mcp/
-  examples/
-    agents/
-      bruce-engineering-investigator/
-      ada-code-reviewer/
-      grace-data-analyst/
-    docker-compose/
-  docs/
-  deploy/
-    docker-compose/
-    helm/
-  tests/
-  evals/
+    core/               # task engine: orchestrator, state machine, approvals
+    queue/              # Postgres-backed durable queue (leases, heartbeats, retries)
+    db/                 # schema + migrations
+    agent/              # AgentRuntime seam (PiAgentRuntime, FakeAgentRuntime, sandbox routing)
+    worker/             # durable agent worker
+    tools/              # ToolGateway + governed tools
+    connector-github/   # GitHub connector
+    surface/            # SurfaceAdapter seam
+    surface-slack/      # Slack surface (parse, context, delivery)
+    surface-github/     # GitHub document surface
+    slack-app/          # live Slack app (Socket Mode listener)
+    github-app/         # live GitHub webhook receiver
+    memory/             # MemoryStore seam + pgvector / Mem0 / fake adapters
+    model-gateway/      # minimal model gateway (policy, refs, cost)
+    observability/      # timeline, cost rollups, budgets, metrics
+    config/             # config loading (incl. YAML agent definitions)
+  demos/                # per-milestone automated demos (demos/mN — CI regression guards)
+  design/               # this design guide
+  docker-compose.yml
 ```
+
+Future additions when their milestones land: a web app for the Agent Hub + inspectability
+dashboard (M10), `deploy/helm`, and example agent definitions.
 
 ---
 
@@ -49,7 +42,7 @@ Recommended MVP stack:
 | API            | Fastify                              |
 | Web UI         | Next.js                              |
 | Worker         | TypeScript                           |
-| Agent harness  | Pi (`@earendil-works/pi-coding-agent`, in-process SDK) |
+| Agent harness  | **Pi** (in-process SDK) or **Claude Code** (headless subprocess) — one per deployment, behind `AgentRuntime` (K7) |
 | Model access   | Claude, ChatGPT, OpenRouter (minimal gateway) |
 | Tool isolation | Container/VM + Gondolin or OpenShell (Pi has no sandbox) |
 | Database       | Postgres                             |
@@ -60,37 +53,19 @@ Recommended MVP stack:
 | Observability  | OpenTelemetry                        |
 | Deployment     | Docker Compose first, Helm later     |
 
-For durable workflows, there are two good directions:
+For durable workflows, the decision is **Postgres + queue workers** — Marathon owns its
+durable execution rather than adopting a workflow engine:
 
-### Option A: Temporal
-
-Pros:
-
-* Strong durable workflow semantics
-* Retries/checkpointing built in
-* Great fit for long-running tasks
-
-Cons:
-
-* More operational complexity
-* Harder for simple local installs
-
-### Option B: Postgres + queue workers
-
-Pros:
-
-* Simpler MVP
-* Easier self-hosting
-* Fewer dependencies
-
-Cons:
-
-* More custom reliability code
-* Harder to get complex workflow semantics right
-
-Recommendation:
-
-> Start with Postgres-backed task state and a simple queue. Keep the task abstraction compatible with Temporal so advanced deployments can swap it in later.
+* Simpler MVP and self-hosting; fewer dependencies.
+* The cost is custom reliability code (leases, heartbeats, retries, checkpoints) — accepted:
+  that machinery is built and CI-tested (roadmap M1), and durable state is where much of
+  Marathon's value lives (§27, §28).
+* The queue is **Temporal-shaped** — durable jobs, worker leases/heartbeats, visibility
+  timeouts, retries with backoff, at-least-once delivery made safe by idempotent effects —
+  because those are the right semantics, **not** because a Temporal swap is planned. There is
+  **no compatibility hedge**: Marathon's durability model (persist an opaque Pi session,
+  resume between turns — §11.6) is not workflow-engine deterministic replay, and a later swap
+  would be a rewrite regardless of interface discipline.
 
 ---
 

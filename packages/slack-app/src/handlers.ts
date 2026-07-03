@@ -1,6 +1,11 @@
-import { parseCheckpoint } from "@marathon/core";
+import { parseCheckpoint, type DeliveryTarget } from "@marathon/core";
 import { Database } from "@marathon/db";
-import type { AgentDescriptor, StructuredResult, SurfaceAdapter } from "@marathon/surface";
+import {
+  DeliveryFanout,
+  type AgentDescriptor,
+  type StructuredResult,
+  type SurfaceAdapter,
+} from "@marathon/surface";
 import {
   parseAppMention,
   parseReactionFeedback,
@@ -16,6 +21,11 @@ export interface AppDeps {
   /** Worker configured with a task-driven agent step runner. */
   worker: Worker;
   delivery: SurfaceAdapter;
+  /**
+   * Cross-surface fan-out (K2). When absent, a Slack-only fan-out is built from
+   * `delivery`, so non-Slack targets are skipped until their adapters are wired.
+   */
+  fanout?: DeliveryFanout;
   tenantId: string;
   agents: AgentDescriptor[];
   agentIdByName: Record<string, string>;
@@ -74,7 +84,11 @@ export async function handleMention(
     evidence: cp.findings.slice(0, -1),
     costUsd: cost,
   };
-  await deps.delivery.deliverResult(invocation.sourceRef, result);
+  // K2: results fan out to every delivery target (defaults to the source thread).
+  const targets: DeliveryTarget[] =
+    finalTask?.deliveryTargets ?? [{ surfaceType: "slack", ref: invocation.sourceRef }];
+  const fanout = deps.fanout ?? new DeliveryFanout({ slack: deps.delivery }, deps.db);
+  await fanout.deliverResult(task.id, targets, result);
 }
 
 export async function handleReaction(deps: AppDeps, event: SlackReactionEvent): Promise<void> {

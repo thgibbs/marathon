@@ -37,11 +37,13 @@ async function main(): Promise<void> {
 
   const boot = await bootstrapGithubApp(db, { owner });
   const client = new HttpGithubClient(token);
+  const orchestrator = new Orchestrator(db, queue);
   const deps: GithubAppDeps = {
     db,
     client,
     memory: new PgVectorMemoryStore(cfg.databaseUrl, new OpenAIEmbedder(secrets)),
-    router: new InvocationRouter(db, new Orchestrator(db, queue)),
+    router: new InvocationRouter(db, orchestrator),
+    orchestrator,
     gateway: new ToolGateway({
       registry: new ToolRegistry(makeDocumentTools(httpGithubClientFactory())),
       policy: { grants: [{ tool: "document.create" }, { tool: "document.update" }, { tool: "document.revise" }, { tool: "document.comment" }, { tool: "document.read_region" }] },

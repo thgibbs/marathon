@@ -20,6 +20,25 @@ export function taskToolInputKey(taskId: string, tool: string, input: unknown): 
   return `task:${taskId}:tool:${tool}:${hash}`;
 }
 
+/**
+ * Idempotency key for spawning the implementation task off a merged plan
+ * (design §29.1): one task per merged plan version, so a re-delivered merge
+ * webhook is a no-op and a re-merged revision is a new task.
+ */
+export function implementationTaskKey(repo: string, docPath: string, mergeCommitSha: string): string {
+  return `implement:${repo}:${docPath}:${mergeCommitSha}`;
+}
+
+/** Idempotency key for one delivery: task + message kind + a hash of the target. */
+export function deliveryTargetKey(
+  taskId: string,
+  target: { surfaceType: string; ref: Record<string, unknown> },
+  messageKind: string,
+): string {
+  const hash = createHash("sha256").update(stableStringify(target)).digest("hex").slice(0, 32);
+  return `task:${taskId}:deliver:${messageKind}:${hash}`;
+}
+
 /** Backing store for exactly-once execution of side effects. */
 export interface IdempotencyStore {
   /** Returns true if the key was newly claimed (caller should run the effect). */

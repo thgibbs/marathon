@@ -46,7 +46,11 @@ id
 user_id
 tenant_id
 surface_type        # slack | github | web | email
-external_id         # e.g. slack_user_id, GitHub login
+external_id         # e.g. slack_user_id, GitHub login — proven, never typed (§7.20)
+verified_at
+verification_method # oauth | idp | admin_asserted (§7.20; tenant policy sets the tier on-behalf-of requires)
+status              # active | stale | revoked — a failed token refresh marks stale (→ deny)
+credential_ref      # optional user-to-server token: access checks *as the user* (§7.20, §12.3)
 created_at
 updated_at
 ```
@@ -155,10 +159,10 @@ name
 description
 input_schema
 output_schema
-risk_level
+risk_axes            # reversibility / trust-boundary / audience / cost (§7.8)
+default_mode         # autonomous | native_review | proposed_effect | disabled (§7.8)
 default_timeout_ms
 default_retry_policy
-requires_approval
 created_at
 updated_at
 ```
@@ -192,6 +196,11 @@ Example constraints:
 }
 ```
 
+A grant is **construction-time wiring**: it determines which tools get registered into the
+agent's session (and their read-scoping constraints — least-privilege reads, §12.2), not a
+runtime security boundary. Enforcement of *what a tool call may do* lives in credential scope,
+resource-native permissions, and the egress policy (§7.8).
+
 ---
 
 ## 10.8 Task
@@ -208,7 +217,7 @@ agent_version_id
 invoking_user_id
 source_type         # slack | github | web | api | email | schedule
 source_ref          # opaque JSON locating the originating place (channel+thread_ts, doc_id+anchor, ...)
-delivery_targets    # where outputs are delivered (may differ from the source surface)
+delivery_targets    # ordered list of {surface_type, ref} — same shape as source_ref; defaults to [the source]
 status
 input_text
 summary
@@ -219,6 +228,10 @@ completed_at
 failed_at
 cancelled_at
 ```
+
+`delivery_targets` is deliberately minimal: where progress/results are delivered, defaulting
+to the source. Cross-surface delivery (roadmap M8 carry-over) extends the list without a
+schema change.
 
 ---
 
@@ -298,7 +311,7 @@ tool_id
 status
 input_summary
 output_summary
-risk_level
+risk_axes
 approval_id
 latency_ms
 error
@@ -317,12 +330,13 @@ Fields:
 id
 tenant_id
 task_id
-tool_invocation_id
+tool_invocation_id   # for gateway-gated calls
+proposed_effect_id   # for high-risk effects (§10.17) — approval binds to the proposal's payload_hash
 requested_by_agent_id
 requested_from_user_id
 status
 action_summary
-risk_level
+risk_axes
 expires_at
 created_at
 resolved_at
@@ -441,3 +455,109 @@ last_revision_seen  # git blob/commit SHA, for concurrent-edit detection (see §
 created_at
 updated_at
 ```
+
+---
+
+## 10.17 ProposedEffect
+
+Represents a high-risk external effect proposed by the model and — if approved — performed by
+the non-model **executor** (§7.9). The model never executes these directly.
+
+Fields:
+
+```text
+id                   # effect_id
+tenant_id
+task_id
+connector_id
+effect_type          # slack_post | email_send | doc_delete | github_merge | internal_api_call | ... (typed per connector)
+target               # destination / resource
+payload              # the EXACT proposed content or mutation
+payload_hash         # approval binds to this; a changed payload voids approval
+proposal_version     # edits create a new version; approval applies to exactly one
+provenance           # what the agent read to produce this (decision support + forensics)
+risk_axes            # reversibility / trust-boundary / audience / cost
+rollback_plan        # optional
+reviewer_id
+reviewer_authority   # checked against target resource, effect type, and blast radius
+approval_expires_at
+idempotency_key      # bounds execution to at most once
+execution_state      # proposed | approved | rejected | expired | executing | executed | failed
+created_at
+resolved_at
+executed_at
+```
+
+Invariants (§7.9, `policy.md` §11.4): the proposal is immutable once review starts; execution
+revalidates tenant, credential, resource, destination, payload hash, and reviewer authority;
+each approved effect executes at most once per `idempotency_key`; every transition is logged
+as an audit event.
+
+> Deliberately lightweight — expect this shape to evolve as connectors accrete. Only the
+> fields the §7.9 invariants bind (payload hash, proposal version, idempotency key, expiry,
+> execution state, reviewer) are load-bearing; the rest may change freely.
+
+---
+
+## 10.18 MemoryItem
+
+Represents one generated memory (§7.12). The store holds only **generated** memory — external
+documents are tool reads with their own ACLs, never ingested.
+
+Fields:
+
+```text
+id
+tenant_id
+level                    # tenant | project | user | thread — the audience scope (agent is NOT a level)
+project_id               # when level = project
+user_id                  # when level = user
+thread_id                # when level = thread
+term                     # short | long (short-term carries expires_at)
+kind                     # summary | correction | preference | message | fact | ...
+agent_id                 # relevance metadata only — boosts ranking, never an access filter
+text
+embedding
+provenance_task_id
+provenance_sensitivity   # feeds narrowest-scope write enforcement + egress accounting (§7.8)
+created_at
+expires_at
+```
+
+Access rules (§7.12): recall requires the task's audience ⊆ the item's scope audience;
+tenant-scoped writes require confirmation; `list`/`forget` per scope for inspection,
+retention, and erasure (§12.5).
+
+> Deliberately lightweight — expect this shape to evolve as external backends (Mem0, Zep) and
+> fact-extraction/consolidation land behind the `MemoryStore` interface. The load-bearing
+> fields are the audience scope (`level` + its id) and the provenance sensitivity.
+
+---
+
+## 10.19 CodeChange
+
+The first-class record of one BUILD → DELIVER handoff (§29) — what makes the code path
+inspectable, resumable, and debuggable. One row per implementation task; revisions (§29.6)
+update it.
+
+```text
+id
+tenant_id
+task_id
+repo
+plan_ref             # { doc_path, merge_commit_sha } — the merged plan being implemented
+base_sha             # pinned base (the plan's merge commit; the branch tip for revisions)
+branch               # marathon/<task_id>-<slug>
+tree_hash            # idempotency anchor for submit (§29.4)
+pr_number
+pr_url
+state                # building | submitted_draft | submitted_ready | merged | closed
+verification         # [{ command, exit_code, summary_ref }] (§29.3)
+created_at
+updated_at
+```
+
+Deliberately the **only** new entity for the code path: the workspace is ephemeral by design
+(its lifecycle lives in audit events + per-turn checkpoints, §11.2); the plan is the merged
+document (`DocumentArtifact` + `plan_ref`); branch, PR, and test results fold in here rather
+than becoming entities of their own.
