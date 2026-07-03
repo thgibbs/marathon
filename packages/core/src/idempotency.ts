@@ -29,6 +29,15 @@ export function implementationTaskKey(repo: string, docPath: string, mergeCommit
   return `implement:${repo}:${docPath}:${mergeCommitSha}`;
 }
 
+/**
+ * Idempotency key for spawning a code-PR revision task (Track 10, §29.6):
+ * one task per review comment, so a re-delivered webhook is a no-op while a
+ * new comment on the same PR spawns a fresh revision.
+ */
+export function revisionTaskKey(repo: string, prNumber: number, commentEventId: string): string {
+  return `revise:${repo}:${prNumber}:${commentEventId}`;
+}
+
 /** Idempotency key for one delivery: task + message kind + a hash of the target. */
 export function deliveryTargetKey(
   taskId: string,

@@ -1,5 +1,6 @@
 import { isDocTemplate, renderDocument } from "@marathon/surface";
 import type { Tool } from "@marathon/tools";
+import type { GithubClient } from "./client";
 import { repoEgress, repoSource, type GithubClientFactory } from "./tools";
 
 function lines(content: string, start?: number, end?: number): string {
@@ -8,6 +9,65 @@ function lines(content: string, start?: number, end?: number): string {
   const s = Math.max(1, start ?? 1);
   const e = Math.min(arr.length, end ?? arr.length);
   return arr.slice(s - 1, e).join("\n");
+}
+
+/**
+ * Deterministic document branch (Track 10): `marathon/doc-<task>-<slug(path)>`.
+ * The task id is the idempotency anchor — a webhook retry of the same task
+ * converges on one branch/PR instead of minting a timestamped duplicate, while
+ * distinct tasks writing the same path never collide.
+ */
+export function docBranchForTask(taskId: string, path: string): string {
+  const slug =
+    path.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "doc";
+  return `marathon/doc-${taskId}-${slug}`;
+}
+
+/**
+ * Converge-or-create for a doc branch + PR (Track 10): if the deterministic
+ * branch already has an open PR (a webhook retry re-ran the tool), commit the
+ * content onto that branch and return the existing PR; otherwise create the
+ * branch from base and open a new PR.
+ */
+async function upsertDocPr(
+  client: GithubClient,
+  args: { repo: string; path: string; branch: string; base: string; title: string; body: string; commitMessage: string; prBody: string; fileSha?: string },
+): Promise<{ number: number; url: string; converged: boolean }> {
+  const { repo, path, branch, base } = args;
+  // Retry convergence first: the deterministic branch already has an open PR →
+  // converge onto it and reuse the PR.
+  const existing = await client.findPullRequestByHead(repo, branch);
+  if (existing) {
+    const current = await client.readFileWithSha(repo, path, branch).catch(() => null);
+    // A replay of the same accepted write: nothing to commit.
+    if (current && current.content === args.body) {
+      return { number: existing.number, url: existing.url, converged: true };
+    }
+    // Stale-SHA rejection with retry awareness (Track 10): a caller-supplied
+    // sha (document.update) legitimately trails the branch after the first
+    // accepted call moved the file — so accept a sha matching the branch tip
+    // OR the current base file (what the caller actually read), and reject
+    // only when it matches neither (a truly stale read).
+    if (args.fileSha && args.fileSha !== current?.sha) {
+      const baseFile = await client.readFileWithSha(repo, path, base).catch(() => null);
+      if (args.fileSha !== baseFile?.sha) {
+        throw new Error(`document update rejected: stale sha for ${path} — re-read the document and retry`);
+      }
+    }
+    await client.putFile(repo, path, args.body, branch, args.commitMessage, current?.sha);
+    return { number: existing.number, url: existing.url, converged: true };
+  }
+  const { sha } = await client.getRef(repo, `heads/${base}`);
+  try {
+    await client.createBranch(repo, branch, sha);
+  } catch (e) {
+    // Branch exists but its PR is gone (closed/merged): repoint it at base and reuse it.
+    if (!/422|already exists/i.test(String(e))) throw e;
+    await client.updateRef(repo, branch, sha, true);
+  }
+  await client.putFile(repo, path, args.body, branch, args.commitMessage, args.fileSha);
+  const pr = await client.createPullRequest(repo, args.title, branch, base, args.prBody);
+  return { number: pr.number, url: pr.url, converged: false };
 }
 
 /**
@@ -56,16 +116,26 @@ export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
       const path = String(input.path);
       const base = typeof input.base === "string" ? input.base : "main";
       const title = typeof input.title === "string" ? input.title : `Add ${path}`;
-      const branch = `marathon/doc-${path.replace(/[^a-zA-Z0-9]+/g, "-")}-${Date.now()}`;
+      // Deterministic per (task, path) so webhook retries converge (Track 10).
+      const branch = docBranchForTask(ctx.taskId, path);
       // Optionally render the body into a versioned document template (§7.17).
       const body = isDocTemplate(input.template)
         ? renderDocument(input.template, title, String(input.content))
         : String(input.content);
-      const { sha } = await client.getRef(repo, `heads/${base}`);
-      await client.createBranch(repo, branch, sha);
-      await client.putFile(repo, path, body, branch, `docs: add ${path}`);
-      const pr = await client.createPullRequest(repo, title, branch, base, "Drafted by Marathon — review and merge to execute.");
-      return { content: `opened PR #${pr.number} ${pr.url}`, details: { number: pr.number, url: pr.url, branch, path } };
+      const pr = await upsertDocPr(client, {
+        repo,
+        path,
+        branch,
+        base,
+        title,
+        body,
+        commitMessage: `docs: add ${path}`,
+        prBody: "Drafted by Marathon — review and merge to execute.",
+      });
+      return {
+        content: `${pr.converged ? "updated" : "opened"} PR #${pr.number} ${pr.url}`,
+        details: { number: pr.number, url: pr.url, branch, path, converged: pr.converged },
+      };
     },
   };
 
@@ -87,12 +157,22 @@ export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
       const repo = String(input.repo);
       const path = String(input.path);
       const base = typeof input.base === "string" ? input.base : "main";
-      const branch = `marathon/doc-${path.replace(/[^a-zA-Z0-9]+/g, "-")}-${Date.now()}`;
-      const { sha } = await client.getRef(repo, `heads/${base}`);
-      await client.createBranch(repo, branch, sha);
-      await client.putFile(repo, path, String(input.content), branch, `docs: update ${path}`, String(input.sha));
-      const pr = await client.createPullRequest(repo, `Update ${path}`, branch, base, "Updated by Marathon.");
-      return { content: `opened PR #${pr.number} ${pr.url}`, details: { number: pr.number, url: pr.url, branch, path } };
+      const branch = docBranchForTask(ctx.taskId, path);
+      const pr = await upsertDocPr(client, {
+        repo,
+        path,
+        branch,
+        base,
+        title: `Update ${path}`,
+        body: String(input.content),
+        commitMessage: `docs: update ${path}`,
+        prBody: "Updated by Marathon.",
+        fileSha: String(input.sha),
+      });
+      return {
+        content: `${pr.converged ? "updated" : "opened"} PR #${pr.number} ${pr.url}`,
+        details: { number: pr.number, url: pr.url, branch, path, converged: pr.converged },
+      };
     },
   };
 

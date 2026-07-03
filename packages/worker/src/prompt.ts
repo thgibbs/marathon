@@ -1,6 +1,7 @@
-import { fenceUntrusted, type Task } from "@marathon/core";
+import { fenceUntrusted, type DeliveryTarget, type PlanRef, type Task } from "@marathon/core";
 import { Database } from "@marathon/db";
 import { scopeForTask, type MemoryStore } from "@marathon/memory";
+import { describeTarget } from "@marathon/surface";
 
 const DEFAULT_PERSONA = "You are Marathon, a concise engineering assistant. Be brief and state uncertainty clearly.";
 
@@ -50,4 +51,95 @@ export async function buildAgentPrompt(
   // 3. invocation (untrusted): the actual ask, also fenced.
   const input = `${contextBlock}${docBlock}${fenceUntrusted("request", userText)}`;
   return { instructions, input };
+}
+
+/**
+ * The branch Marathon *suggests* for an implementation task (Track 7/10):
+ * deterministic per merged plan version, so retries converge — but the agent
+ * (or repo convention) may choose differently; GitHub policy, not Marathon,
+ * polices branches.
+ */
+export function suggestedImplementationBranch(planRef: PlanRef): string {
+  const slug =
+    planRef.docPath.toLowerCase().replace(/\.md$/, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) ||
+    "impl";
+  return `marathon/${slug}-${planRef.mergeCommitSha.slice(0, 7)}`;
+}
+
+/** The brokered git/gh + delivery.report_pr contract, shared by both briefs (Track 10/12). */
+function deliveryContract(branch: string): string {
+  return (
+    `Work in /workspace (a normal git checkout; use git status/diff/add/commit locally). ` +
+    `The sandbox has internet access for package installs and docs but holds NO credentials — ` +
+    `GitHub writes go through the brokered tools:\n` +
+    `- git.exec { argv: ["push", "<owner/repo>", "HEAD:refs/heads/${branch}"] } to push your branch;\n` +
+    `- github.exec { argv: ["pr", "create", "--repo", "<owner/repo>", ...] } (or "pr edit") for the PR;\n` +
+    `- finish by calling delivery.report_pr EXACTLY ONCE with the PR URL, a short summary, and the ` +
+    `verification commands you actually ran with their honest exit codes.`
+  );
+}
+
+export interface ImplementationBrief {
+  planRef: PlanRef;
+  /** Where progress/results will be delivered (K2 fan-out). */
+  deliveryTargets?: DeliveryTarget[];
+  /** The design-doc PR the plan was merged from. */
+  docPrNumber?: number;
+}
+
+/**
+ * The implementation task's input text (Track 10): the merged plan, the pinned
+ * base, the suggested branch, the delivery targets, and the
+ * `delivery.report_pr` contract — everything the BUILD agent needs to run the
+ * corrected agent-driven loop.
+ */
+export function renderImplementationBrief(brief: ImplementationBrief): string {
+  const branch = suggestedImplementationBranch(brief.planRef);
+  const targets = (brief.deliveryTargets ?? []).map((t) => `- ${describeTarget(t)}`).join("\n");
+  return [
+    `Implement the approved plan.`,
+    ``,
+    `Plan: ${brief.planRef.docPath} in ${brief.planRef.repo}, merged as ${brief.planRef.mergeCommitSha}` +
+      (brief.docPrNumber !== undefined ? ` (design PR #${brief.docPrNumber})` : "") +
+      `. Your workspace is checked out at that commit (base_sha) — read the plan file first.`,
+    ``,
+    `Suggested branch: ${branch} (yours to change if the repo has a convention).`,
+    ``,
+    deliveryContract(branch),
+    ...(targets ? ["", "Your PR link will be delivered to:", targets] : []),
+  ].join("\n");
+}
+
+export interface RevisionBrief {
+  repo: string;
+  prNumber: number;
+  prUrl?: string;
+  /** The task branch the PR is built from — the revision updates it in place. */
+  branch: string;
+  planRef: PlanRef;
+  /** The reviewer's comment text (untrusted; fenced by the caller's prompt assembly). */
+  comment: string;
+  commentAuthor?: string;
+}
+
+/**
+ * The code-PR revision task's input text (Track 10): the reviewer's feedback,
+ * pinned to the CURRENT branch tip — the agent updates the same branch/PR
+ * through the brokered `git`/`gh` path and re-reports the same PR.
+ */
+export function renderRevisionBrief(brief: RevisionBrief): string {
+  return [
+    `Revise the code PR per review feedback.`,
+    ``,
+    `PR: ${brief.prUrl ?? `#${brief.prNumber}`} in ${brief.repo}, branch ${brief.branch}. ` +
+      `Your workspace is checked out at that branch's current tip; the plan it implements is ` +
+      `${brief.planRef.docPath} @ ${brief.planRef.mergeCommitSha}.`,
+    ``,
+    `Reviewer${brief.commentAuthor ? ` (@${brief.commentAuthor})` : ""} feedback:`,
+    fenceUntrusted("review comment", brief.comment),
+    ``,
+    `Address the feedback, keep verification green, and push to the SAME branch ` +
+      `(git.exec { argv: ["push", "${brief.repo}", "HEAD:refs/heads/${brief.branch}"] }) so PR #${brief.prNumber} updates in place. ` +
+      `Then call delivery.report_pr EXACTLY ONCE with the same PR URL and your verification results.`,
+  ].join("\n");
 }

@@ -39,6 +39,7 @@ function makeDocTask(overrides: Partial<Task> = {}): Task {
 function makeDeps(docTask: Task | null) {
   const transitions: Array<[string, string]> = [];
   const progress: Array<{ ref: Record<string, unknown>; message: string }> = [];
+  const locationMerges: Array<{ id: string; patch: Record<string, unknown> }> = [];
   const submit = vi.fn(async (input: Record<string, unknown>) => ({
     task: { ...makeDocTask(), id: "impl-task", status: "queued", ...input },
     deduped: false,
@@ -52,21 +53,23 @@ function makeDeps(docTask: Task | null) {
     db: {
       findDocumentArtifactByPr: async () =>
         docTask
-          ? { owningTaskId: docTask.id, location: { repo: REPO, prNumber: DOC_PR, path: "docs/plan.md", branch: "marathon/doc-x" } }
+          ? { id: "artifact-1", owningTaskId: docTask.id, location: { repo: REPO, prNumber: DOC_PR, path: "docs/plan.md", branch: "marathon/doc-x" } }
           : null,
       getTask: async () => docTask,
       transitionTask: async (id: string, to: string) => void transitions.push([id, to]),
+      mergeDocumentArtifactLocation: async (id: string, patch: Record<string, unknown>) =>
+        void locationMerges.push({ id, patch }),
     },
     orchestrator: { submit },
     fanout: new DeliveryFanout({ slack: adapter, github: adapter }, new InMemoryIdempotencyStore()),
     tenantId: "tn1",
   } as never as GithubAppDeps;
-  return { deps, submit, transitions, progress };
+  return { deps, submit, transitions, progress, locationMerges };
 }
 
 describe("handleGithubMerge (K2 task chain)", () => {
   it("spawns an implementation task pinned to the merge commit, chained + inheriting targets", async () => {
-    const { deps, submit, transitions, progress } = makeDeps(makeDocTask());
+    const { deps, submit, transitions, progress, locationMerges } = makeDeps(makeDocTask());
     const handled = await handleGithubMerge(deps, REPO, DOC_PR, MERGE_SHA);
     expect(handled).toBe(true);
 
@@ -81,6 +84,18 @@ describe("handleGithubMerge (K2 task chain)", () => {
     });
     // inherited fan-out targets: the originating Slack thread AND the doc PR
     expect(input.deliveryTargets).toEqual([slackOrigin, docPrTarget]);
+
+    // Track 10: the brief carries the plan, base, suggested branch, targets,
+    // and the delivery.report_pr contract.
+    const brief = String(input.inputText);
+    expect(brief).toContain(`docs/plan.md in ${REPO}, merged as ${MERGE_SHA}`);
+    expect(brief).toContain("Suggested branch: marathon/docs-plan-");
+    expect(brief).toContain("delivery.report_pr EXACTLY ONCE");
+    expect(brief).toContain("git.exec");
+    expect(brief).toContain("Slack channel C1");
+
+    // Track 10: the merge commit completes the artifact's plan pointer.
+    expect(locationMerges).toEqual([{ id: "artifact-1", patch: { mergeCommitSha: MERGE_SHA } }]);
 
     // the doc task is done: merge is the approval
     expect(transitions).toEqual([["doc-task", "running"], ["doc-task", "completed"]]);

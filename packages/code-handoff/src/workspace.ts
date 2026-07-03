@@ -1,10 +1,18 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * The sandbox user's HOME inside the mounted workspace (Track 11): package
+ * caches need task-sized disk, not the container's small tmpfs. Excluded from
+ * the workspace's git view (below), so caches never enter diffs, tree hashes,
+ * or commits.
+ */
+export const SANDBOX_HOME_DIRNAME = ".marathon-home";
 
 export interface MaterializeOptions {
   /** Clone source: a local repo path or a (possibly credentialed) URL. Host-side only. */
@@ -43,6 +51,11 @@ export class CodeWorkspace {
       // Local scratch commits (advisory, §29.2) need an identity inside the sandbox.
       await ws.git(["config", "--local", "user.name", "Marathon"]);
       await ws.git(["config", "--local", "user.email", "marathon@localhost"]);
+      // The sandbox HOME lives inside the mount (Track 11) — keep its caches
+      // out of the workspace's git view (diffs, tree hash, commits) without
+      // touching the repo's own .gitignore.
+      await mkdir(join(dir, ".git", "info"), { recursive: true });
+      await appendFile(join(dir, ".git", "info", "exclude"), `\n${SANDBOX_HOME_DIRNAME}/\n`);
       return ws;
     } catch (err) {
       await rm(dir, { recursive: true, force: true });

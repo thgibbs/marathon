@@ -376,8 +376,13 @@ export class FixturesGithubClient implements GithubClient {
   async readFileWithSha(repo: string, path: string): Promise<GithubFile & { sha: string }> {
     const key = `${repo}:${path}`;
     const f = this.fixtures.files?.[key];
-    // Lenient: a doc created via putFile won't be in `files`, but has a tracked sha.
-    return { path, content: f?.content ?? "", sha: this.fileShas.get(key) ?? "sha-existing" };
+    // Content written via putFile wins over the static fixture (write-through,
+    // so retry-convergence paths can compare against what actually landed).
+    return {
+      path,
+      content: this.fileContents.get(key) ?? f?.content ?? "",
+      sha: this.fileShas.get(key) ?? "sha-existing",
+    };
   }
 
   async listContents(repo: string, path = ""): Promise<GithubEntry[]> {
@@ -415,6 +420,7 @@ export class FixturesGithubClient implements GithubClient {
   }
 
   private readonly fileShas = new Map<string, string>();
+  private readonly fileContents = new Map<string, string>();
   private prSeq = 1;
   public refSha = "base-sha-0000";
 
@@ -448,6 +454,7 @@ export class FixturesGithubClient implements GithubClient {
     }
     const contentSha = `sha-${this.issueSeq++}`;
     this.fileShas.set(key, contentSha);
+    this.fileContents.set(key, content);
     this.writes.push({ op: "putFile", args: { repo, path, branch, sha, content } });
     return { commitSha: `commit-${this.issueSeq}`, contentSha };
   }
