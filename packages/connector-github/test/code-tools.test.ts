@@ -9,7 +9,7 @@ import {
   InMemoryCodeChangeStore,
 } from "@marathon/code-handoff";
 import type { PlanRef } from "@marathon/core";
-import { ToolGateway, ToolRegistry, type ToolInput } from "@marathon/tools";
+import { InMemorySourceLedger, ToolBlockedError, ToolGateway, ToolRegistry, type ToolInput } from "@marathon/tools";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { FixturesGithubClient } from "../src/client";
 import { makeGithubCodeTools } from "../src/code-tools";
@@ -208,6 +208,48 @@ describe("github.submit_code_changes — typed refusals (§29.7)", () => {
   it("PROTECTED_PATH when the diff touches .github/workflows/**", async () => {
     await ws.writeFile(".github/workflows/ci.yml", "on: push\n");
     await expect(submit()).rejects.toThrow(/PROTECTED_PATH.*\.github\/workflows\/ci\.yml/);
+    expect(client.writes).toHaveLength(0); // refused before any GitHub write
+  });
+
+  it("declares publishing to the plan repo as internal egress (§7.8)", () => {
+    const registry = new CodeTaskRegistry();
+    registry.set(TASK_ID, { workspace: ws, planRef, repo: REPO, baseSha });
+    const [tool] = makeGithubCodeTools({ getClient: () => client, registry, store });
+    expect(tool!.egress?.({ plan_ref: { repo: REPO, doc_path: "docs/plan.md", merge_commit_sha: baseSha } })).toEqual({
+      destination: `github:${REPO}`,
+      audience: "tenant",
+      external: false,
+    });
+  });
+
+  it("egress_blocked when the task has read a restricted source (§7.8)", async () => {
+    const ledger = new InMemorySourceLedger();
+    ledger.record(TASK_ID, [{ source: "github:acme/secret-repo", sensitivity: "restricted" }]);
+    const registry = new CodeTaskRegistry();
+    registry.set(TASK_ID, { workspace: ws, planRef, repo: REPO, baseSha });
+    const tools = makeGithubCodeTools({ getClient: () => client, registry, store });
+    const guarded = new ToolGateway({
+      registry: new ToolRegistry(tools),
+      policy: { grants: [{ tool: "github.submit_code_changes" }] },
+      secrets: { get: async () => null } as never,
+      sourceLedger: ledger,
+    });
+    await ws.writeFile("app.ts", "export const x = 2;\n");
+    const err = await guarded
+      .run(
+        "github.submit_code_changes",
+        {
+          title: "Add retry logic",
+          summary: "Implements the retry plan.",
+          plan_ref: { repo: REPO, doc_path: "docs/plan.md", merge_commit_sha: baseSha },
+          verification: GREEN,
+        },
+        { taskId: TASK_ID, tenantId: "tenant-1" },
+      )
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(ToolBlockedError);
+    expect((err as ToolBlockedError).code).toBe("egress_blocked");
+    expect((err as ToolBlockedError).reason).toContain("github:acme/secret-repo");
     expect(client.writes).toHaveLength(0); // refused before any GitHub write
   });
 

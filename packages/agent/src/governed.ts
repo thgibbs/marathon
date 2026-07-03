@@ -3,7 +3,7 @@ import { handleToolRequest, type ToolCallContext, type ToolGateway, type ToolInp
 export type GovernedOutcome =
   | { status: "ok"; content: string }
   | { status: "denied"; reason: string }
-  | { status: "approval_required"; reason: string };
+  | { status: "requires_proposal"; reason: string };
 
 /**
  * Run a tool through the Tool Gateway from inside an agent loop, mapping a blocked
@@ -28,7 +28,7 @@ export function governedOutcomeText(outcome: GovernedOutcome): string {
       return outcome.content;
     case "denied":
       return `[blocked] ${outcome.reason}`;
-    case "approval_required":
-      return `[approval required] ${outcome.reason} — a human must approve before this runs.`;
+    case "requires_proposal":
+      return `[requires proposal] ${outcome.reason}`;
   }
 }

@@ -11,8 +11,8 @@ export function makeCliTool(allowlist: string[], sandbox: ToolSandbox = new NoSa
   return {
     name: "cli.run",
     description: "Run an allowlisted command-line program (in a sandbox).",
-    riskLevel: "medium",
-    destructive: false,
+    riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "private", costly: false },
+    defaultMode: "autonomous",
     validate(input: ToolInput): string | null {
       const command = input.command;
       if (typeof command !== "string" || command.trim() === "") return "command (string) is required";

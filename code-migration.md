@@ -18,6 +18,23 @@ features.
 Progress against the tracks below, most recent first. The "Current mismatch" lists in each
 track describe the codebase *before* its work landed; completed tracks carry a status note.
 
+- **Track 5: Tool Gateway and Effect Routing — done (2026-07-03).** `Tool` now declares
+  `riskAxes` + `defaultMode` (`autonomous | native_review | proposed_effect | disabled`);
+  the legacy `riskLevel`/`destructive` fields and the `riskAxesFromLegacy` bridge are gone.
+  Policy routes by mode: `document.create/update/revise` and `github.submit_code_changes`
+  are **native review** (they run; the PR is the approval), reads/comments/PR-ops are
+  autonomous, and `github.merge_pull_request` is a `proposed_effect` — direct calls return
+  a typed `requires_proposal` (the old `approval_required`/`needs_approval` vocabulary is
+  retired across broker/governed/Pi). The gateway gained a per-task **source ledger**
+  (reads declare `sources()`, kernel calibration: repo content is `company_viewable`) and
+  deterministic **egress routing** (writes declare `egress()`; tenant-external egress is
+  always blocked pending Proposed Effects, internal egress is blocked only after a
+  `restricted` read), plus typed agent-visible `ToolBlockedError.code`s
+  (`not_granted`/`tool_disabled`/`requires_proposal`/`egress_blocked`/…).
+  `proposeToolCall`/`executeApproved` survive as **deprecated** M5 demo scaffolding only —
+  M10 Proposed Effects will be immutable artifacts run by a non-model executor, not built
+  on them. Agent Hub / in-app approvals stay deferred.
+
 - **Track 4: Worker Runtime and Durable Resume — done (K4, 2026-07-02).**
   `PiAgentRuntime` is now a real multi-turn session runner: per-task session JSONL under
   `sessionDir/<taskId>/`, a point-in-time session snapshot after every completed Pi turn
@@ -54,9 +71,9 @@ track describe the codebase *before* its work landed; completed tracks carry a s
   to the merge commit and inherited delivery targets; `packages/surface/src/fanout.ts`
   delivers to every target idempotently. `make demo-k1` proves the path.
 
-Not started: Tracks 5–13 except K4 (gateway effect routing, document-workflow
-iteration paths, sandbox toolchain image, prompt/context continuity, memory migration,
-Forge YAML config/quickstart, model routing, status/cost UX, kernel demos beyond K1/K4).
+Not started: Tracks 6–13 except K4 (document-workflow iteration paths, sandbox
+toolchain image, prompt/context continuity, memory migration, Forge YAML
+config/quickstart, model routing, status/cost UX, kernel demos beyond K1/K4).
 
 ## Current Alignment Snapshot
 
@@ -319,6 +336,10 @@ Required changes:
 - Add K4 tests that kill a real agent/sandbox run, not just a synthetic runner.
 
 ## Track 5: Tool Gateway and Effect Routing
+
+> **Status (2026-07-03): implemented** — see "Completed Work" above. Source
+> sensitivity is in-process (`InMemorySourceLedger`); persisting the ledger and
+> the full egress lattice land with the M10 Proposed Effects work.
 
 Design target:
 

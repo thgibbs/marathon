@@ -8,7 +8,7 @@
  * no credentials** does workspace FS work AND obtains governed-tool results solely by
  * asking the host broker over stdio — the host runs them through the ToolGateway
  * (creds + policy host-side) and returns redacted results; a destructive tool comes
- * back as approval_required. (The in-container agent is a stand-in for Pi-RPC.)
+ * back as requires_proposal. (The in-container agent is a stand-in for Pi-RPC.)
  */
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -21,8 +21,8 @@ const agentPath = join(dirname(fileURLToPath(import.meta.url)), "sandbox-agent.c
 const lookupTool: Tool = {
   name: "host.lookup",
   description: "",
-  riskLevel: "low",
-  destructive: false,
+  riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "private", costly: false },
+  defaultMode: "autonomous",
   async execute(input) {
     return { content: `host-side answer for ${String(input.q)}` };
   },
@@ -30,8 +30,8 @@ const lookupTool: Tool = {
 const deleteTool: Tool = {
   name: "host.delete",
   description: "",
-  riskLevel: "high",
-  destructive: true,
+  riskAxes: { reversible: false, crossesTrustBoundary: false, audience: "tenant", costly: false },
+  defaultMode: "proposed_effect",
   async execute() {
     return { content: "deleted" };
   },
@@ -102,13 +102,13 @@ async function main(): Promise<void> {
   if (result.lookupStatus !== "ok" || result.lookupContent !== "host-side answer for raw") {
     throw new Error(`brokered tool result wrong: ${JSON.stringify(result)}`);
   }
-  if (result.destructiveStatus !== "approval_required") {
-    throw new Error(`destructive tool should need approval, got ${result.destructiveStatus}`);
+  if (result.destructiveStatus !== "requires_proposal") {
+    throw new Error(`high-risk tool should require a proposal, got ${result.destructiveStatus}`);
   }
 
   console.log("[smoke-broker]   workspace FS work ✓ (RAW)");
   console.log("[smoke-broker]   governed tool brokered to host ✓ (no creds in sandbox)");
-  console.log("[smoke-broker]   destructive tool -> approval_required ✓");
+  console.log("[smoke-broker]   high-risk tool -> requires_proposal ✓");
   console.log("smoke-broker OK");
 }
 

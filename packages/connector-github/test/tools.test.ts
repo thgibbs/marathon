@@ -36,10 +36,13 @@ describe("github read tools", () => {
     expect(res.content).toContain("dir\tsrc");
   });
 
-  it("tools are read-only (non-destructive, low risk)", () => {
+  it("tools are read-only (reversible, autonomous) and declare their source", () => {
     for (const t of tools) {
-      expect(t.destructive).toBe(false);
-      expect(t.riskLevel).toBe("low");
+      expect(t.riskAxes.reversible).toBe(true);
+      expect(t.defaultMode).toBe("autonomous");
+      expect(t.sources?.({ repo: "o/repo" })).toEqual([
+        { source: "github:o/repo", sensitivity: "company_viewable" },
+      ]);
     }
   });
 });

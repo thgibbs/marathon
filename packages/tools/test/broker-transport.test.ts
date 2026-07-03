@@ -5,8 +5,9 @@ import { ToolBrokerClient, serveToolBroker } from "../src/broker-transport";
 import { ToolGateway, ToolRegistry } from "../src/gateway";
 import type { Tool, ToolPolicy } from "../src/types";
 
-const readTool: Tool = { name: "doc.read", description: "", riskLevel: "low", destructive: false, async execute() { return { content: "hello from host" }; } };
-const deleteTool: Tool = { name: "doc.delete", description: "", riskLevel: "high", destructive: true, async execute() { return { content: "deleted" }; } };
+const AXES = { reversible: true, crossesTrustBoundary: false, audience: "private", costly: false } as const;
+const readTool: Tool = { name: "doc.read", description: "", riskAxes: AXES, defaultMode: "autonomous", async execute() { return { content: "hello from host" }; } };
+const deleteTool: Tool = { name: "doc.delete", description: "", riskAxes: { ...AXES, reversible: false }, defaultMode: "proposed_effect", async execute() { return { content: "deleted" }; } };
 
 function wired() {
   // two pipes: client->server and server->client
@@ -30,10 +31,10 @@ describe("broker transport (client <-> host over a stream)", () => {
     cleanup();
   });
 
-  it("relays a destructive tool as approval_required (creds/policy stay host-side)", async () => {
+  it("relays a proposed_effect tool as requires_proposal (creds/policy stay host-side)", async () => {
     const { client, cleanup } = wired();
     const r = await client.request({ tool: "doc.delete", input: {} });
-    expect(r.status).toBe("approval_required");
+    expect(r.status).toBe("requires_proposal");
     cleanup();
   });
 
@@ -44,7 +45,7 @@ describe("broker transport (client <-> host over a stream)", () => {
       client.request({ tool: "doc.delete", input: {} }),
     ]);
     expect(a.status).toBe("ok");
-    expect(b.status).toBe("approval_required");
+    expect(b.status).toBe("requires_proposal");
     cleanup();
   });
 });

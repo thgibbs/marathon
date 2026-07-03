@@ -48,7 +48,8 @@ export interface GovernedToolsConfig {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   gateway: any; // @marathon/tools ToolGateway (kept loose to avoid a hard dep cycle)
   tools: GovernedToolSpec[];
-  onApprovalRequired?: (toolName: string, input: Record<string, unknown>, reason: string) => Promise<void> | void;
+  /** Called when a call is refused because the effect must be proposed for review (§7.9). */
+  onProposalRequired?: (toolName: string, input: Record<string, unknown>, reason: string) => Promise<void> | void;
 }
 
 export interface PiAgentOptions {
@@ -161,12 +162,12 @@ export class PiAgentRuntime implements AgentRuntime {
 
     const start = Date.now();
     // Marathon-governed tools (M6.1): each Pi custom tool delegates to the Tool
-    // Gateway, so policy/credentials/audit/redaction apply, and destructive calls
-    // surface an approval requirement to the model.
+    // Gateway, so policy/credentials/audit/redaction apply, and high-risk calls
+    // surface a requires-proposal outcome to the model (§7.9).
     const customTools: unknown[] = [];
     const governedNames: string[] = [];
     if (this.opts.governed) {
-      const { gateway, tools: specs, onApprovalRequired } = this.opts.governed;
+      const { gateway, tools: specs, onProposalRequired } = this.opts.governed;
       // Per-call ctx from this turn's request (the runtime is shared across tasks),
       // falling back to a configured ctx for single-shot uses.
       const govCtx = {
@@ -188,8 +189,8 @@ export class PiAgentRuntime implements AgentRuntime {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             execute: async (_id: string, params: any) => {
               const outcome = await runGovernedTool(gateway, spec.name, params ?? {}, govCtx);
-              if (outcome.status === "approval_required") {
-                await onApprovalRequired?.(spec.name, params ?? {}, outcome.reason);
+              if (outcome.status === "requires_proposal") {
+                await onProposalRequired?.(spec.name, params ?? {}, outcome.reason);
               }
               return { content: [{ type: "text", text: governedOutcomeText(outcome) }], details: {} };
             },
