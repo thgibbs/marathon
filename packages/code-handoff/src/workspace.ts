@@ -95,13 +95,17 @@ export class CodeWorkspace {
    */
   async captureDiff(): Promise<string> {
     await this.stageAll();
-    return this.git(["diff", "--binary", "--cached", this.baseSha]);
+    return this.git(["diff", "--binary", "--no-renames", "--cached", this.baseSha]);
   }
 
-  /** Paths changed relative to base_sha (for protected-path checks). */
+  /**
+   * Paths changed relative to base_sha (protected-path checks + the host-side
+   * commit). Rename detection is disabled so a rename lists BOTH paths — the
+   * commit builder must delete the old path, not just add the new one.
+   */
   async changedFiles(): Promise<string[]> {
     await this.stageAll();
-    const out = await this.git(["diff", "--cached", "--name-only", this.baseSha]);
+    const out = await this.git(["diff", "--cached", "--name-only", "--no-renames", this.baseSha]);
     return out.split("\n").map((s) => s.trim()).filter(Boolean);
   }
 

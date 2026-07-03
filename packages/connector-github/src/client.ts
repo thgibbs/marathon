@@ -58,7 +58,11 @@ export interface GithubClient {
   updateRef(repo: string, branch: string, sha: string, force: boolean): Promise<void>;
   findPullRequestByHead(repo: string, head: string): Promise<{ number: number; url: string; draft: boolean } | null>;
   updatePullRequest(repo: string, prNumber: number, patch: { title?: string; body?: string }): Promise<void>;
+  /** Toggle a PR's draft state (§29.3: draft must track verification). */
+  setPullRequestDraft(repo: string, prNumber: number, draft: boolean): Promise<void>;
   addLabels(repo: string, issueNumber: number, labels: string[]): Promise<void>;
+  /** Remove a label; removing an absent label is a no-op. */
+  removeLabel(repo: string, issueNumber: number, label: string): Promise<void>;
   // permission / identity (M6 repo-permission checks)
   /** Repo metadata if the *agent's* token can see it; null if not accessible (404). */
   getRepo(repo: string): Promise<{ private: boolean } | null>;
@@ -247,8 +251,40 @@ export class HttpGithubClient implements GithubClient {
     await this.api(`/repos/${repo}/pulls/${prNumber}`, { method: "PATCH", body: patch });
   }
 
+  /** Draft state can only be changed via GraphQL — the REST pulls PATCH ignores `draft`. */
+  async setPullRequestDraft(repo: string, prNumber: number, draft: boolean): Promise<void> {
+    const pr = await this.api(`/repos/${repo}/pulls/${prNumber}`);
+    const mutation = draft
+      ? `mutation($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { clientMutationId } }`
+      : `mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { clientMutationId } }`;
+    await this.graphql(mutation, { id: pr.node_id });
+  }
+
+  private async graphql(query: string, variables: Record<string, unknown>): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/graphql`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        "Content-Type": "application/json",
+        "User-Agent": "marathon",
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+    if (!res.ok) throw new Error(`github graphql ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const j = (await res.json()) as { errors?: Array<{ message: string }> };
+    if (j.errors?.length) throw new Error(`github graphql: ${j.errors[0]!.message}`);
+  }
+
   async addLabels(repo: string, issueNumber: number, labels: string[]): Promise<void> {
     await this.api(`/repos/${repo}/issues/${issueNumber}/labels`, { method: "POST", body: { labels } });
+  }
+
+  async removeLabel(repo: string, issueNumber: number, label: string): Promise<void> {
+    try {
+      await this.api(`/repos/${repo}/issues/${issueNumber}/labels/${encodeURIComponent(label)}`, { method: "DELETE" });
+    } catch (e) {
+      if (!/github 404/.test(String(e))) throw e; // absent label -> no-op
+    }
   }
 
   async deleteRef(repo: string, branch: string): Promise<void> {
@@ -468,6 +504,19 @@ export class FixturesGithubClient implements GithubClient {
   async addLabels(repo: string, issueNumber: number, labels: string[]): Promise<void> {
     this.writes.push({ op: "addLabels", args: { repo, issueNumber, labels } });
     const key = `${repo}:${issueNumber}`;
-    this.labels.set(key, [...(this.labels.get(key) ?? []), ...labels]);
+    this.labels.set(key, [...new Set([...(this.labels.get(key) ?? []), ...labels])]);
+  }
+
+  async removeLabel(repo: string, issueNumber: number, label: string): Promise<void> {
+    this.writes.push({ op: "removeLabel", args: { repo, issueNumber, label } });
+    const key = `${repo}:${issueNumber}`;
+    this.labels.set(key, (this.labels.get(key) ?? []).filter((l) => l !== label));
+  }
+
+  async setPullRequestDraft(repo: string, prNumber: number, draft: boolean): Promise<void> {
+    this.writes.push({ op: "setPullRequestDraft", args: { repo, prNumber, draft } });
+    for (const pr of this.openPrs.values()) {
+      if (pr.number === prNumber) pr.draft = draft;
+    }
   }
 }

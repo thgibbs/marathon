@@ -149,6 +149,14 @@ const greenDetails = green.details as Record<string, unknown>;
 assert(greenDetails.pr_number === redDetails.pr_number, "revision converges on the same PR");
 assert(String(greenDetails.branch).startsWith("marathon/"), `branch is namespace-enforced: ${greenDetails.branch}`);
 assert(greenDetails.state === "submitted_ready", "green verify → ready state");
+assert(
+  client.openPrs.get(`${REPO}:${greenDetails.branch}`)?.draft === false,
+  "green verify clears the draft state on the PR itself (§29.3)",
+);
+assert(
+  !(client.labels.get(`${REPO}:${greenDetails.pr_number}`) ?? []).includes("marathon:unverified"),
+  "green verify removes the marathon:unverified label",
+);
 
 // --- 6. Idempotency: re-submit with the same tree is a no-op (§29.4). ---
 const writesBefore = client.writes.length;

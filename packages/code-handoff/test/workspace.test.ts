@@ -90,6 +90,24 @@ describe("diff capture and tree hash", () => {
     }
   });
 
+  it("a pure rename lists BOTH paths (no rename coalescing — the commit builder needs the deletion)", async () => {
+    const ws = await CodeWorkspace.materialize({ source: originDir, baseSha });
+    try {
+      // Identical content — exactly the case git's rename detection would
+      // otherwise collapse to a single "new path" entry.
+      const content = await ws.readFile("app.ts");
+      await ws.writeFile("core.ts", content);
+      await ws.deleteFile("app.ts");
+
+      expect((await ws.changedFiles()).sort()).toEqual(["app.ts", "core.ts"]);
+      const diff = await ws.captureDiff();
+      expect(diff).toContain("deleted file");
+      expect(diff).not.toContain("rename from");
+    } finally {
+      await ws.dispose();
+    }
+  });
+
   it("tree hash is stable for the same tree and changes with the tree", async () => {
     const ws = await CodeWorkspace.materialize({ source: originDir, baseSha });
     try {

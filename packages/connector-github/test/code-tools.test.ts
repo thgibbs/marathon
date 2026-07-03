@@ -150,6 +150,47 @@ describe("github.submit_code_changes — happy path (§29.4)", () => {
     expect(client.writes.filter((w) => w.op === "createPullRequest")).toHaveLength(1);
     expect(client.writes.some((w) => w.op === "updateRef" && (w.args as { force: boolean }).force)).toBe(true);
   });
+
+  it("a red draft that turns green becomes a ready PR without the unverified label (§29.3)", async () => {
+    await ws.writeFile("app.ts", "export const x = 2;\n");
+    const red = await submit({ verification: RED });
+    const prNumber = (red.details as { pr_number: number }).pr_number;
+    expect(client.openPrs.get(`${REPO}:marathon/task-42-add-retry-logic`)?.draft).toBe(true);
+    expect(client.labels.get(`${REPO}:${prNumber}`)).toContain("marathon:unverified");
+
+    await ws.writeFile("app.ts", "export const x = 3;\n"); // new tree, now green
+    const green = await submit();
+    expect((green.details as { pr_number: number }).pr_number).toBe(prNumber);
+    expect((green.details as { state: string }).state).toBe("submitted_ready");
+    expect(client.openPrs.get(`${REPO}:marathon/task-42-add-retry-logic`)?.draft).toBe(false);
+    expect(client.labels.get(`${REPO}:${prNumber}`)).not.toContain("marathon:unverified");
+    expect(client.writes.some((w) => w.op === "setPullRequestDraft" && (w.args as { draft: boolean }).draft === false)).toBe(true);
+  });
+
+  it("a green PR whose revision turns red re-drafts and re-labels (§29.3)", async () => {
+    await ws.writeFile("app.ts", "export const x = 2;\n");
+    const first = await submit();
+    const prNumber = (first.details as { pr_number: number }).pr_number;
+    expect(client.openPrs.get(`${REPO}:marathon/task-42-add-retry-logic`)?.draft).toBe(false);
+
+    await ws.writeFile("app.ts", "export const x = 3;\n");
+    const red = await submit({ verification: RED });
+    expect((red.details as { state: string }).state).toBe("submitted_draft");
+    expect(client.openPrs.get(`${REPO}:marathon/task-42-add-retry-logic`)?.draft).toBe(true);
+    expect(client.labels.get(`${REPO}:${prNumber}`)).toContain("marathon:unverified");
+  });
+
+  it("a rename reaches the commit as delete(old) + add(new) — no stale copy left behind (§29 tree fidelity)", async () => {
+    const content = await ws.readFile("app.ts");
+    await ws.writeFile("core.ts", content);
+    await ws.deleteFile("app.ts");
+    await submit();
+
+    const tree = client.writes.find((w) => w.op === "createTree");
+    const entries = (tree?.args as { entries: Array<{ path: string; sha: string | null }> }).entries;
+    expect(entries).toContainEqual({ path: "app.ts", mode: "100644", sha: null }); // deletion
+    expect(entries.some((e) => e.path === "core.ts" && e.sha !== null)).toBe(true);
+  });
 });
 
 describe("github.submit_code_changes — typed refusals (§29.7)", () => {

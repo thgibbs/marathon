@@ -171,6 +171,9 @@ export function makeGithubCodeTools(opts: GithubCodeToolsOptions): Tool[] {
       let prUrl: string;
       if (existingPr) {
         await client.updatePullRequest(repo, existingPr.number, { title, body });
+        // §29.3: the PR's review surface must track verification — a red draft
+        // that turns green becomes a ready PR; a green PR that turns red re-drafts.
+        if (existingPr.draft !== draft) await client.setPullRequestDraft(repo, existingPr.number, draft);
         prNumber = existingPr.number;
         prUrl = existingPr.url;
       } else {
@@ -178,7 +181,8 @@ export function makeGithubCodeTools(opts: GithubCodeToolsOptions): Tool[] {
         prNumber = pr.number;
         prUrl = pr.url;
       }
-      if (!green) await client.addLabels(repo, prNumber, [unverifiedLabel]);
+      if (green) await client.removeLabel(repo, prNumber, unverifiedLabel);
+      else await client.addLabels(repo, prNumber, [unverifiedLabel]);
 
       // 7. record; the ToolGateway records the invocation + audit around this call.
       const state = draft ? "submitted_draft" : "submitted_ready";
