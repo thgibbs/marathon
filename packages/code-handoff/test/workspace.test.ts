@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CodeWorkspace } from "../src/workspace";
+import { CodeWorkspace, SANDBOX_HOME_DIRNAME } from "../src/workspace";
 
 const execFileAsync = promisify(execFile);
 
@@ -103,6 +103,27 @@ describe("diff capture and tree hash", () => {
       const diff = await ws.captureDiff();
       expect(diff).toContain("deleted file");
       expect(diff).not.toContain("rename from");
+    } finally {
+      await ws.dispose();
+    }
+  });
+
+  it("sandbox HOME caches never enter diffs, changed files, or the tree hash (Track 11)", async () => {
+    const ws = await CodeWorkspace.materialize({ source: originDir, baseSha });
+    try {
+      const clean = await ws.treeHash();
+      // What a package manager would leave under the in-workspace HOME.
+      await ws.writeFile(`${SANDBOX_HOME_DIRNAME}/.npm/cache/pkg.tgz`, "cache-bytes");
+      await ws.writeFile(`${SANDBOX_HOME_DIRNAME}/.gitconfig`, "[user]\n\tname = sandbox\n");
+
+      expect((await ws.captureDiff()).trim()).toBe("");
+      expect(await ws.changedFiles()).toEqual([]);
+      expect(await ws.treeHash()).toBe(clean);
+
+      // Real work alongside the caches is still fully captured.
+      await ws.writeFile("app.ts", "export const x = 2;\n");
+      expect(await ws.changedFiles()).toEqual(["app.ts"]);
+      expect(await ws.captureDiff()).not.toContain(SANDBOX_HOME_DIRNAME);
     } finally {
       await ws.dispose();
     }

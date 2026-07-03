@@ -35,13 +35,26 @@ async function upsertDocPr(
 ): Promise<{ number: number; url: string; converged: boolean }> {
   const { repo, path, branch, base } = args;
   // Retry convergence first: the deterministic branch already has an open PR →
-  // re-commit onto it (against the branch's current file sha) and reuse the PR.
+  // converge onto it and reuse the PR.
   const existing = await client.findPullRequestByHead(repo, branch);
   if (existing) {
-    // A caller-supplied sha (document.update) keeps stale-SHA rejection; a
-    // create retry re-reads the branch's current sha.
-    const sha = args.fileSha ?? (await client.readFileWithSha(repo, path, branch).catch(() => null))?.sha;
-    await client.putFile(repo, path, args.body, branch, args.commitMessage, sha);
+    const current = await client.readFileWithSha(repo, path, branch).catch(() => null);
+    // A replay of the same accepted write: nothing to commit.
+    if (current && current.content === args.body) {
+      return { number: existing.number, url: existing.url, converged: true };
+    }
+    // Stale-SHA rejection with retry awareness (Track 10): a caller-supplied
+    // sha (document.update) legitimately trails the branch after the first
+    // accepted call moved the file — so accept a sha matching the branch tip
+    // OR the current base file (what the caller actually read), and reject
+    // only when it matches neither (a truly stale read).
+    if (args.fileSha && args.fileSha !== current?.sha) {
+      const baseFile = await client.readFileWithSha(repo, path, base).catch(() => null);
+      if (args.fileSha !== baseFile?.sha) {
+        throw new Error(`document update rejected: stale sha for ${path} — re-read the document and retry`);
+      }
+    }
+    await client.putFile(repo, path, args.body, branch, args.commitMessage, current?.sha);
     return { number: existing.number, url: existing.url, converged: true };
   }
   const { sha } = await client.getRef(repo, `heads/${base}`);

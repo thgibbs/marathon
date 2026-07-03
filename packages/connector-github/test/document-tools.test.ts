@@ -51,6 +51,23 @@ describe("document tools", () => {
     ).rejects.toThrow(/stale|409/);
   });
 
+  it("document.update converges under a retry — replay is a no-op, not a stale-SHA failure (Track 10)", async () => {
+    const gh = new FixturesGithubClient({});
+    await tool("document.create", gh).execute({ repo: "o/r", path: "docs/x.md", content: "# v1" }, ctx);
+    const { sha } = await gh.readFileWithSha("o/r", "docs/x.md");
+
+    const first = await tool("document.update", gh).execute({ repo: "o/r", path: "docs/x.md", content: "# v2", sha }, ctx);
+    const putsAfterFirst = gh.writes.filter((w) => w.op === "putFile").length;
+
+    // The webhook/tool retry replays the SAME accepted update: the branch has
+    // moved past the caller's sha, but this must converge, not 409.
+    const retry = await tool("document.update", gh).execute({ repo: "o/r", path: "docs/x.md", content: "# v2", sha }, ctx);
+    expect((retry.details as { converged: boolean }).converged).toBe(true);
+    expect((retry.details as { number: number }).number).toBe((first.details as { number: number }).number);
+    expect(gh.writes.filter((w) => w.op === "putFile")).toHaveLength(putsAfterFirst); // no-op: nothing re-committed
+    expect(gh.writes.filter((w) => w.op === "createPullRequest")).toHaveLength(1);
+  });
+
   it("document.read_region slices lines", async () => {
     const gh = new FixturesGithubClient({ files: { "o/r:docs/x.md": { path: "docs/x.md", content: "a\nb\nc\nd" } } });
     const res = await tool("document.read_region", gh).execute(
