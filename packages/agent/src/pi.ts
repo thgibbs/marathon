@@ -227,14 +227,7 @@ export class PiAgentRuntime implements AgentRuntime {
 
       let streamed = "";
       const eventTypes: string[] = [];
-      // Per-turn checkpoints (K4, §11.2): the checkpoint unit is one completed Pi
-      // turn. `turnBase` continues the numbering across resumes.
-      const turnBase = (ctx.checkpoint.turnIndex ?? -1) + 1;
-      let turnsThisCall = 0;
-      let lastSessionRef: string | undefined = ctx.checkpoint.sessionRef;
-      // Listeners are synchronous; durable persistence is chained so each turn's
-      // checkpoint lands as soon as the turn completes, while the run continues.
-      let checkpointChain: Promise<void> = Promise.resolve();
+      // Progress/streaming events (best-effort, fire-and-forget).
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       session.subscribe((event: any) => {
         if (event?.type) eventTypes.push(event.type);
@@ -255,33 +248,63 @@ export class PiAgentRuntime implements AgentRuntime {
             summary: cap(`${event.isError ? "error" : "ok"}: ${safeJson(event.result)}`),
           });
         }
-        if (event?.type === "turn_end") {
-          const turnIndex = turnBase + turnsThisCall;
-          turnsThisCall += 1;
-          // Snapshot the session file synchronously at the turn boundary: the
-          // snapshot IS the resume point; anything appended after it (a turn
-          // interrupted by a crash) is discarded on resume.
-          const live: string | undefined = sessionManager.getSessionFile?.();
-          let snapshot: string | undefined;
-          if (live && taskSessionDir) {
-            snapshot = join(taskSessionDir, `turn-${turnIndex}.jsonl`);
-            copyFileSync(live, snapshot);
-            lastSessionRef = snapshot;
-          }
-          ctx.onEvent?.({ type: "turn_end", summary: `turn ${turnIndex} complete` });
-          const modelInvocation = perTurnInvocation(event.message, provider, model);
-          if (ctx.onTurnCheckpoint) {
-            const sink = ctx.onTurnCheckpoint;
-            checkpointChain = checkpointChain.then(() =>
-              Promise.resolve(sink({ turnIndex, sessionRef: snapshot ?? live, modelInvocation })),
-            );
+      });
+
+      // Per-turn checkpoints (K4, §11.2): the checkpoint unit is one completed Pi
+      // turn, and "after each completed turn, persist" is load-bearing — so the
+      // checkpoint runs in an AWAITED agent-level listener. Pi's run loop awaits
+      // these listeners before starting the next turn, and a persist failure
+      // fails the run AT the turn boundary (a run that cannot checkpoint must
+      // not keep doing work it cannot resume from).
+      const turnBase = (ctx.checkpoint.turnIndex ?? -1) + 1;
+      let turnsThisCall = 0;
+      let lastSessionRef: string | undefined = ctx.checkpoint.sessionRef;
+      let checkpointError: unknown;
+      if (!session.agent?.subscribe) {
+        throw new Error("Pi session does not expose awaited agent listeners; cannot checkpoint per turn");
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const unsubscribe = session.agent.subscribe(async (event: any) => {
+        if (event?.type !== "turn_end") return;
+        // A failed run replays a synthetic error turn_end (and one fires after a
+        // checkpoint failure): neither is a COMPLETED turn — never checkpoint it.
+        if (checkpointError || event.message?.errorMessage) return;
+        const turnIndex = turnBase + turnsThisCall;
+        turnsThisCall += 1;
+        // Snapshot the session file at the turn boundary: the snapshot IS the
+        // resume point; anything appended after it (a turn interrupted by a
+        // crash) is discarded on resume.
+        const live: string | undefined = sessionManager.getSessionFile?.();
+        let snapshot: string | undefined;
+        if (live && taskSessionDir) {
+          snapshot = join(taskSessionDir, `turn-${turnIndex}.jsonl`);
+          copyFileSync(live, snapshot);
+          lastSessionRef = snapshot;
+        }
+        ctx.onEvent?.({ type: "turn_end", summary: `turn ${turnIndex} complete` });
+        if (ctx.onTurnCheckpoint) {
+          try {
+            const modelInvocation = perTurnInvocation(event.message, provider, model);
+            await ctx.onTurnCheckpoint({ turnIndex, sessionRef: snapshot ?? live, modelInvocation });
+          } catch (err) {
+            checkpointError = err;
+            throw err instanceof Error ? err : new Error(String(err));
           }
         }
       });
 
-      await session.prompt(ctx.request.input);
-      // A run whose checkpoints failed to persist must not report success.
-      await checkpointChain;
+      try {
+        await session.prompt(ctx.request.input);
+      } finally {
+        unsubscribe?.();
+      }
+      // A run whose checkpoint failed was stopped at that turn boundary; surface
+      // the real cause instead of the synthesized model-error message.
+      if (checkpointError) {
+        throw checkpointError instanceof Error
+          ? checkpointError
+          : new Error(`turn checkpoint failed: ${String(checkpointError)}`);
+      }
 
       const latencyMs = Date.now() - start;
       if (process.env.PI_DEBUG) {

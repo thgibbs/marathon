@@ -51,6 +51,8 @@ export interface BuildStepOptions {
 }
 
 const DEFAULT_INLINE_DIFF_CAP = 256 * 1024;
+/** Durable terminal marker in `completedSteps`: the BUILD finished (§11.2). */
+const FINAL_STEP = "build:final";
 /** Keep the findings list bounded: the newest entries win. */
 const MAX_FINDINGS = 200;
 
@@ -76,6 +78,13 @@ const DEFAULT_BUILD_INSTRUCTIONS =
  */
 export function makeBuildStepRunner(opts: BuildStepOptions) {
   return async ({ taskId, checkpoint }: StepContext): Promise<StepResult> => {
+    // The BUILD already finished (the durable `build:final` marker landed) but
+    // the worker died before completing the task: converge without re-opening
+    // the session or re-prompting a finished run.
+    if (checkpoint.completedSteps.includes(FINAL_STEP)) {
+      return { stepType: "noop", checkpoint, done: true };
+    }
+
     const task = await opts.db.getTask(taskId);
     if (!task) throw new Error(`build step: task ${taskId} not found`);
 
@@ -163,19 +172,34 @@ export function makeBuildStepRunner(opts: BuildStepOptions) {
       const text = redact(turn.text ?? "");
       const finalCp: Checkpoint = {
         ...lastCheckpoint,
-        completedSteps: [...completedSteps, "build:final"],
+        completedSteps: [...completedSteps, ...(turn.done ? [FINAL_STEP] : [])],
         findings: [...findings, text].slice(-MAX_FINDINGS),
-        phase: "delivering",
+        phase: turn.done ? "delivering" : "build",
       };
       if (turn.sessionRef) finalCp.sessionRef = turn.sessionRef;
       if (turn.turnIndex !== undefined) finalCp.turnIndex = turn.turnIndex;
 
-      return {
-        stepType: "build:final",
-        checkpoint: finalCp,
-        done: turn.done,
-        modelInvocations: turn.modelInvocation ? [turn.modelInvocation] : [],
-      };
+      if (!turn.done) {
+        // Mid-run boundary (e.g. a future durable wait): the worker persists it.
+        return {
+          stepType: "build:segment",
+          checkpoint: finalCp,
+          done: false,
+          modelInvocations: turn.modelInvocation ? [turn.modelInvocation] : [],
+        };
+      }
+
+      // Persist the terminal marker DURABLY before reporting done: a crash after
+      // this lands resumes as a no-op (see the top of this function) instead of
+      // re-prompting a finished session. `stepType: "noop"` tells the worker not
+      // to persist a duplicate step.
+      await opts.db.completeStep(
+        taskId,
+        FINAL_STEP,
+        finalCp,
+        turn.modelInvocation ? [turn.modelInvocation] : [],
+      );
+      return { stepType: "noop", checkpoint: finalCp, done: true };
     } finally {
       // Teardown always (§29.2). A hard crash skips this — the resume path
       // re-materializes from the checkpoint, never from leftovers.

@@ -90,9 +90,10 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
 
     const res = await run({ taskId: task.id, checkpoint: emptyCheckpoint() });
     expect(res.done).toBe(true);
-    expect(res.stepType).toBe("build:final");
+    // "noop" = the runner persisted build:final itself; the worker must not re-persist.
+    expect(res.stepType).toBe("noop");
 
-    expect(steps.map((s) => s.stepType)).toEqual(["turn:0", "turn:1"]);
+    expect(steps.map((s) => s.stepType)).toEqual(["turn:0", "turn:1", "build:final"]);
     const cp0 = steps[0]!.checkpoint;
     expect(cp0.phase).toBe("build");
     expect(cp0.turnIndex).toBe(0);
@@ -149,6 +150,33 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
     expect(res.done).toBe(true);
     // the resume prompt tells the agent its workspace was restored
     expect(res.checkpoint.turnIndex).toBe(1);
+  });
+
+  it("resume after the durable final marker is a no-op: no re-prompt of a finished run", async () => {
+    const task = makeTask();
+    const { db, steps } = makeDb(task);
+    let turnsRan = 0;
+    const runtime = new ScriptedBuildRuntime({
+      turns: [() => ((turnsRan += 1), "done")],
+    });
+    const run = makeBuildStepRunner({
+      db,
+      runtime,
+      registry: new CodeTaskRegistry(),
+      source: origin,
+      modelRef: "fake:scripted",
+    });
+    const first = await run({ taskId: task.id, checkpoint: emptyCheckpoint() });
+    expect(first.done).toBe(true);
+    expect(turnsRan).toBe(1);
+    const persisted = steps.length;
+
+    // Worker died AFTER build:final persisted but BEFORE the task completed:
+    // the next lease converges without running the agent again.
+    const again = await run({ taskId: task.id, checkpoint: parseCheckpoint(task.checkpoint) });
+    expect(again).toEqual({ stepType: "noop", checkpoint: parseCheckpoint(task.checkpoint), done: true });
+    expect(turnsRan).toBe(1);
+    expect(steps.length).toBe(persisted);
   });
 
   it("marks the resume in the agent's input", async () => {
