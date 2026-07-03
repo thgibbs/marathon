@@ -24,9 +24,15 @@ export interface WorkerOptions {
   /** Test hook: abandon the lease right after persisting this step index. */
   crashAfterStepIndex?: number;
   /** Heartbeat cadence is implicit (once per step) for M1. */
+  /**
+   * Called when a task parks in a durable human wait (Track 12, §11.6) — the
+   * app delivers the clarifying question to the task's surfaces. Failures
+   * propagate: a question nobody heard is a stuck task.
+   */
+  onWaiting?: (taskId: Id, waiting: { kind: "input"; question: string }) => Promise<void> | void;
 }
 
-export type RunOutcome = "idle" | "completed" | "crashed" | "retry" | "dead";
+export type RunOutcome = "idle" | "completed" | "waiting" | "crashed" | "retry" | "dead";
 
 /**
  * Leases one job at a time, advances its task step-by-step, checkpointing after
@@ -91,6 +97,16 @@ export class Worker {
 
         if (this.opts.crashAfterStepIndex === stepIndex) {
           throw new SimulatedCrash(stepIndex);
+        }
+
+        // Durable human wait (Track 12, §11.6): park the task and finish this
+        // job — the checkpoint (session ref + pending question) already landed,
+        // and `resumeWithInput` enqueues a fresh job when the answer arrives.
+        if (res.waiting) {
+          await this.db.transitionTask(job.taskId, "waiting_for_input");
+          await this.queue.ack(job.id, token);
+          await this.opts.onWaiting?.(job.taskId, res.waiting);
+          return "waiting";
         }
         if (res.done) break;
       }

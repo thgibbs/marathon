@@ -32,9 +32,31 @@ export interface AgentDescriptor {
   keywords?: string[];
 }
 
-/** What each surface implements to deliver back (subset for M4). */
+/** One prior message in the conversation a task lives in (context loading, §7.18). */
+export interface SurfaceMessage {
+  /** External author handle (Slack user id, GitHub login); absent for system posts. */
+  author?: string;
+  text: string;
+  /** Surface timestamp/ordering token, when available. */
+  ts?: string;
+}
+
+/**
+ * What each surface implements (design §7.16). Of the design's six duties —
+ * identity resolution, context loading, progress, delivery, feedback, status —
+ * progress/delivery are the required core, context loading is the optional
+ * `loadContext` below (Track 12), identity resolution lives in
+ * `Database.findOrCreateUserByIdentity` + the §7.20 verification fields, and
+ * feedback/status stay surface-specific until Track 16 unifies status.
+ */
 export interface SurfaceAdapter {
   acknowledge(ref: Record<string, unknown>): Promise<void>;
   postProgress(ref: Record<string, unknown>, message: string): Promise<void>;
   deliverResult(ref: Record<string, unknown>, result: StructuredResult): Promise<void>;
+  /**
+   * Load recent conversation context for prompt assembly (Track 12, §7.18):
+   * the thread/comment history around `ref`, oldest first. Everything returned
+   * is untrusted and must be fenced by the prompt builder.
+   */
+  loadContext?(ref: Record<string, unknown>, opts?: { limit?: number }): Promise<SurfaceMessage[]>;
 }

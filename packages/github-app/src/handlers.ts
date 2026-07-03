@@ -103,6 +103,10 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
   const agentId = deps.agentIdByName[agentName];
   const ctx = { taskId: task.id, tenantId: deps.tenantId, agentId };
 
+  // Conversation context (Track 12, §7.18): the PR/issue comment history,
+  // loaded through the surface adapter and fenced as untrusted by the builder.
+  const context = await deps.delivery.loadContext?.({ repo, number }, { limit: 30 }).catch(() => undefined);
+
   // Revision loop (§6.8): a mention on a PR we produced -> revise the doc on its branch.
   const existing =
     invocation.sourceRef.kind === "pr" ? await deps.db.findDocumentArtifactByPr(deps.tenantId, repo, number) : null;
@@ -112,6 +116,7 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
     const prompt = await buildAgentPrompt({ db: deps.db, memory: deps.memory }, task, {
       basePersona: REVISE_PERSONA,
       documents: [{ path: loc.path, content: current.content }],
+      context,
     });
     const turn = await deps.runtime.nextTurn({
       request: { taskId: task.id, instructions: prompt.instructions, input: prompt.input, modelRef },
@@ -123,7 +128,10 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
   }
 
   // Draft a new design-doc PR.
-  const prompt = await buildAgentPrompt({ db: deps.db, memory: deps.memory }, task, { basePersona: DRAFT_PERSONA });
+  const prompt = await buildAgentPrompt({ db: deps.db, memory: deps.memory }, task, {
+    basePersona: DRAFT_PERSONA,
+    context,
+  });
   const turn = await deps.runtime.nextTurn({
     request: { taskId: task.id, instructions: prompt.instructions, input: prompt.input, modelRef },
     checkpoint: emptyCheckpoint(),

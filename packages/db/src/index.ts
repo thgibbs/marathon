@@ -198,6 +198,21 @@ export class Database implements AuditWriter, IdempotencyStore {
   }
 
   /** Latest task chained off a source task (K2: doc task → implementation task). */
+  /**
+   * The most recent task anchored to a Slack thread (Track 12): replies in the
+   * thread route to it — resuming a durable wait or spawning a continuation.
+   */
+  async findLatestTaskByThread(tenantId: Id, channel: string, threadTs: string): Promise<Task | null> {
+    const { rows } = await this.pool.query(
+      `select * from task
+       where tenant_id = $1 and source_type = 'slack'
+         and source_ref->>'channel' = $2 and source_ref->>'thread_ts' = $3
+       order by created_at desc limit 1`,
+      [tenantId, channel, threadTs],
+    );
+    return rows[0] ? rowToTask(rows[0]) : null;
+  }
+
   async findTaskBySourceTask(sourceTaskId: Id): Promise<Task | null> {
     const { rows } = await this.pool.query(
       `select * from task where source_task_id = $1 order by created_at desc limit 1`,

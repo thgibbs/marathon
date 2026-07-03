@@ -24,6 +24,12 @@ export interface GithubClient {
   // writes
   createIssue(repo: string, title: string, body?: string): Promise<{ number: number; url: string }>;
   commentIssue(repo: string, issueNumber: number, body: string): Promise<{ id: number }>;
+  /** Comments on an issue/PR, oldest first (context loading, Track 12). */
+  listIssueComments(
+    repo: string,
+    issueNumber: number,
+    limit?: number,
+  ): Promise<Array<{ id: number; author: string; body: string; createdAt: string }>>;
   closeIssue(repo: string, issueNumber: number): Promise<void>;
   mergePullRequest(
     repo: string,
@@ -160,6 +166,22 @@ export class HttpGithubClient implements GithubClient {
 
   async closeIssue(repo: string, issueNumber: number): Promise<void> {
     await this.api(`/repos/${repo}/issues/${issueNumber}`, { method: "PATCH", body: { state: "closed" } });
+  }
+
+  async listIssueComments(
+    repo: string,
+    issueNumber: number,
+    limit = 50,
+  ): Promise<Array<{ id: number; author: string; body: string; createdAt: string }>> {
+    const j = await this.api(`/repos/${repo}/issues/${issueNumber}/comments?per_page=${limit}`);
+    const arr = Array.isArray(j) ? j : [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return arr.map((c: any) => ({
+      id: Number(c.id),
+      author: String(c.user?.login ?? ""),
+      body: String(c.body ?? ""),
+      createdAt: String(c.created_at ?? ""),
+    }));
   }
 
   async mergePullRequest(
@@ -402,8 +424,24 @@ export class FixturesGithubClient implements GithubClient {
   }
 
   async commentIssue(repo: string, issueNumber: number, body: string): Promise<{ id: number }> {
+    const id = this.issueSeq++;
     this.writes.push({ op: "commentIssue", args: { repo, issueNumber, body } });
-    return { id: this.issueSeq++ };
+    this.issueComments.push({ key: `${repo}:${issueNumber}`, id, author: "marathon[bot]", body });
+    return { id };
+  }
+
+  /** Comments recorded by commentIssue, plus any seeded via this array. */
+  public readonly issueComments: Array<{ key: string; id: number; author: string; body: string }> = [];
+
+  async listIssueComments(
+    repo: string,
+    issueNumber: number,
+    limit = 50,
+  ): Promise<Array<{ id: number; author: string; body: string; createdAt: string }>> {
+    return this.issueComments
+      .filter((c) => c.key === `${repo}:${issueNumber}`)
+      .slice(0, limit)
+      .map((c) => ({ id: c.id, author: c.author, body: c.body, createdAt: "" }));
   }
 
   async closeIssue(repo: string, issueNumber: number): Promise<void> {

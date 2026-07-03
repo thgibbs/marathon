@@ -27,6 +27,10 @@ export interface Checkpoint {
   planRef?: PlanRef;
   /** Idempotency keys of durable effects already performed (safe to skip on replay). */
   completedEffects?: string[];
+  /** The clarifying question the agent is durably waiting on (Track 12, §11.6). */
+  pendingQuestion?: string;
+  /** The user's answer, staged for the next turn to consume (cleared once used). */
+  pendingUserInput?: string;
 }
 
 export const emptyCheckpoint = (): Checkpoint => ({ completedSteps: [], findings: [] });
@@ -64,6 +68,8 @@ export function parseCheckpoint(value: unknown): Checkpoint {
   set("verification", parseVerification(v.verification));
   set("planRef", parsePlanRef(v.planRef));
   if (Array.isArray(v.completedEffects)) set("completedEffects", strings(v.completedEffects));
+  set("pendingQuestion", str(v.pendingQuestion));
+  set("pendingUserInput", str(v.pendingUserInput));
   return cp;
 }
 
@@ -105,6 +111,13 @@ export interface StepResult {
   /** Checkpoint AFTER applying this step. */
   checkpoint: Checkpoint;
   done: boolean;
+  /**
+   * A durable human wait (Track 12, §11.6): the agent asked a clarifying
+   * question and ended its turn. The worker parks the task
+   * (`waiting_for_input`) instead of completing or requeueing it; a surface
+   * reply resumes it with the answer.
+   */
+  waiting?: { kind: "input"; question: string };
   /** Model calls made during this step, persisted atomically with the step. */
   modelInvocations?: Array<Omit<NewModelInvocation, "taskId">>;
 }

@@ -56,6 +56,8 @@ export async function startSlackApp(): Promise<void> {
   });
   const runtime = new PiAgentRuntime({
     secrets,
+    // Track 12: the agent may ask ONE clarifying question and park the task.
+    clarification: true,
     governed: {
       gateway: toolGateway,
       tools: [
@@ -64,17 +66,26 @@ export async function startSlackApp(): Promise<void> {
       ],
     },
   });
+  const delivery = new SlackDelivery(new RealSlackClient(botToken));
   const worker = new Worker(queue, db, {
-    stepRunner: makeAgentTaskStepRunner(db, runtime, { modelRef, memory, instructions: SLACK_AGENT_PERSONA }),
+    stepRunner: makeAgentTaskStepRunner(db, runtime, {
+      modelRef,
+      memory,
+      instructions: SLACK_AGENT_PERSONA,
+      // Track 12: thread history rides into the prompt, fenced as untrusted.
+      loadContext: (task) => delivery.loadContext(task.sourceRef, { limit: 30 }),
+    }),
     visibilityMs: 120_000,
   });
-  const router = new InvocationRouter(db, new Orchestrator(db, queue));
-  const delivery = new SlackDelivery(new RealSlackClient(botToken));
+  const orchestrator = new Orchestrator(db, queue);
+  const router = new InvocationRouter(db, orchestrator);
 
   const deps: AppDeps = {
     db,
     router,
     worker,
+    queue,
+    orchestrator,
     delivery,
     tenantId: boot.tenantId,
     agents: boot.agents,

@@ -68,6 +68,13 @@ export interface AgentTurn {
   modelInvocation?: ModelInvocationData;
   /** Whether the agent has finished. */
   done: boolean;
+  /**
+   * The agent asked the user a clarifying question and ended its turn
+   * (Track 12, §11.6): the run pauses durably (`waiting_for_input`) and
+   * resumes — session re-opened via {@link sessionRef} — when the answer
+   * arrives. Mutually exclusive with `done: true`.
+   */
+  waiting?: { question: string };
   /** Durable session reference after this call (resume input for the next). */
   sessionRef?: string;
   /** Index of the last completed harness turn. */

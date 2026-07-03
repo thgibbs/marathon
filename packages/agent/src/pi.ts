@@ -84,6 +84,12 @@ export interface PiAgentOptions {
     ) => Promise<DockerContainer> | DockerContainer;
     shellPath?: string;
   };
+  /**
+   * Expose the `ask_user` clarification tool (Track 12, §11.6): the agent asks
+   * one question, the run ends in a durable wait (`AgentTurn.waiting`), and the
+   * worker parks the task until a surface reply resumes the session.
+   */
+  clarification?: boolean;
 }
 
 const PI_MODULE: string = "@earendil-works/pi-coding-agent";
@@ -199,6 +205,38 @@ export class PiAgentRuntime implements AgentRuntime {
       }
     }
 
+    // Clarifying questions (Track 12): the tool captures the question; after the
+    // run ends, a captured question turns the result into a durable wait.
+    let pendingQuestion: string | undefined;
+    const clarifyNames: string[] = [];
+    if (this.opts.clarification) {
+      clarifyNames.push("ask_user");
+      customTools.push(
+        pi.defineTool({
+          name: "ask_user",
+          label: "ask_user",
+          description:
+            "Ask the user ONE clarifying question when you cannot proceed without their answer. " +
+            "The task pauses until they reply — after calling this, STOP working and end your response.",
+          parameters: {
+            type: "object",
+            properties: { question: { type: "string", description: "The question for the user." } },
+            required: ["question"],
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          execute: async (_id: string, params: any) => {
+            pendingQuestion = String(params?.question ?? "").trim() || "(no question given)";
+            return {
+              content: [
+                { type: "text", text: "Question sent to the user. Stop here — the task resumes when they answer." },
+              ],
+              details: {},
+            };
+          },
+        }),
+      );
+    }
+
     // Sandbox tool routing (§12.6, Pattern 2): bash/read/write/edit execute inside a
     // hardened container against a bind-mounted workspace; governed tools stay host-side.
     let container: DockerContainer | undefined;
@@ -223,7 +261,7 @@ export class PiAgentRuntime implements AgentRuntime {
         customTools,
         // Built-ins are OFF by default (they bypass the gateway, §2b #2); enable only
         // inside a sandboxed workspace. Sandboxed + governed tools are exposed explicitly.
-        tools: [...(this.opts.builtinTools ?? []), ...sandboxNames, ...governedNames],
+        tools: [...(this.opts.builtinTools ?? []), ...sandboxNames, ...governedNames, ...clarifyNames],
       });
 
       let streamed = "";
@@ -347,7 +385,10 @@ export class PiAgentRuntime implements AgentRuntime {
       const finalSessionRef: string | undefined = sessionManager.getSessionFile?.() ?? lastSessionRef;
       return {
         text,
-        done: true,
+        // An asked question turns this run into a durable wait (Track 12): not
+        // done — the worker parks the task and the answer re-opens the session.
+        done: pendingQuestion === undefined,
+        waiting: pendingQuestion !== undefined ? { question: pendingQuestion } : undefined,
         sessionRef: finalSessionRef,
         turnIndex: turnsThisCall > 0 ? turnBase + turnsThisCall - 1 : ctx.checkpoint.turnIndex,
         // With a per-turn checkpoint sink, usage is accounted turn-by-turn there;

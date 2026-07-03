@@ -1,4 +1,9 @@
-import { renderResultText, type StructuredResult, type SurfaceAdapter } from "@marathon/surface";
+import {
+  renderResultText,
+  type StructuredResult,
+  type SurfaceAdapter,
+  type SurfaceMessage,
+} from "@marathon/surface";
 import type { SlackClient } from "./client";
 
 function ref(r: Record<string, unknown>): { channel: string; threadTs?: string } {
@@ -22,5 +27,13 @@ export class SlackDelivery implements SurfaceAdapter {
   async deliverResult(r: Record<string, unknown>, result: StructuredResult): Promise<void> {
     const { channel, threadTs } = ref(r);
     await this.client.postMessage(channel, renderResultText(result), threadTs);
+  }
+
+  /** Thread history for prompt assembly (Track 12, §7.18); untrusted — fence it. */
+  async loadContext(r: Record<string, unknown>, opts?: { limit?: number }): Promise<SurfaceMessage[]> {
+    const { channel, threadTs } = ref(r);
+    if (!threadTs) return [];
+    const replies = await this.client.fetchReplies(channel, threadTs, opts?.limit ?? 50);
+    return replies.map((m) => ({ author: m.user, text: m.text, ts: m.ts }));
   }
 }

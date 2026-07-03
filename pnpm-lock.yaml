@@ -427,7 +427,11 @@ importers:
         specifier: ^2.9.0
         version: 2.9.0
 
-  packages/config: {}
+  packages/config:
+    dependencies:
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
 
   packages/connector-github:
     dependencies:
