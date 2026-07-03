@@ -4,7 +4,7 @@ import {
   taskToolInputKey,
   type ApprovalRequest,
   type Id,
-  type RiskLevel,
+  type RiskAxes,
 } from "@marathon/core";
 import { Database } from "@marathon/db";
 import { ToolGateway, type ToolInput, type ToolResult } from "@marathon/tools";
@@ -15,7 +15,7 @@ export interface ApprovalRequestInput {
   agentId?: Id;
   requestedFromUserId?: Id;
   actionSummary: string;
-  riskLevel?: RiskLevel;
+  riskAxes?: RiskAxes;
   expiresInMs?: number;
 }
 
@@ -36,7 +36,7 @@ export class ApprovalService {
       requestedByAgentId: input.agentId ?? null,
       requestedFromUserId: input.requestedFromUserId ?? null,
       actionSummary: input.actionSummary,
-      riskLevel: input.riskLevel ?? null,
+      riskAxes: input.riskAxes ?? null,
       expiresAt,
     });
     await this.db.transitionTask(input.taskId, "waiting_for_approval");
@@ -116,7 +116,7 @@ export async function proposeToolCall(
   toolName: string,
   input: ToolInput,
   ctx: { taskId: Id; tenantId: Id; agentId?: Id },
-  meta: { actionSummary: string; requestedFromUserId?: Id; riskLevel?: RiskLevel; expiresInMs?: number },
+  meta: { actionSummary: string; requestedFromUserId?: Id; riskAxes?: RiskAxes; expiresInMs?: number },
 ): Promise<ProposeResult> {
   const decision = gateway.evaluate(toolName, input);
   if (decision.decision === "deny") {
@@ -133,7 +133,7 @@ export async function proposeToolCall(
     agentId: ctx.agentId,
     requestedFromUserId: meta.requestedFromUserId,
     actionSummary: meta.actionSummary,
-    riskLevel: meta.riskLevel,
+    riskAxes: meta.riskAxes,
     expiresInMs: meta.expiresInMs,
   });
   return { status: "pending", approvalId: ar.id };

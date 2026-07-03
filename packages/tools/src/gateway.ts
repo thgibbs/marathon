@@ -1,5 +1,5 @@
 import type { SecretStore } from "@marathon/config";
-import { redactSecrets, type RiskLevel } from "@marathon/core";
+import { redactSecrets, riskAxesFromLegacy, type RiskAxes } from "@marathon/core";
 import { enforce, type PolicyDecision, type PolicyResult } from "./policy";
 import type { Tool, ToolInput, ToolPolicy, ToolResult } from "./types";
 
@@ -30,7 +30,8 @@ export interface ToolInvocationRecord {
   taskId: string;
   toolName: string;
   status: "ok" | "blocked" | "error";
-  riskLevel: RiskLevel;
+  /** Bridged from the tool's legacy riskLevel/destructive until tools declare axes (Track 5). */
+  riskAxes: RiskAxes;
   inputSummary: string;
   outputSummary?: string;
   error?: string;
@@ -100,14 +101,14 @@ export class ToolGateway {
     const tool = this.opts.registry.get(toolName);
 
     if (!tool) {
-      await this.record({ taskId: ctx.taskId, toolName, status: "blocked", riskLevel: "low", inputSummary, error: "unknown tool" });
+      await this.record({ taskId: ctx.taskId, toolName, status: "blocked", riskAxes: riskAxesFromLegacy("low", false), inputSummary, error: "unknown tool" });
       await this.audit(ctx, "policy.denied", `unknown tool: ${toolName}`);
       throw new ToolBlockedError(`unknown tool: ${toolName}`, "deny");
     }
 
     const validationError = tool.validate?.(input) ?? null;
     if (validationError) {
-      await this.record({ taskId: ctx.taskId, toolName, status: "error", riskLevel: tool.riskLevel, inputSummary, error: `invalid input: ${validationError}` });
+      await this.record({ taskId: ctx.taskId, toolName, status: "error", riskAxes: riskAxesFromLegacy(tool.riskLevel, tool.destructive), inputSummary, error: `invalid input: ${validationError}` });
       throw new Error(`invalid input for ${toolName}: ${validationError}`);
     }
 
@@ -116,7 +117,7 @@ export class ToolGateway {
     // A granted approval lets a destructive call through; deny is always terminal.
     const allowed = decision.decision === "allow" || (decision.decision === "needs_approval" && opts.approved === true);
     if (!allowed) {
-      await this.record({ taskId: ctx.taskId, toolName, status: "blocked", riskLevel: tool.riskLevel, inputSummary, error: decision.reason });
+      await this.record({ taskId: ctx.taskId, toolName, status: "blocked", riskAxes: riskAxesFromLegacy(tool.riskLevel, tool.destructive), inputSummary, error: decision.reason });
       await this.audit(ctx, "policy.denied", `${decision.decision}: ${toolName} (${decision.reason ?? ""})`);
       throw new ToolBlockedError(decision.reason ?? "blocked", decision.decision);
     }
@@ -124,11 +125,11 @@ export class ToolGateway {
     try {
       const result = await tool.execute(input, { ...ctx, secrets: this.opts.secrets });
       const outputSummary = redact(result.content).slice(0, 2000);
-      await this.record({ taskId: ctx.taskId, toolName, status: "ok", riskLevel: tool.riskLevel, inputSummary, outputSummary });
+      await this.record({ taskId: ctx.taskId, toolName, status: "ok", riskAxes: riskAxesFromLegacy(tool.riskLevel, tool.destructive), inputSummary, outputSummary });
       await this.audit(ctx, "tool.called", `${toolName} ok`);
       return result;
     } catch (err) {
-      await this.record({ taskId: ctx.taskId, toolName, status: "error", riskLevel: tool.riskLevel, inputSummary, error: redact(String(err)) });
+      await this.record({ taskId: ctx.taskId, toolName, status: "error", riskAxes: riskAxesFromLegacy(tool.riskLevel, tool.destructive), inputSummary, error: redact(String(err)) });
       throw err;
     }
   }

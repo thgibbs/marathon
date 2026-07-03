@@ -32,9 +32,9 @@ async function main(): Promise<void> {
     await db.completeStep(task.id, "load_context", { completedSteps: ["load_context"], findings: [] }, [
       { provider: "openai", model: "gpt-4o-mini", promptVersion: "bruce@1", inputTokens: 1200, outputTokens: 300, costUsd: 0.002, status: "ok" },
     ]);
-    await db.recordToolInvocation({ taskId: task.id, toolId: "github.read_file", status: "ok", riskLevel: "low", inputSummary: "repo=o/r path=README.md", outputSummary: "120 lines" });
-    await db.recordToolInvocation({ taskId: task.id, toolId: "github.merge_pull_request", status: "error", riskLevel: "high", error: "blocked pending approval" });
-    await db.createApprovalRequest({ tenantId: tenant.id, taskId: task.id, actionSummary: "merge PR #7", riskLevel: "high" });
+    await db.recordToolInvocation({ taskId: task.id, toolId: "github.read_file", status: "ok", riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "team", costly: false }, inputSummary: "repo=o/r path=README.md", outputSummary: "120 lines" });
+    await db.recordToolInvocation({ taskId: task.id, toolId: "github.merge_pull_request", status: "error", riskAxes: { reversible: false, crossesTrustBoundary: false, audience: "team", costly: false }, error: "blocked pending approval" });
+    await db.createApprovalRequest({ tenantId: tenant.id, taskId: task.id, actionSummary: "merge PR #7", riskAxes: { reversible: false, crossesTrustBoundary: false, audience: "team", costly: false } });
     await db.write({ tenantId: tenant.id, eventType: "task.completed", summary: "investigation complete", targetType: "task", targetId: task.id });
     await db.transitionTask(task.id, "completed");
 

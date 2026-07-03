@@ -5,6 +5,19 @@ function at(v: unknown): Date {
   return v instanceof Date ? v : new Date(String(v));
 }
 
+/** Compact rendering of risk axes (design §7.8), e.g. " [irreversible,external]". */
+function riskSummary(axes: unknown): string {
+  if (!axes || typeof axes !== "object") return "";
+  const a = axes as { reversible?: boolean; crossesTrustBoundary?: boolean; audience?: string; costly?: boolean };
+  const flags = [
+    a.reversible === false ? "irreversible" : null,
+    a.crossesTrustBoundary ? "trust-boundary" : null,
+    a.audience ?? null,
+    a.costly ? "costly" : null,
+  ].filter((f): f is string => f !== null);
+  return flags.length ? ` [${flags.join(",")}]` : "";
+}
+
 /**
  * Assemble a per-task timeline (design §11, §16.3) by merging task steps, model
  * calls, tool calls, approvals, and task-scoped audit events in time order.
@@ -46,7 +59,7 @@ export async function getTaskTimeline(db: Database, tenantId: string, taskId: st
       at: at(t.created_at),
       type: "tool_call",
       status: String(t.status ?? ""),
-      summary: `tool ${t.tool_id} [${t.risk_level ?? "low"}] ${t.status}${t.error ? ` — ${t.error}` : ""}`,
+      summary: `tool ${t.tool_id}${riskSummary(t.risk_axes)} ${t.status}${t.error ? ` — ${t.error}` : ""}`,
       detail: { inputSummary: t.input_summary, outputSummary: t.output_summary },
     });
   }
@@ -55,7 +68,7 @@ export async function getTaskTimeline(db: Database, tenantId: string, taskId: st
       at: a.createdAt,
       type: "approval",
       status: a.status,
-      summary: `approval ${a.status}: ${a.actionSummary ?? ""} [${a.riskLevel ?? "?"}]`,
+      summary: `approval ${a.status}: ${a.actionSummary ?? ""}${riskSummary(a.riskAxes)}`,
       detail: { resolvedAt: a.resolvedAt },
     });
   }

@@ -1,4 +1,7 @@
-/** The durable task state machine (design.md §7.4 / §11.1). */
+/**
+ * The durable task state machine (design.md §7.4 / §11.1). `blocked` is retired
+ * (§11.1): `retrying` and the waiting states cover its cases.
+ */
 
 export type TaskStatus =
   | "created"
@@ -6,7 +9,6 @@ export type TaskStatus =
   | "running"
   | "waiting_for_input"
   | "waiting_for_approval"
-  | "blocked"
   | "retrying"
   | "completed"
   | "failed"
@@ -19,7 +21,6 @@ const TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   running: [
     "waiting_for_input",
     "waiting_for_approval",
-    "blocked",
     "retrying",
     "completed",
     "failed",
@@ -27,7 +28,6 @@ const TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   ],
   waiting_for_input: ["running", "cancelled", "expired", "failed"],
   waiting_for_approval: ["running", "cancelled", "expired", "failed"],
-  blocked: ["running", "failed", "cancelled", "expired"],
   retrying: ["running", "failed", "cancelled"],
   // terminal
   completed: [],

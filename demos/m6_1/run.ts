@@ -58,7 +58,7 @@ async function main(): Promise<void> {
     console.log("[m6.1] governed github.merge_pull_request -> approval_required");
 
     // 3. drive the durable approval, then execute exactly once
-    const proposal = await proposeToolCall(gateway, approvals, "github.merge_pull_request", { repo: REPO, number: 7 }, ctx, { actionSummary: "merge PR #7", riskLevel: "high" });
+    const proposal = await proposeToolCall(gateway, approvals, "github.merge_pull_request", { repo: REPO, number: 7 }, ctx, { actionSummary: "merge PR #7", riskAxes: { reversible: false, crossesTrustBoundary: false, audience: "team", costly: false } });
     assert(proposal.status === "pending", "merge should create a pending approval");
     const approvalId = proposal.status === "pending" ? proposal.approvalId : "";
     await approvals.approve(approvalId);

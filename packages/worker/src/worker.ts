@@ -77,14 +77,13 @@ export class Worker {
         if (res.done && res.stepType === "noop") break; // nothing left to do
 
         // persist effect + checkpoint (+ any model invocations) atomically — the
-        // basis for exactly-once resume.
+        // basis for exactly-once resume. The whole checkpoint is stored: the
+        // BUILD-stage fields (§11.2) must survive to the DB or resume cannot
+        // restore the session/workspace.
         await this.db.completeStep(
           job.taskId,
           res.stepType,
-          {
-            completedSteps: res.checkpoint.completedSteps,
-            findings: res.checkpoint.findings,
-          },
+          res.checkpoint,
           res.modelInvocations ?? [],
         );
         checkpoint = res.checkpoint;
