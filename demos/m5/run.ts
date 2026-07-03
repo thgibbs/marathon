@@ -61,7 +61,7 @@ async function main(): Promise<void> {
     // 2) destructive write requires approval
     const t2 = await newRunningTask();
     const ctx2 = { taskId: t2.id, tenantId: tenant.id, agentId: agent.id };
-    const r2 = await proposeToolCall(gateway, approvals, "github.merge_pull_request", { repo: REPO, number: 7 }, ctx2, { actionSummary: "merge PR #7", riskLevel: "high" });
+    const r2 = await proposeToolCall(gateway, approvals, "github.merge_pull_request", { repo: REPO, number: 7 }, ctx2, { actionSummary: "merge PR #7", riskAxes: { reversible: false, crossesTrustBoundary: false, audience: "team", costly: false } });
     assert(r2.status === "pending", `merge should be pending, got ${r2.status}`);
     const approvalId = r2.status === "pending" ? r2.approvalId : "";
     assert((await db.getTask(t2.id))!.status === "waiting_for_approval", "task should be waiting_for_approval");
@@ -88,7 +88,7 @@ async function main(): Promise<void> {
     // 6) reject path
     const t3 = await newRunningTask();
     const ctx3 = { taskId: t3.id, tenantId: tenant.id, agentId: agent.id };
-    const r3 = await proposeToolCall(gateway, approvals, "github.merge_pull_request", { repo: REPO, number: 9 }, ctx3, { actionSummary: "merge PR #9", riskLevel: "high" });
+    const r3 = await proposeToolCall(gateway, approvals, "github.merge_pull_request", { repo: REPO, number: 9 }, ctx3, { actionSummary: "merge PR #9", riskAxes: { reversible: false, crossesTrustBoundary: false, audience: "team", costly: false } });
     await approvals.reject(r3.status === "pending" ? r3.approvalId : "", user.id);
     assert((await db.getTask(t3.id))!.status === "running", "task resumes after reject");
     assert(gh.writes.filter((w) => w.op === "mergePullRequest" && (w.args as { prNumber?: number }).prNumber === 9).length === 0, "rejected merge must NOT execute");
@@ -97,7 +97,7 @@ async function main(): Promise<void> {
     // 7) expiration path
     const t4 = await newRunningTask();
     const ctx4 = { taskId: t4.id, tenantId: tenant.id, agentId: agent.id };
-    await proposeToolCall(gateway, approvals, "github.merge_pull_request", { repo: REPO, number: 11 }, ctx4, { actionSummary: "merge PR #11", riskLevel: "high", expiresInMs: 1 });
+    await proposeToolCall(gateway, approvals, "github.merge_pull_request", { repo: REPO, number: 11 }, ctx4, { actionSummary: "merge PR #11", riskAxes: { reversible: false, crossesTrustBoundary: false, audience: "team", costly: false }, expiresInMs: 1 });
     await new Promise((r) => setTimeout(r, 20));
     const expired = await approvals.expireDue(new Date(Date.now() + 1000));
     assert(expired >= 1, "at least one approval should expire");

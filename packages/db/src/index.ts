@@ -20,12 +20,16 @@ import {
   type NewAuditEvent,
   type NewCodeChange,
   type NewModelInvocation,
+  type NewProposedEffect,
+  type ProposedEffect,
+  type RiskAxes,
   type Role,
   type SurfaceType,
   type Task,
   type TaskStatus,
   type Tenant,
   type User,
+  type UserIdentity,
   type VerificationResult,
 } from "@marathon/core";
 
@@ -348,19 +352,19 @@ export class Database implements AuditWriter, IdempotencyStore {
     taskId: Id;
     toolId: string;
     status: string;
-    riskLevel?: string | null;
+    riskAxes?: RiskAxes | null;
     inputSummary?: string | null;
     outputSummary?: string | null;
     error?: string | null;
   }): Promise<void> {
     await this.pool.query(
-      `insert into tool_invocation(task_id, tool_id, status, risk_level, input_summary, output_summary, error)
+      `insert into tool_invocation(task_id, tool_id, status, risk_axes, input_summary, output_summary, error)
        values ($1, $2, $3, $4, $5, $6, $7)`,
       [
         rec.taskId,
         rec.toolId,
         rec.status,
-        rec.riskLevel ?? null,
+        rec.riskAxes ? JSON.stringify(rec.riskAxes) : null,
         rec.inputSummary ?? null,
         rec.outputSummary ?? null,
         rec.error ?? null,
@@ -398,17 +402,19 @@ export class Database implements AuditWriter, IdempotencyStore {
 
   async createApprovalRequest(input: NewApprovalRequest): Promise<ApprovalRequest> {
     const { rows } = await this.pool.query(
-      `insert into approval_request(tenant_id, task_id, tool_invocation_id, requested_by_agent_id,
-                                    requested_from_user_id, action_summary, risk_level, expires_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8) returning *`,
+      `insert into approval_request(tenant_id, task_id, tool_invocation_id, proposed_effect_id,
+                                    requested_by_agent_id, requested_from_user_id, action_summary,
+                                    risk_axes, expires_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning *`,
       [
         input.tenantId,
         input.taskId,
         input.toolInvocationId ?? null,
+        input.proposedEffectId ?? null,
         input.requestedByAgentId ?? null,
         input.requestedFromUserId ?? null,
         input.actionSummary ?? null,
-        input.riskLevel ?? null,
+        input.riskAxes ? JSON.stringify(input.riskAxes) : null,
         input.expiresAt ?? null,
       ],
     );
@@ -450,6 +456,49 @@ export class Database implements AuditWriter, IdempotencyStore {
       [tenantId, status],
     );
     return rows[0].n as number;
+  }
+
+  // --- proposed effects (design §10.17; executor lands with M10) ---
+
+  /**
+   * Record a proposal. Idempotent on (tenant_id, idempotency_key): a duplicate
+   * proposal returns the existing row unchanged (the proposal is immutable
+   * once review starts — §7.9).
+   */
+  async createProposedEffect(input: NewProposedEffect): Promise<ProposedEffect> {
+    const { rows } = await this.pool.query(
+      `insert into proposed_effect(tenant_id, task_id, connector_id, effect_type, target, payload,
+                                   payload_hash, provenance, risk_axes, rollback_plan,
+                                   approval_expires_at, idempotency_key)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       on conflict (tenant_id, idempotency_key) do nothing
+       returning *`,
+      [
+        input.tenantId,
+        input.taskId,
+        input.connectorId ?? null,
+        input.effectType,
+        JSON.stringify(input.target),
+        JSON.stringify(input.payload),
+        input.payloadHash,
+        input.provenance ? JSON.stringify(input.provenance) : null,
+        input.riskAxes ? JSON.stringify(input.riskAxes) : null,
+        input.rollbackPlan ?? null,
+        input.approvalExpiresAt ?? null,
+        input.idempotencyKey,
+      ],
+    );
+    if (rows[0]) return rowToProposedEffect(rows[0]);
+    const existing = await this.pool.query(
+      `select * from proposed_effect where tenant_id = $1 and idempotency_key = $2`,
+      [input.tenantId, input.idempotencyKey],
+    );
+    return rowToProposedEffect(existing.rows[0]);
+  }
+
+  async getProposedEffect(id: Id): Promise<ProposedEffect | null> {
+    const { rows } = await this.pool.query(`select * from proposed_effect where id = $1`, [id]);
+    return rows[0] ? rowToProposedEffect(rows[0]) : null;
   }
 
   // --- IdempotencyStore ---
@@ -502,6 +551,20 @@ export class Database implements AuditWriter, IdempotencyStore {
     } finally {
       client.release();
     }
+  }
+
+  /** Look up a surface identity within a tenant (design §10.2). */
+  async findUserIdentity(
+    tenantId: Id,
+    surfaceType: SurfaceType,
+    externalId: string,
+  ): Promise<UserIdentity | null> {
+    const { rows } = await this.pool.query(
+      `select * from user_identity
+       where tenant_id = $1 and surface_type = $2 and external_id = $3`,
+      [tenantId, surfaceType, externalId],
+    );
+    return rows[0] ? rowToUserIdentity(rows[0]) : null;
   }
 
   async recordFeedback(input: {
@@ -762,7 +825,7 @@ export function dbToolRecorder(db: Database): ToolRecorder {
         taskId: r.taskId,
         toolId: r.toolName,
         status: r.status,
-        riskLevel: r.riskLevel,
+        riskAxes: r.riskAxes,
         inputSummary: r.inputSummary,
         outputSummary: r.outputSummary,
         error: r.error,
@@ -903,15 +966,57 @@ function rowToApproval(r: any): ApprovalRequest {
     tenantId: r.tenant_id,
     taskId: r.task_id,
     toolInvocationId: r.tool_invocation_id,
+    proposedEffectId: r.proposed_effect_id,
     requestedByAgentId: r.requested_by_agent_id,
     requestedFromUserId: r.requested_from_user_id,
     status: r.status,
     actionSummary: r.action_summary,
-    riskLevel: r.risk_level,
+    riskAxes: r.risk_axes,
     expiresAt: r.expires_at,
     createdAt: r.created_at,
     resolvedAt: r.resolved_at,
     resolvedByUserId: r.resolved_by_user_id,
+  };
+}
+
+function rowToProposedEffect(r: any): ProposedEffect {
+  return {
+    id: r.id,
+    tenantId: r.tenant_id,
+    taskId: r.task_id,
+    connectorId: r.connector_id,
+    effectType: r.effect_type,
+    target: r.target ?? {},
+    payload: r.payload,
+    payloadHash: r.payload_hash,
+    proposalVersion: r.proposal_version,
+    provenance: r.provenance,
+    riskAxes: r.risk_axes,
+    rollbackPlan: r.rollback_plan,
+    reviewerId: r.reviewer_id,
+    reviewerAuthority: r.reviewer_authority,
+    approvalExpiresAt: r.approval_expires_at,
+    idempotencyKey: r.idempotency_key,
+    executionState: r.execution_state,
+    createdAt: r.created_at,
+    resolvedAt: r.resolved_at,
+    executedAt: r.executed_at,
+  };
+}
+
+function rowToUserIdentity(r: any): UserIdentity {
+  return {
+    id: r.id,
+    userId: r.user_id,
+    tenantId: r.tenant_id,
+    surfaceType: r.surface_type,
+    externalId: r.external_id,
+    verifiedAt: r.verified_at,
+    verificationMethod: r.verification_method,
+    status: r.status,
+    credentialRef: r.credential_ref,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
   };
 }
 

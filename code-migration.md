@@ -13,6 +13,36 @@ scaffolding, but it is not aligned with the current product target in `design/00
 and `design/29-code-handoff.md`. The migration should optimize for K1-K6 before broad platform
 features.
 
+## Completed Work
+
+Progress against the tracks below, most recent first. The "Current mismatch" lists in each
+track describe the codebase *before* its work landed; completed tracks carry a status note.
+
+- **Track 3: Data Model and Core Types — done (2026-07-02).** Migration 0008 adds
+  `proposed_effect`, replaces `risk_level` with `risk_axes` on `tool_invocation` and
+  `approval_request`, adds `approval_request.proposed_effect_id`, retires `blocked` from the
+  task status constraint, and adds the §10.2 verification fields to `user_identity`. Core
+  types follow: `RiskAxes`/`ToolDefaultMode` (with a `riskAxesFromLegacy` bridge until
+  Track 5 puts axes on `Tool`), `ProposedEffect`, updated `ApprovalRequest`/`UserIdentity`,
+  `blocked` removed from `TaskStatus`, and `Checkpoint` extended with the §11.2 BUILD-stage
+  fields (which `parseCheckpoint` now preserves instead of dropping). Memory levels are
+  deliberately left to Track 9.
+
+- **Tracks 1 & 2: BUILD → DELIVER code path + task chain — done (K1/K2, PR #1).**
+  `packages/code-handoff` implements the §29 contract: host-side `CodeWorkspace`
+  (clone at `base_sha`, credential stripping, diff capture/replay, tree hash), the §29.4
+  gateway checks (plan-ref match, diff caps, protected paths, secret scan, `marathon/`
+  branch namespace, `(task_id, tree_hash)` idempotency), verification discovery, and
+  `github.submit_code_changes` where the gateway reads the diff from the workspace.
+  `code_change` (migration 0006) and `task.source_task_id` (0007) landed with it. The doc
+  PR merge webhook spawns a chained implementation task with `plan_ref`/`base_sha` pinned
+  to the merge commit and inherited delivery targets; `packages/surface/src/fanout.ts`
+  delivers to every target idempotently. `make demo-k1` proves the path.
+
+Not started: Tracks 4–13 (worker durable resume, gateway effect routing, document-workflow
+iteration paths, sandbox toolchain image, prompt/context continuity, memory migration,
+Forge YAML config/quickstart, model routing, status/cost UX, kernel demos beyond K1).
+
 ## Current Alignment Snapshot
 
 Mostly aligned:
@@ -170,6 +200,10 @@ Required changes:
   - link Slack and GitHub surfaces to each other.
 
 ## Track 3: Data Model and Core Types
+
+> **Status (2026-07-02): implemented** — see "Completed Work" above. Legacy `blocked`
+> rows migrate to `waiting_for_approval`; the memory-level item in the mismatch list
+> below is deliberately left to Track 9.
 
 Design target:
 
