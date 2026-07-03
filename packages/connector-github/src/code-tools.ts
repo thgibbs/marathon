@@ -51,6 +51,14 @@ export function makeGithubCodeTools(opts: GithubCodeToolsOptions): Tool[] {
       "the diff is read from the workspace, not from you.",
     riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "tenant", costly: false },
     defaultMode: "native_review",
+    // Publishing the workspace diff as a branch/PR is internal egress to the
+    // plan's repo — routed against the task's source ledger (§7.8).
+    egress(input) {
+      const planRef = input.plan_ref as { repo?: unknown } | undefined;
+      return typeof planRef?.repo === "string"
+        ? { destination: `github:${planRef.repo}`, audience: "tenant", external: false }
+        : null;
+    },
     validate(input) {
       if (typeof input.title !== "string" || !input.title.trim()) return "title is required";
       if (typeof input.summary !== "string" || !input.summary.trim()) return "summary is required";

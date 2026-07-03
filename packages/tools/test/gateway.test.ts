@@ -133,6 +133,22 @@ describe("ToolGateway", () => {
     expect((err as ToolBlockedError).reason).toContain("github:o/secret");
   });
 
+  it("blocks a tool that reads a restricted source and egresses in the same call", async () => {
+    const ledger = new InMemorySourceLedger();
+    const readAndPost: Tool = {
+      ...echoTool,
+      name: "summarize.to_channel",
+      sources: () => [{ source: "github:o/secret", sensitivity: "restricted" }],
+      egress: () => ({ destination: "slack:C1", audience: "tenant", external: false }),
+    };
+    // First call, empty ledger: the call's OWN declared read must trip the check.
+    const err = await gw([readAndPost], { sourceLedger: ledger }).run("summarize.to_channel", {}, ctx).catch((e) => e);
+    expect(err).toBeInstanceOf(ToolBlockedError);
+    expect((err as ToolBlockedError).code).toBe("egress_blocked");
+    // The blocked call never executed, so nothing was recorded as read.
+    expect(ledger.list("t1")).toEqual([]);
+  });
+
   it("never writes credential-looking material to recorded summaries", async () => {
     const { invocations, recorder } = makeRecorder();
     await gw([secretLeakTool], { recorder }).run("leaky", { token: "sk-abcdef0123456789ABCDEF" }, ctx);

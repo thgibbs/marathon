@@ -157,11 +157,14 @@ export class ToolGateway {
     }
 
     // Egress routing (§7.8): deterministic checks over the source ledger and the
-    // declared destination — never a content classifier.
+    // declared destination — never a content classifier. The current call's own
+    // declared reads count too, so a tool that reads and egresses in one call
+    // cannot slip a restricted source past the check.
+    const sourcesRead = tool.sources?.(input) ?? [];
     const egressTarget = tool.egress?.(input) ?? null;
     if (egressTarget) {
-      const sources = this.opts.sourceLedger ? await this.opts.sourceLedger.list(ctx.taskId) : [];
-      const violation = checkEgress(egressTarget, sources);
+      const prior = this.opts.sourceLedger ? await this.opts.sourceLedger.list(ctx.taskId) : [];
+      const violation = checkEgress(egressTarget, [...prior, ...sourcesRead]);
       if (violation) {
         await this.record({ taskId: ctx.taskId, toolName, status: "blocked", riskAxes: tool.riskAxes, inputSummary, error: violation });
         await this.audit(ctx, "egress.denied", `${toolName} -> ${egressTarget.destination}: ${violation}`);
@@ -171,7 +174,6 @@ export class ToolGateway {
 
     // Record reads before executing (§7.8: the ledger reflects everything handed
     // to the model, even if a later step fails).
-    const sourcesRead = tool.sources?.(input) ?? [];
     if (sourcesRead.length && this.opts.sourceLedger) {
       await this.opts.sourceLedger.record(ctx.taskId, sourcesRead);
     }
