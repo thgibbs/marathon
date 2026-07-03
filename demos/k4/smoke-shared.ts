@@ -3,13 +3,13 @@
  * Docker, governed `github.submit_code_changes` host-side) driven by the durable
  * worker. Used by both the killable child worker and the resuming parent.
  */
-import { PiAgentRuntime } from "@marathon/agent";
+import { PiAgentRuntime, workspaceSandbox } from "@marathon/agent";
 import { CodeTaskRegistry, InMemoryCodeChangeStore } from "@marathon/code-handoff";
 import { EnvSecretStore } from "@marathon/config";
 import { FixturesGithubClient, makeGithubCodeTools } from "@marathon/connector-github";
 import { Database } from "@marathon/db";
 import { Queue } from "@marathon/queue";
-import { DockerContainer, ToolGateway, ToolRegistry } from "@marathon/tools";
+import { ToolGateway, ToolRegistry } from "@marathon/tools";
 import { makeBuildStepRunner, Worker } from "@marathon/worker";
 
 export interface SmokeEnv {
@@ -47,12 +47,9 @@ export function makeSmokeWorker(env: SmokeEnv, visibilityMs: number) {
   const runtime = new PiAgentRuntime({
     secrets: new EnvSecretStore(),
     sessionDir: env.sessionDir,
-    sandbox: {
-      createContainer: (_req, workspace) => {
-        if (!workspace) throw new Error("BUILD smoke requires a workspace binding");
-        return new DockerContainer({ workspaceDir: workspace.dir, image: env.image });
-      },
-    },
+    // Track 11: containers are a function of task workspace state — the shared
+    // factory owns image pinning, limits, and the credential-free boundary.
+    sandbox: workspaceSandbox({ image: env.image }),
     governed: {
       gateway,
       tools: [

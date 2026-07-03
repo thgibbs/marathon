@@ -18,6 +18,30 @@ features.
 Progress against the tracks below, most recent first. The "Current mismatch" lists in each
 track describe the codebase *before* its work landed; completed tracks carry a status note.
 
+- **Tracks 10–11: document workflow + sandbox/workspace reality — done (2026-07-03).**
+  - **Track 10 (GitHub document workflow):** document branches are deterministic
+    (`marathon/doc-<task>-<slug(path)>`; `document.create`/`update` converge on the existing
+    branch/PR under webhook retries instead of minting timestamped duplicates). The
+    implementation task's input is now `renderImplementationBrief` (worker/prompt.ts): the
+    merged plan + pinned base, a deterministic *suggested* branch
+    (`suggestedImplementationBranch`), the delivery targets, and the brokered
+    `git.exec`/`github.exec`/`delivery.report_pr` contract. The doc artifact's location gains
+    `mergeCommitSha` at merge time (`mergeDocumentArtifactLocation`). Mentions on a
+    Marathon-created code PR route to `handleCodePrRevision`: a durable revision task chained
+    to the implementation task, `base_sha` pinned to the branch's CURRENT tip
+    (`findCodeChangeByPr` + `getRef`), one task per review comment (`revisionTaskKey`), with a
+    `renderRevisionBrief` teaching same-branch push + same-PR re-report.
+  - **Track 11 (sandbox and workspace reality):** `docker/sandbox/Dockerfile` is the pinned
+    kernel toolchain image (`make sandbox-image` → `marathon-sandbox:kernel`: git, gh
+    (public reads only), Node 22, pnpm via corepack, build tools; credential-free with
+    outbound internet per Track 8). `workspaceSandbox`/`workspaceContainerOptions`
+    (`packages/agent/src/sandbox-factory.ts`) create BUILD containers from *task workspace
+    state* — refusing to run without a binding — with code-task-sized limits; the K4 smoke
+    now uses it instead of ad hoc wiring. Workspace lifecycle (clone at commit, credential
+    strip, local-git checkout, diff snapshot/replay, teardown) was already `CodeWorkspace` +
+    `makeBuildStepRunner`; brokered writes against the task workspace landed with Track 6.
+    Tests cover credential-free container args, image pin/overrides, and the no-fallback rule.
+
 - **Tracks 6–9: correction tracks — done (2026-07-03).** The four course corrections landed
   together; `make demo-k1-brokered` proves the corrected loop end to end.
   - **Track 6 (credentialed `gh`/`git` broker):** `packages/tools/src/command-broker.ts` is
@@ -108,9 +132,8 @@ track describe the codebase *before* its work landed; completed tracks carry a s
   to the merge commit and inherited delivery targets; `packages/surface/src/fanout.ts`
   delivers to every target idempotently. `make demo-k1` proves the path.
 
-Not started: remaining Tracks 10–17 except K4 and the Track 6–9 pieces above
-(document-workflow iteration paths, sandbox toolchain image, prompt/context
-continuity, memory migration, Forge YAML config/quickstart, model routing,
+Not started: remaining Tracks 12–17 (prompt/context continuity beyond the BUILD
+briefs, memory migration, Forge YAML config/quickstart, model routing,
 status/cost UX, kernel demos beyond K1/K4/K1-brokered).
 
 New design correction after Tracks 1–5: the original `github.submit_code_changes`
@@ -715,6 +738,11 @@ Required changes:
 
 ## Track 10: GitHub Document Workflow
 
+> **Status (2026-07-03): implemented** — see "Completed Work" above. Deterministic doc
+> branches with retry convergence, implementation/revision briefs carrying the brokered
+> delivery contract, merge metadata on the artifact, and code-PR mention → revision task
+> pinned to the branch tip.
+
 Design target:
 
 - `design/06-core-user-journeys.md` §6.8
@@ -761,6 +789,11 @@ Required changes:
   - use `delivery.report_pr` to record and fan out the updated PR link.
 
 ## Track 11: Sandbox and Workspace Reality
+
+> **Status (2026-07-03): implemented** — see "Completed Work" above. Pinned toolchain image
+> (`make sandbox-image`), `workspaceSandbox` container factory driven by task workspace
+> state, credential-free + internet-enabled by default; workspace lifecycle and brokered
+> writes had landed with Tracks 1–9.
 
 Design target:
 

@@ -5,7 +5,7 @@ MARATHON_DB_PORT ?= 5432
 DATABASE_URL ?= postgres://marathon:marathon@localhost:$(MARATHON_DB_PORT)/marathon
 export DATABASE_URL MARATHON_DB_PORT
 
-.PHONY: install hooks secret-scan db-up db-down migrate typecheck test demo demo-k1 demo-k1-brokered demo-k4 demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-github-app demo-slack-app slack-app github-app smoke-pi smoke-github smoke-github-write smoke-github-doc smoke-pi-tools smoke-mem0 smoke-sandbox smoke-broker smoke-container smoke-pi-sandbox smoke-k4 smoke-slack down
+.PHONY: install hooks secret-scan sandbox-image db-up db-down migrate typecheck test demo demo-k1 demo-k1-brokered demo-k4 demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-github-app demo-slack-app slack-app github-app smoke-pi smoke-github smoke-github-write smoke-github-doc smoke-pi-tools smoke-mem0 smoke-sandbox smoke-broker smoke-container smoke-pi-sandbox smoke-k4 smoke-slack down
 
 install:
 	pnpm install
@@ -19,6 +19,11 @@ hooks:
 # Scan the whole repo + history for secrets (what CI/the hook use).
 secret-scan:
 	gitleaks detect --redact --config .gitleaks.toml
+
+# Build the pinned kernel sandbox toolchain image (Track 11): git, gh, Node,
+# pnpm, build tools. BUILD-stage containers default to this image.
+sandbox-image:
+	docker build -t marathon-sandbox:kernel docker/sandbox
 
 db-up:
 	docker compose up -d --wait db

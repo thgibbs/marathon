@@ -3,6 +3,7 @@ import { getRepoAccess, type GithubClient, type GithubDelivery } from "@marathon
 import {
   emptyCheckpoint,
   implementationTaskKey,
+  revisionTaskKey,
   stableStringify,
   type DeliveryTarget,
   type Id,
@@ -13,7 +14,13 @@ import type { MemoryStore } from "@marathon/memory";
 import { DeliveryFanout, type AgentDescriptor, type NormalizedInvocation } from "@marathon/surface";
 import { classifyGithubEvent } from "@marathon/surface-github";
 import { ToolGateway } from "@marathon/tools";
-import { buildAgentPrompt, InvocationRouter, Orchestrator } from "@marathon/worker";
+import {
+  buildAgentPrompt,
+  InvocationRouter,
+  Orchestrator,
+  renderImplementationBrief,
+  renderRevisionBrief,
+} from "@marathon/worker";
 
 export interface GithubAppDeps {
   db: Database;
@@ -83,6 +90,10 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
 
   await deps.delivery.acknowledge({ repo, number });
 
+  // Track 10 (§29.6): a mention on a Marathon-created CODE PR is review
+  // feedback — spawn a durable revision task instead of a doc flow.
+  if (invocation.sourceRef.kind === "pr" && (await handleCodePrRevision(deps, invocation))) return;
+
   const { task, agentName } = await deps.router.route(invocation, {
     tenantId: deps.tenantId,
     agents: deps.agents,
@@ -145,6 +156,83 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
 }
 
 /**
+ * A mention on a Marathon-created code PR (Track 10, §29.6): spawn a revision
+ * task chained to the implementation task — base pinned to the branch's
+ * CURRENT tip (so human pushes are included), the same branch/PR updated
+ * through the brokered `git`/`gh` path, and the result re-reported via
+ * `delivery.report_pr`. Returns false when the PR is not a Marathon code PR.
+ */
+export async function handleCodePrRevision(
+  deps: GithubAppDeps,
+  invocation: NormalizedInvocation,
+): Promise<boolean> {
+  const repo = String(invocation.sourceRef.repo);
+  const number = Number(invocation.sourceRef.number);
+  const change = await deps.db.findCodeChangeByPr(deps.tenantId, repo, number);
+  if (!change?.prNumber) return false;
+
+  // Pin the revision to the branch's current tip (§29.6), not the original
+  // base_sha — the workspace must contain every commit already on the PR.
+  let tipSha: string;
+  try {
+    tipSha = (await deps.client.getRef(repo, `heads/${change.branch}`)).sha;
+  } catch {
+    await deps.delivery.postProgress(
+      { repo, number },
+      `I can't revise PR #${number} — its branch \`${change.branch}\` no longer exists.`,
+    );
+    return true;
+  }
+
+  const sourceTask = await deps.db.getTask(change.taskId);
+  const codePrTarget: DeliveryTarget = { surfaceType: "github", ref: { repo, number, kind: "pr" } };
+  const deliveryTargets = addTargets(sourceTask?.deliveryTargets ?? null, codePrTarget);
+
+  const { task, deduped } = await deps.orchestrator.submit({
+    tenantId: deps.tenantId,
+    agentId: sourceTask?.agentId ?? undefined,
+    agentVersionId: sourceTask?.agentVersionId ?? undefined,
+    invokingUserId: sourceTask?.invokingUserId ?? undefined,
+    sourceTaskId: change.taskId,
+    sourceType: "github",
+    sourceRef: {
+      kind: "code_revision",
+      repo,
+      prNumber: number,
+      branch: change.branch,
+      planRef: {
+        repo: change.planRef.repo,
+        docPath: change.planRef.docPath,
+        mergeCommitSha: change.planRef.mergeCommitSha,
+      },
+      baseSha: tipSha,
+    },
+    deliveryTargets,
+    inputText: renderRevisionBrief({
+      repo,
+      prNumber: number,
+      prUrl: change.prUrl ?? undefined,
+      branch: change.branch,
+      planRef: change.planRef,
+      comment: invocation.text,
+      commentAuthor: invocation.userExternalId,
+    }),
+    // One revision task per review comment; webhook re-deliveries converge.
+    idempotencyKey: revisionTaskKey(repo, number, invocation.eventId ?? tipSha),
+  });
+
+  if (!deduped) {
+    await fanoutOf(deps).postProgress(
+      task.id,
+      deliveryTargets,
+      `Revision task queued for PR #${number} (branch \`${change.branch}\` @ \`${tipSha.slice(0, 7)}\`).`,
+      "revision_queued",
+    );
+  }
+  return true;
+}
+
+/**
  * A merged design-doc PR is the approval (§0.1 stage 4): complete the doc task
  * and spawn a *new* implementation task (§29.1), chained to it —
  * `plan_ref`/`base_sha` pinned to the merge commit, delivery targets inherited,
@@ -166,6 +254,10 @@ export async function handleGithubMerge(
   const docPrTarget: DeliveryTarget = { surfaceType: "github", ref: { repo, number: prNumber, kind: "pr" } };
   const deliveryTargets = addTargets(docTask.deliveryTargets, docPrTarget);
 
+  // Track 10: the artifact keeps the full plan pointer — path/branch/PR were
+  // recorded at draft time; the merge commit completes it.
+  await deps.db.mergeDocumentArtifactLocation(artifact.id, { mergeCommitSha });
+
   const { task: implTask, deduped } = await deps.orchestrator.submit({
     tenantId: deps.tenantId,
     agentId: docTask.agentId ?? undefined,
@@ -183,7 +275,9 @@ export async function handleGithubMerge(
       baseSha: mergeCommitSha,
     },
     deliveryTargets,
-    inputText: `Implement the approved plan in ${loc.path} (merged as ${mergeCommitSha}).`,
+    // Track 10: the brief carries the merged plan, pinned base, suggested
+    // branch, delivery targets, and the delivery.report_pr contract.
+    inputText: renderImplementationBrief({ planRef, deliveryTargets, docPrNumber: prNumber }),
     idempotencyKey: implementationTaskKey(repo, loc.path, mergeCommitSha),
   });
 

@@ -719,6 +719,17 @@ export class Database implements AuditWriter, IdempotencyStore {
     );
   }
 
+  /**
+   * Merge fields into a document artifact's location (Track 10): e.g. record
+   * `mergeCommitSha` when the doc PR merges, alongside its path/branch/PR.
+   */
+  async mergeDocumentArtifactLocation(id: Id, patch: Record<string, unknown>): Promise<void> {
+    await this.pool.query(
+      `update document_artifact set location = location || $2::jsonb, updated_at = now() where id = $1`,
+      [id, JSON.stringify(patch)],
+    );
+  }
+
   async countDocumentArtifacts(tenantId: Id): Promise<number> {
     const { rows } = await this.pool.query(
       `select count(*)::int as n from document_artifact where tenant_id = $1`,
@@ -750,6 +761,21 @@ export class Database implements AuditWriter, IdempotencyStore {
 
   async getCodeChangeByTask(taskId: Id): Promise<CodeChange | null> {
     const { rows } = await this.pool.query(`select * from code_change where task_id = $1`, [taskId]);
+    return rows[0] ? rowToCodeChange(rows[0]) : null;
+  }
+
+  /**
+   * The latest CodeChange that delivered a given PR (Track 10): a mention on a
+   * Marathon-created code PR routes to a revision task. Revision tasks record
+   * their own row against the same PR, so take the most recent.
+   */
+  async findCodeChangeByPr(tenantId: Id, repo: string, prNumber: number): Promise<CodeChange | null> {
+    const { rows } = await this.pool.query(
+      `select * from code_change
+       where tenant_id = $1 and repo = $2 and pr_number = $3
+       order by updated_at desc limit 1`,
+      [tenantId, repo, prNumber],
+    );
     return rows[0] ? rowToCodeChange(rows[0]) : null;
   }
 

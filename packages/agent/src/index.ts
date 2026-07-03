@@ -4,3 +4,4 @@ export * from "./scripted";
 export * from "./governed";
 export * from "./pi";
 export * from "./sandbox-tools";
+export * from "./sandbox-factory";

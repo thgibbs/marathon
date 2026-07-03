@@ -1,7 +1,7 @@
 import { EnvSecretStore } from "@marathon/config";
 import { describe, expect, it } from "vitest";
 import { FixturesGithubClient, getRepoAccess } from "../src/client";
-import { makeDocumentTools } from "../src/document-tools";
+import { docBranchForTask, makeDocumentTools } from "../src/document-tools";
 
 const ctx = { taskId: "t1", tenantId: "tn1", secrets: new EnvSecretStore({}) };
 const tool = (name: string, gh: FixturesGithubClient) =>
@@ -19,6 +19,28 @@ describe("document tools", () => {
     expect(ops).toContain("createBranch");
     expect(ops).toContain("putFile");
     expect(ops).toContain("createPullRequest");
+  });
+
+  it("document.create branches deterministically per (task, path) — no timestamps (Track 10)", async () => {
+    const gh = new FixturesGithubClient({});
+    const res = await tool("document.create", gh).execute({ repo: "o/r", path: "docs/x.md", content: "# Hi" }, ctx);
+    expect((res.details as { branch: string }).branch).toBe(docBranchForTask("t1", "docs/x.md"));
+    expect(docBranchForTask("t1", "docs/x.md")).toBe("marathon/doc-t1-docs-x-md");
+    // Distinct tasks writing the same path never collide.
+    expect(docBranchForTask("t2", "docs/x.md")).not.toBe(docBranchForTask("t1", "docs/x.md"));
+  });
+
+  it("document.create converges on the existing branch/PR under a webhook retry (Track 10)", async () => {
+    const gh = new FixturesGithubClient({});
+    const first = await tool("document.create", gh).execute({ repo: "o/r", path: "docs/x.md", content: "# v1" }, ctx);
+    const again = await tool("document.create", gh).execute({ repo: "o/r", path: "docs/x.md", content: "# v1 retried" }, ctx);
+    const firstDetails = first.details as { number: number; converged: boolean };
+    const againDetails = again.details as { number: number; converged: boolean };
+    expect(firstDetails.converged).toBe(false);
+    expect(againDetails.converged).toBe(true);
+    expect(againDetails.number).toBe(firstDetails.number); // same PR
+    expect(gh.writes.filter((w) => w.op === "createPullRequest")).toHaveLength(1);
+    expect(gh.writes.filter((w) => w.op === "createBranch")).toHaveLength(1);
   });
 
   it("document.update rejects a stale SHA", async () => {
