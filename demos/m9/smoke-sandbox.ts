@@ -4,8 +4,9 @@
  *
  *   make smoke-sandbox
  *
- * Verifies a command runs in an ephemeral, network-denied, credential-free
- * container — and that egress is actually blocked.
+ * Verifies a command runs in an ephemeral, credential-free container — with
+ * outbound internet by default (Track 8) — and that the strict `network: "none"`
+ * mode actually blocks egress.
  */
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -27,13 +28,23 @@ async function main(): Promise<void> {
   if (/GITHUB_TOKEN|OPENAI_API_KEY|SLACK_/.test(env.stdout)) throw new Error("host secrets leaked into the sandbox!");
   console.log("  -> no host secrets in container env ✓");
 
-  // 3. network egress is denied (`--network none`) — this command should FAIL
-  const net = await sandbox
+  // 3a. the default sandbox has outbound internet (Track 8: the boundary is
+  // credential-freedom, not the network) — a public fetch should SUCCEED.
+  const open = await sandbox
+    .run("wget", ["-q", "-T", "5", "-O", "-", "https://example.com"], { timeoutMs: 30_000 })
+    .then(() => ({ ok: true }))
+    .catch(() => ({ ok: false }));
+  if (!open.ok) throw new Error("default sandbox should have outbound internet (Track 8)");
+  console.log("  -> outbound internet available by default ✓");
+
+  // 3b. strict mode (`network: "none"`) denies egress — this command should FAIL.
+  const strict = new DockerSandbox({ image, network: "none" });
+  const net = await strict
     .run("wget", ["-q", "-T", "3", "-O", "-", "https://example.com"], { timeoutMs: 30_000 })
     .then(() => ({ blocked: false }))
     .catch(() => ({ blocked: true }));
-  if (!net.blocked) throw new Error("network egress was NOT blocked");
-  console.log("  -> network egress blocked ✓");
+  if (!net.blocked) throw new Error("network egress was NOT blocked in strict mode");
+  console.log("  -> strict mode blocks egress ✓");
 
   // 4. workspace mount: the container sees only the mounted workspace, not the host FS
   const ws = await mkdtemp(join(tmpdir(), "marathon-ws-"));

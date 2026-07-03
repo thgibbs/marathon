@@ -9,6 +9,7 @@
   "dependencies": {
     "@marathon/agent": "workspace:*",
     "@marathon/code-handoff": "workspace:*",
+    "@marathon/config": "workspace:*",
     "@marathon/core": "workspace:*",
     "@marathon/db": "workspace:*",
     "@marathon/memory": "workspace:*",

@@ -57,6 +57,11 @@ export interface GithubClient {
   /** Move a branch ref; force approximates `--force-with-lease` (a task owns its own branch). */
   updateRef(repo: string, branch: string, sha: string, force: boolean): Promise<void>;
   findPullRequestByHead(repo: string, head: string): Promise<{ number: number; url: string; draft: boolean } | null>;
+  /** PR by number, or null if the repo has no such PR (delivery.report_pr validation). */
+  getPullRequest(
+    repo: string,
+    prNumber: number,
+  ): Promise<{ number: number; url: string; headRef: string; draft: boolean; state: string } | null>;
   updatePullRequest(repo: string, prNumber: number, patch: { title?: string; body?: string }): Promise<void>;
   /** Toggle a PR's draft state (§29.3: draft must track verification). */
   setPullRequestDraft(repo: string, prNumber: number, draft: boolean): Promise<void>;
@@ -245,6 +250,25 @@ export class HttpGithubClient implements GithubClient {
     const j = await this.api(`/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${head}`)}`);
     const pr = Array.isArray(j) ? j[0] : undefined;
     return pr ? { number: pr.number, url: pr.html_url, draft: Boolean(pr.draft) } : null;
+  }
+
+  async getPullRequest(
+    repo: string,
+    prNumber: number,
+  ): Promise<{ number: number; url: string; headRef: string; draft: boolean; state: string } | null> {
+    try {
+      const j = await this.api(`/repos/${repo}/pulls/${prNumber}`);
+      return {
+        number: j.number,
+        url: j.html_url,
+        headRef: String(j.head?.ref ?? ""),
+        draft: Boolean(j.draft),
+        state: String(j.state ?? "open"),
+      };
+    } catch (e) {
+      if (/github 404/.test(String(e))) return null;
+      throw e;
+    }
   }
 
   async updatePullRequest(repo: string, prNumber: number, patch: { title?: string; body?: string }): Promise<void> {
@@ -492,6 +516,18 @@ export class FixturesGithubClient implements GithubClient {
 
   async findPullRequestByHead(repo: string, head: string): Promise<{ number: number; url: string; draft: boolean } | null> {
     return this.openPrs.get(`${repo}:${head}`) ?? null;
+  }
+
+  async getPullRequest(
+    repo: string,
+    prNumber: number,
+  ): Promise<{ number: number; url: string; headRef: string; draft: boolean; state: string } | null> {
+    for (const [key, pr] of this.openPrs) {
+      if (key.startsWith(`${repo}:`) && pr.number === prNumber) {
+        return { number: pr.number, url: pr.url, headRef: key.slice(repo.length + 1), draft: pr.draft, state: "open" };
+      }
+    }
+    return null;
   }
 
   async updatePullRequest(repo: string, prNumber: number, patch: { title?: string; body?: string }): Promise<void> {

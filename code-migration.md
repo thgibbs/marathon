@@ -18,6 +18,43 @@ features.
 Progress against the tracks below, most recent first. The "Current mismatch" lists in each
 track describe the codebase *before* its work landed; completed tracks carry a status note.
 
+- **Tracks 6–9: correction tracks — done (2026-07-03).** The four course corrections landed
+  together; `make demo-k1-brokered` proves the corrected loop end to end.
+  - **Track 6 (credentialed `gh`/`git` broker):** `packages/tools/src/command-broker.ts` is
+    the generic layer (argv-structured `CommandRunner` via `execFile` — no shell; command
+    *families* as the policy; `FakeCommandRunner` for tests). `packages/connector-github`
+    gains `github.exec` (allowlisted families: `pr view`, `pr diff`, `issue view`,
+    `repo view`, read-only `gh api repos/...`, plus `pr create`/`pr edit` for Track 7;
+    explicit `--repo` required and allowlist-checked; `GH_TOKEN` injected into the child
+    env only) and `git.exec` (`push`/`fetch` on the task's BUILD workspace; the credential
+    rides an env-fed inline credential helper, never argv; flags are refused wholesale so
+    `--force` is unrepresentable). Reads feed the source ledger; writes are egress-routed;
+    exit codes come back as data.
+  - **Track 7 (agent-driven delivery):** `delivery.report_pr`
+    (`packages/connector-github/src/report-tools.ts`) is the narrow final step — validate
+    the PR belongs to the task's configured repo *and exists* (branch/draft state come from
+    GitHub via the new `GithubClient.getPullRequest`, never from the model), record it on
+    the `CodeChange` (`recordCodeChangeReport`, no tree hash), fan the link out idempotently
+    to every delivery target, and never read the diff. The BUILD prompt now teaches normal
+    local git + brokered `git.exec`/`github.exec` + `delivery.report_pr`;
+    `github.submit_code_changes` is demoted to compatibility/strict mode (kept, with its
+    tests and `demo-k1`, until deletion).
+  - **Track 8 (sandbox networking):** the Docker sandbox default network flipped from
+    `none` to `bridge` — normal outbound internet for installs/docs — with `network: "none"`
+    (or `MARATHON_SANDBOX_NETWORK`) as the strict opt-in. The boundary is credential-freedom
+    (still no env/secrets in any container); `make smoke-sandbox` now proves both the open
+    default and the strict mode.
+  - **Track 9 (Proposed Effects for real destructive actions):** `packages/core` gains the
+    effect state machine (`proposed → approved|rejected|expired → executing → executed|failed`)
+    plus `payloadHashOf`; `ProposedEffectService` (`packages/worker/src/effects.ts`) implements
+    propose → hash-bound approve (a changed payload voids approval) → atomic at-most-once
+    execute through an `EffectExecutorRegistry` of plain host-side functions
+    (`packages/tools/src/effects.ts`) — never a model tool call. `Database` gained the
+    guarded state-transition methods. `makeGithubMergeExecutor` is the exemplar: a direct
+    `github.merge_pull_request` call still returns typed `requires_proposal`; the executor
+    merges only the exact approved proposal. `proposeToolCall`/`executeApproved` stay
+    deprecated demo scaffolding; approvals UI/surfaces remain deferred (M10).
+
 - **Track 5: Tool Gateway and Effect Routing — done (2026-07-03).** `Tool` now declares
   `riskAxes` + `defaultMode` (`autonomous | native_review | proposed_effect | disabled`);
   the legacy `riskLevel`/`destructive` fields and the `riskAxesFromLegacy` bridge are gone.
@@ -48,7 +85,7 @@ track describe the codebase *before* its work landed; completed tracks carry a s
   same contract. `make demo-k4` kills a worker mid-BUILD after a per-turn checkpoint and
   asserts a fresh worker resumes with no re-run turns and exactly one PR; `make smoke-k4`
   proves the same with a REAL Pi run (sandboxed Docker tools), SIGKILLed at its first turn
-  checkpoint and resumed to a single PR. Durable waits/clarifications stay with Track 8.
+  checkpoint and resumed to a single PR. Durable waits/clarifications stay with Track 12.
 
 - **Track 3: Data Model and Core Types — done (2026-07-02).** Migration 0008 adds
   `proposed_effect`, replaces `risk_level` with `risk_axes` on `tool_invocation` and
@@ -58,7 +95,7 @@ track describe the codebase *before* its work landed; completed tracks carry a s
   Track 5 puts axes on `Tool`), `ProposedEffect`, updated `ApprovalRequest`/`UserIdentity`,
   `blocked` removed from `TaskStatus`, and `Checkpoint` extended with the §11.2 BUILD-stage
   fields (which `parseCheckpoint` now preserves instead of dropping). Memory levels are
-  deliberately left to Track 9.
+  deliberately left to Track 13.
 
 - **Tracks 1 & 2: BUILD → DELIVER code path + task chain — done (K1/K2, PR #1).**
   `packages/code-handoff` implements the §29 contract: host-side `CodeWorkspace`
@@ -71,9 +108,15 @@ track describe the codebase *before* its work landed; completed tracks carry a s
   to the merge commit and inherited delivery targets; `packages/surface/src/fanout.ts`
   delivers to every target idempotently. `make demo-k1` proves the path.
 
-Not started: Tracks 6–13 except K4 (document-workflow iteration paths, sandbox
-toolchain image, prompt/context continuity, memory migration, Forge YAML
-config/quickstart, model routing, status/cost UX, kernel demos beyond K1/K4).
+Not started: remaining Tracks 10–17 except K4 and the Track 6–9 pieces above
+(document-workflow iteration paths, sandbox toolchain image, prompt/context
+continuity, memory migration, Forge YAML config/quickstart, model routing,
+status/cost UX, kernel demos beyond K1/K4/K1-brokered).
+
+New design correction after Tracks 1–5: the original `github.submit_code_changes`
+contract is probably too heavy. Marathon should not replace normal `git` and `gh`
+workflows with custom semantic GitHub tools unless the workflow truly needs product logic.
+The next migration tracks below account for that correction.
 
 ## Current Alignment Snapshot
 
@@ -89,18 +132,19 @@ Mostly aligned:
 
 Not aligned with the current design:
 
-- The BUILD -> DELIVER code-writing path is missing.
-- The GitHub merge path "executes" by asking the model for text, not by creating a sandboxed
-  workspace, running tests, and opening a code PR.
-- Tool policy is still `destructive: boolean` + `riskLevel`; the design uses risk axes,
-  default modes, native review, and Proposed Effects later.
-- `ProposedEffect` and `CodeChange` are not represented in schema or core types.
+- The BUILD -> DELIVER code-writing path exists, but it is too Marathon-owned. It uses
+  `github.submit_code_changes` as the main handoff, while the revised direction is that the
+  agent should drive normal `git` and `gh` commands.
+- The GitHub connector exposes small custom tools where a credentialed `gh`/`git` broker
+  would better match how LLM coding agents already work.
+- Marathon still treats code delivery as a special semantic tool that decides branch namespace,
+  protected path checks, and secret scanning. The revised direction pushes those checks to
+  GitHub rulesets, branch protection, CODEOWNERS, secret scanning, gitleaks, and CI.
+- The sandbox design is still too network-restrictive for the kernel. The revised direction is
+  internet access by default, with no company secrets in the sandbox.
 - Memory still has `agent` as an access scope and feedback corrections are agent-scoped.
-- The real Pi runtime is effectively single-turn; durable resume of a real code-writing run is
-  not implemented.
 - Agents are hardcoded in app bootstraps; there is no YAML-defined `forge` flagship agent.
-- `delivery_targets` exists in the schema but is not populated or used for fan-out delivery.
-- There is no `make demo-kernel`, `make demo-k1`, `make demo-k2`, etc.
+- There is no `make demo-kernel`, `make demo-k2`, `make demo-k3`, `make demo-k5`, etc.
 
 ## Migration Principles
 
@@ -111,6 +155,10 @@ Not aligned with the current design:
 2. Treat `design/29-code-handoff.md` as the spec for K1.
    It is concrete enough to implement directly. Do not replace it with another ad hoc code path.
 
+   **Correction:** this principle is now superseded for future work. The kernel still needs a
+   trusted delivery path, but Marathon should not own normal `git` decisions. Prefer a
+   credentialed `git`/`gh` broker plus a narrow "report the PR I opened" operation.
+
 3. Preserve useful scaffolding, but rename concepts when they are wrong.
    Old milestone demos are still useful tests, but comments and types that teach "destructive
    approval" or "agent-scoped memory" should be migrated because they will keep pulling new code
@@ -118,6 +166,11 @@ Not aligned with the current design:
 
 4. Add first-class code-path records before adding more behavior.
    The code-writing path must be inspectable and resumable from the start.
+
+5. Do not reimplement GitHub policy in Marathon.
+   Branch protection, rulesets, CODEOWNERS, secret scanning, gitleaks, and CI should do that
+   job. Marathon should broker credentials, track tasks, and get approval for destructive
+   actions.
 
 ## Track 1: BUILD -> DELIVER Code Path
 
@@ -235,7 +288,7 @@ Required changes:
 
 > **Status (2026-07-02): implemented** — see "Completed Work" above. Legacy `blocked`
 > rows migrate to `waiting_for_approval`; the memory-level item in the mismatch list
-> below is deliberately left to Track 9.
+> below is deliberately left to Track 13.
 
 Design target:
 
@@ -288,7 +341,7 @@ Required changes:
 ## Track 4: Worker Runtime and Durable Resume
 
 > **Status (2026-07-02): implemented** — see "Completed Work" above. The "stop after
-> durable wait / clarification" runtime behavior lands with Track 8's waiting states;
+> durable wait / clarification" runtime behavior lands with Track 12's waiting states;
 > the resume seam it needs (re-open session + continue) is in place.
 
 Design target:
@@ -385,12 +438,287 @@ Required changes:
 - For future M10, implement Proposed Effects as immutable artifacts executed by a non-model
   executor. Do not build new approval flows on top of `executeApproved()` as it exists today.
 
-## Track 6: GitHub Document Workflow
+## Correction Tracks: Next Work
+
+The next four tracks should happen before the remaining migration work. They change core
+assumptions about GitHub access, code delivery, sandbox networking, and destructive approvals.
+
+## Track 6: Replace Semantic GitHub Tools with a Credentialed `gh`/`git` Broker
+
+> **Status (2026-07-03): implemented** — see "Completed Work" above. `github.exec` +
+> `git.exec` with explicit command families; credentials only in the brokered child env.
+> The older semantic read tools (`github.read_file`, …) remain registered for existing
+> demos but are no longer the direction.
+
+Design correction:
+
+- The agent should use normal GitHub and git workflows where possible.
+- Marathon should not force the model through custom tools like `github.read_file` when `gh`
+  already gives the model a familiar interface.
+- Marathon's main job is to keep write credentials out of the model and the sandbox.
+
+Current code:
+
+- `packages/tools/src/gateway.ts`
+- `packages/tools/src/cli.ts`
+- `packages/connector-github/src/tools.ts`
+- `packages/connector-github/src/code-tools.ts`
+- `packages/agent/src/governed.ts`
+- `packages/tools/src/broker.ts`
+
+Current mismatch:
+
+- GitHub read/write operations are modeled as custom semantic tools.
+- `cli.run` is sandbox-only and does not support host-side credential injection.
+- The gateway policy still thinks in terms of registered tool names, not brokered command
+  families.
+- There is no first-class way for the agent to say:
+
+  ```text
+  gh pr view 123 --repo owner/repo --json title,body,files
+  ```
+
+  and have Marathon inject the right credential outside the sandbox.
+
+Required changes:
+
+- Add a host-side command broker for credentialed GitHub commands.
+- Start with explicit command families:
+  - `gh pr view`
+  - `gh pr diff`
+  - `gh issue view`
+  - `gh repo view`
+  - selected `gh api` read paths
+  - `git fetch` / `git push` only when using the task's configured repo and approved remote
+    credential path
+- Inject credentials only into the brokered child process.
+- Never return the credential to the model.
+- Record command, argv, exit code, stdout/stderr summary, and task id.
+- Keep arguments structured as `argv: string[]`, not one shell string.
+- Prefer allowlisted subcommands over a large policy language.
+
+Suggested shape:
+
+```text
+github.exec({
+  argv: ["pr", "view", "123", "--repo", "owner/repo", "--json", "title,body,files"]
+})
+```
+
+The tool name can be Marathon-specific.
+The interface should still feel like `gh`.
+
+For `git`, prefer the sandbox for local repo operations and the host broker only for
+credentialed network operations.
+
+## Track 7: Replace `github.submit_code_changes` with Agent-Driven Delivery
+
+> **Status (2026-07-03): implemented** — see "Completed Work" above. `delivery.report_pr`
+> records + fans out; the BUILD prompt teaches brokered `git`/`gh`;
+> `github.submit_code_changes` is demoted to compatibility/strict mode (its tests and
+> `demo-k1` stay until deletion). `make demo-k1-brokered` is the corrected-path proof.
+
+Design correction:
+
+- The LLM should decide what files to commit.
+- The LLM should decide the branch name, commit message, PR title, and PR summary.
+- Git and GitHub should reject empty diffs, protected branches, failed checks, missing reviews,
+  and policy violations.
+- Marathon should not duplicate GitHub rulesets, branch protection, CODEOWNERS, secret
+  scanning, gitleaks, or CI.
+
+Current code:
+
+- `packages/connector-github/src/code-tools.ts`
+- `packages/code-handoff/*`
+- `packages/worker/src/build-step.ts`
+- `packages/github-app/src/handlers.ts`
+- `packages/surface/src/fanout.ts`
+
+Current mismatch:
+
+- `github.submit_code_changes` reads the workspace diff itself.
+- The gateway enforces branch naming, protected path checks, secret scanning, diff caps, and
+  PR creation.
+- That makes Marathon own too much of the normal git workflow.
+- The model has less control over the workflow than it should.
+
+Required changes:
+
+- Demote `github.submit_code_changes` from the primary delivery path.
+- Let the agent use normal commands:
+
+  ```text
+  git status
+  git diff
+  git add
+  git commit
+  git push
+  gh pr create
+  gh pr edit
+  gh pr view
+  ```
+
+- Use the credentialed broker from Track 6 for `git push` and `gh pr create/edit` when write
+  credentials are needed.
+- Replace the final handoff with a narrow delivery-report operation:
+
+  ```text
+  delivery.report_pr({
+    pr_url,
+    summary,
+    verification
+  })
+  ```
+
+- `delivery.report_pr` should:
+  - validate that the PR belongs to the configured repo;
+  - record the PR URL on the task / `CodeChange`;
+  - deliver the link to the Slack thread and plan PR;
+  - mark the implementation task delivered;
+  - avoid reading or rewriting the diff.
+
+What moves out of Marathon:
+
+- Empty diff checks move to git.
+- Protected branch/file policy moves to GitHub rulesets, branch protection, CODEOWNERS, and CI.
+- Secret scanning moves to GitHub secret scanning, gitleaks, pre-commit, or CI.
+- Branch naming is suggested by Marathon but chosen by the agent or repo convention.
+
+What stays in Marathon:
+
+- Task chain.
+- Workspace lifecycle.
+- Durable resume.
+- Credential brokering for write operations.
+- Approval workflow for destructive operations.
+- Delivery fan-out.
+- Audit/timeline.
+
+Compatibility note:
+
+- Keep the existing `github.submit_code_changes` tests until the replacement path has equal
+  demo coverage.
+- Then either delete it or keep it only as an optional strict mode.
+
+## Track 8: Simplify Sandbox Networking for the Kernel
+
+> **Status (2026-07-03): implemented** — see "Completed Work" above. Sandbox default is
+> internet-enabled (`bridge`); `network: "none"` / `MARATHON_SANDBOX_NETWORK` is the
+> strict opt-in; containers stay credential-free. The egress broker stays a later
+> hardening track.
+
+Design correction:
+
+- The sandbox needs internet access to be useful.
+- It may need to install packages.
+- It may need to read docs, search errors, download types, or use framework CLIs.
+- The first boundary should be "no company secrets in the sandbox", not "no network".
+
+Current code / design mismatch:
+
+- The design language still assumes network-denied sandboxes except broker/model paths.
+- The older sandbox track asked for "no network except allowed broker/model-proxy paths."
+- That is too restrictive for the first version.
+
+Required changes:
+
+- Give the sandbox normal outbound internet access in the kernel.
+- Keep these out of the sandbox:
+  - GitHub write tokens;
+  - Slack tokens;
+  - production API keys;
+  - database credentials;
+  - cloud credentials;
+  - Marathon secret-store access.
+- Allow normal project dependency work:
+
+  ```text
+  pnpm install
+  pnpm add package
+  npm install
+  pip install package
+  cargo add crate
+  curl docs
+  ```
+
+- Treat dependency changes as normal PR content:
+  - `package.json`;
+  - lockfiles;
+  - requirements files;
+  - manifests.
+- Do not commit caches or installed dependency directories.
+- Put repeatability pressure on the repo and CI, not on a closed sandbox network.
+
+Long-term hardening:
+
+- Add an internet egress broker later.
+- It can log requests and block obvious bad paths:
+  - cloud metadata IPs;
+  - private IP ranges;
+  - known paste sites;
+  - large uploads;
+  - obvious secret patterns;
+  - arbitrary POSTs if strict mode is enabled.
+- Do not claim this fully prevents exfiltration.
+- It is visibility and risk reduction, not perfect data-loss prevention.
+
+## Track 9: Narrow Proposed Effects to Real Destructive Actions
+
+> **Status (2026-07-03): implemented** — see "Completed Work" above. `ProposedEffectService`
+> + non-model `EffectExecutor`s with hash-bound approval and at-most-once execution;
+> `github.merge_pull_request` is the exemplar. Approval *surfaces* (Slack buttons, Agent
+> Hub) remain deferred with M10.
+
+Design correction:
+
+- Marathon should still own approval for destructive or high-risk actions.
+- But normal PR creation and normal code delivery should use GitHub's native review flow.
+- Marathon approval should be rare.
+
+Examples that should need approval or a native review surface:
+
+- Delete files from the main branch directly.
+- Merge a PR.
+- Delete a branch.
+- Delete an issue.
+- Change production data.
+- Deploy to production.
+- Rotate a secret.
+- Send external email.
+- Perform broad external/public posting.
+
+Required changes:
+
+- Keep normal code changes as:
+
+  ```text
+  agent opens PR
+  human reviews PR
+  human merges PR
+  ```
+
+- For direct destructive actions, use:
+
+  ```text
+  propose exact action
+  human approves exact action
+  non-model executor performs exact action
+  ```
+
+- Do not use the old `executeApproved()` tool-call replay model for new work.
+- Approval must bind to the exact artifact or exact mutation.
+- If the artifact changes, approval is void.
+- The model should not directly hold the credential needed to perform the destructive action.
+
+## Remaining Tracks After The Correction
+
+## Track 10: GitHub Document Workflow
 
 Design target:
 
 - `design/06-core-user-journeys.md` §6.8
-- `design/29-code-handoff.md`
+- Track 7 in this guide: agent-driven `git`/`gh` delivery plus `delivery.report_pr`
 - `roadmap.md` K1-K3
 
 Current code:
@@ -403,20 +731,24 @@ Current code:
 
 Current mismatch:
 
-- A merged document PR marks the original task complete after a text response.
-- The merge event parser captures `mergeCommitSha`, but `handleGithubMerge()` ignores it.
+- The document workflow was originally wired toward `github.submit_code_changes`.
+- A merged document PR should start an implementation task that uses normal `git`/`gh`, not a
+  semantic code-handoff tool.
 - `document.create` branches are timestamp-based, not deterministic/idempotent.
 - `document.create` and `document.update` do not fully bind to base SHA / plan refs in the way
   the kernel needs.
 - `document.revise` commits directly to the doc PR branch and retries on stale SHA, which is
   directionally useful but not tied into task-chain semantics.
-- Code PR revision comments are not supported.
+- Code PR revision comments are not fully connected to the new brokered `git`/`gh` delivery
+  path.
 
 Required changes:
 
 - Use `mergeCommitSha` as the implementation task's `base_sha`.
 - Treat design-doc merge as spawning a new implementation task, not resuming/completing the doc
   task.
+- Put the merged plan, base SHA, suggested branch, delivery targets, and `delivery.report_pr`
+  contract into the implementation prompt.
 - Store plan doc path, branch, PR number, and merge commit in `DocumentArtifact` or
   `CodeChange.plan_ref`.
 - Make document branch naming deterministic enough for idempotency, or record enough metadata to
@@ -425,14 +757,15 @@ Required changes:
   - detect mentions on a Marathon-created code PR;
   - spawn revision task;
   - pin base SHA to the current task branch tip;
-  - use the same `github.submit_code_changes` handoff to update the same PR.
+  - let the agent update the same branch/PR through brokered `git`/`gh`;
+  - use `delivery.report_pr` to record and fan out the updated PR link.
 
-## Track 7: Sandbox and Workspace Reality
+## Track 11: Sandbox and Workspace Reality
 
 Design target:
 
 - `design/12-security-design.md` §12.6
-- `design/29-code-handoff.md` §29.2
+- Track 8 in this guide: internet-enabled sandbox with no company secrets
 - `roadmap.md` K1
 
 Current code:
@@ -444,16 +777,18 @@ Current code:
 
 Current mismatch:
 
-- Docker sandbox primitives exist, but there is no repo materialization or code-task workspace
-  lifecycle.
+- Docker sandbox primitives exist, but the code-task workspace still needs to feel like a normal
+  repo checkout that an LLM can drive with `git`, package managers, test commands, and local
+  tooling.
 - `DockerSandbox` is one-command; `DockerContainer` is persistent, but neither is tied into a
   task-scoped code workspace manager.
 - `Workspace` can create temp dirs and write files, but cannot clone, strip credentials, apply
-  diffs, or compute tree hashes.
+  checkpoint diffs, or prepare a normal git remote setup for brokered pushes.
 - `sandboxFromEnv()` only covers `ToolSandbox`, not the Pattern-2 `DockerContainer` lifecycle
   needed by Pi's sandboxed tools.
-- The default image is Alpine; the kernel needs a pinned toolchain image with git, Node, pnpm,
-  and the repo's verifier tools.
+- The default image is Alpine; the kernel needs a pinned toolchain image with git, `gh`, Node,
+  pnpm, common build tools, and the repo's verifier tools.
+- The older no-network sandbox target is too restrictive for the kernel.
 
 Required changes:
 
@@ -461,19 +796,24 @@ Required changes:
 - Add `WorkspaceManager` for code tasks:
   - clone at commit;
   - strip remotes / credential helpers;
+  - keep a normal git checkout that supports local `git status`, `git diff`, `git add`, and
+    `git commit`;
   - mount into `DockerContainer`;
-  - compute diff and tree hash;
   - apply checkpointed diff on resume;
   - enforce teardown.
+- Give the container normal outbound internet access for package installs, docs, public
+  searches, and framework CLIs.
 - Wire `PiAgentRuntime.sandbox.createContainer()` from task workspace state, not ad hoc smoke
   setup.
+- Make brokered GitHub writes operate against the task workspace without placing credentials in
+  the sandbox.
 - Add tests for:
   - no credentials in sandbox env;
-  - no network except allowed broker/model-proxy paths;
-  - protected path refusal;
+  - outbound internet access works for normal dependency/doc lookups;
+  - credentialed GitHub writes require the broker, not sandbox credentials;
   - diff snapshot/replay.
 
-## Track 8: Prompt, Context, and Iteration Continuity
+## Track 12: Prompt, Context, and Iteration Continuity
 
 Design target:
 
@@ -494,6 +834,8 @@ Current mismatch:
 - GitHub document context is passed manually only in the revise path.
 - Clarifying questions are not a first-class durable wait path in the apps.
 - Slack replies do not route as continuations of existing loop tasks.
+- BUILD prompts still assume the old code-handoff contract instead of telling the agent to use
+  normal `git`/`gh`, run verification, open a PR, and call `delivery.report_pr`.
 - The prompt builder recalls old memory semantics.
 - There is no Forge-specific prompt loaded from YAML.
 
@@ -510,6 +852,13 @@ Required changes:
   - Slack reply in a task thread -> continuation task or resumed wait;
   - doc PR comment -> revise the design doc;
   - code PR comment -> revise implementation branch.
+- Update BUILD prompt assembly:
+  - include the merged plan path and merge commit;
+  - include the workspace location and current branch/base state;
+  - include suggested `git`/`gh` commands, not custom GitHub semantic tools;
+  - include `delivery.report_pr` as the final reporting step;
+  - make clear that package installs and web/doc lookup are allowed in the sandbox;
+  - make clear that GitHub writes must use the brokered credential path.
 - Represent clarifying questions as `waiting_for_input`:
   - ask;
   - end turn;
@@ -517,7 +866,7 @@ Required changes:
 - Load Forge instructions from YAML and pass them through `AgentVersion`.
 - Keep all surface/document/tool content fenced as untrusted.
 
-## Track 9: Memory Migration
+## Track 13: Memory Migration
 
 Design target:
 
@@ -541,17 +890,18 @@ Current mismatch:
 - Recall unions tenant + project + agent + thread based on scope keys, not audience containment.
 - There is no `user` scope.
 - There is no `TaskAudience`.
-- Recalled memory is not reported to the egress/source ledger.
-- Memory provenance lacks sensitivity fields expected by the design.
+- Memory still assumes the older source-ledger/egress model is a core security boundary.
+- Memory provenance does not cleanly distinguish useful recall metadata from hard access
+  control.
 
 Required changes:
 
 - Replace memory levels with `tenant | project | user | thread`.
 - Treat `agentId` as relevance metadata only.
-- Add `TaskAudience` and audience-gated recall.
+- Add task-aware recall only where it is needed for product behavior.
 - Add user-scoped corrections by default; add explicit promotion gates for project/tenant.
-- Add provenance sensitivity on memory writes.
-- Report recalled scopes to the source ledger.
+- Keep provenance on memory writes, but do not make the kernel depend on a full egress lattice.
+- Avoid treating memory recall as a blocker for the agent-driven `git`/`gh` loop.
 - Update migrations, stores, tests, and prompt assembly.
 
 Kernel note:
@@ -559,7 +909,7 @@ Kernel note:
 - Full memory refactor is explicitly deferred behind the kernel. However, avoid building new
   kernel behavior that depends on agent-scoped memory.
 
-## Track 10: Agent Configuration and Quickstart
+## Track 14: Agent Configuration and Quickstart
 
 Design target:
 
@@ -582,7 +932,8 @@ Current mismatch:
 - GitHub app bootstraps `quill` in code.
 - There is no YAML agent config loader.
 - There is no `forge` flagship agent in runtime config.
-- No per-agent `harness`, repo, tool grants, model policy, or verify config.
+- No per-agent `harness`, repo, brokered command grants, sandbox network mode, model policy, or
+  verify config.
 - No quickstart that walks a stranger through the kernel loop.
 
 Required changes:
@@ -592,16 +943,21 @@ Required changes:
   - `harness`;
   - one configured repo;
   - instructions;
-  - tools/grants;
+  - tool grants, including brokered `gh`/`git` command families;
+  - sandbox network mode, defaulting to internet-enabled with no company secrets;
   - model policy;
   - budget caps.
 - Seed/load `forge` from YAML.
 - Update Slack and GitHub bootstraps to read configured agents instead of hardcoded defaults.
 - Add `.marathon/config.yml` support in target repos for verification commands.
+- Add quickstart setup for GitHub credentials:
+  - read credentials can be direct or brokered;
+  - write credentials are brokered;
+  - destructive actions require approval or native review.
 - Rewrite README around the kernel loop, not milestone demos.
 - Add setup docs for Slack app + GitHub App + sandbox toolchain.
 
-## Track 11: Model Runtime and Harness Breadth
+## Track 15: Model Runtime and Harness Breadth
 
 Design target:
 
@@ -617,20 +973,26 @@ Current code:
 Current mismatch:
 
 - Only Pi and Fake runtimes exist.
-- `PiAgentRuntime` is single-turn and not a durable multi-turn session runner.
 - Model selection is effectively a passed-in model ref; there is no step role -> tier routing,
   constraint filtering, fallback chain, or per-agent harness override.
+- Runtime/tool wiring is still shaped around custom semantic tools and `submit_code_changes`.
+- The BUILD runtime must expose sandbox shell/file tools, brokered `gh`/`git`, and
+  `delivery.report_pr` in one coherent loop.
 - No Claude Code runtime exists.
 
 Required changes:
 
-- For kernel: fix Pi multi-turn/resume first.
+- For kernel: keep Pi as the first runtime and adapt its tool surface to the new delivery path.
+- Ensure the runtime can use:
+  - sandboxed file/shell tools with internet access;
+  - host-side brokered `gh`/`git` for credentialed GitHub operations;
+  - `delivery.report_pr` for final delivery.
 - Add config-level model ref and hard per-task budget.
 - Defer advanced model routing until after the loop works.
-- Add `ClaudeCodeAgentRuntime` only after or in parallel with K1-K4, without blocking first
-  dogfood success.
+- Add `ClaudeCodeAgentRuntime` only after or in parallel with the brokered delivery loop, without
+  blocking first dogfood success.
 
-## Track 12: Observability, Status, and Cost
+## Track 16: Observability, Status, and Cost
 
 Design target:
 
@@ -650,8 +1012,8 @@ Current mismatch:
 - The final Slack handler computes cost and includes it in `StructuredResult`, but rendering is
   surface-specific and not clearly the silent footer behavior.
 - Current-step reporting is weak because checkpoints are just findings/completedSteps.
-- BUILD-stage verification and workspace events cannot appear in timelines because they are not
-  recorded yet.
+- Brokered `git`/`gh` commands, sandbox package installs, verification commands, PR creation,
+  and `delivery.report_pr` are not yet first-class timeline events.
 
 Required changes:
 
@@ -661,11 +1023,13 @@ Required changes:
   - waiting for input;
   - waiting for approval/native review;
   - completed/failed/expired.
-- Record workspace, verification, handoff, PR opened/updated, and delivery events.
+- Record workspace, brokered command, verification, PR opened/updated, and delivery-report
+  events.
+- Show the current PR URL once `delivery.report_pr` has been called.
 - Add final cost footer consistently across Slack and GitHub delivery.
 - Build K5 through the loop once K1-K4 are ready.
 
-## Track 13: Demos and Regression Proofs
+## Track 17: Demos and Regression Proofs
 
 Design target:
 
@@ -682,39 +1046,43 @@ Current code:
 Current mismatch:
 
 - Existing demos prove old milestones, including destructive approval.
-- No `demo-k1`, `demo-k2`, `demo-k3`, `demo-k4`, `demo-k5`, or `demo-kernel`.
-- `demo-m6` demonstrates doc PR merge -> text execution, not code PR delivery.
-- No demo kills a real code-writing BUILD stage and resumes it.
+- `demo-k1` and `demo-k4` prove the older `github.submit_code_changes` path, not the corrected
+  brokered `git`/`gh` path.
+- There is no `demo-k2`, `demo-k3`, `demo-k5`, or `demo-kernel` for the corrected loop.
+- `demo-m6` demonstrates doc PR merge -> text execution, not agent-driven `git`/`gh` delivery.
+- No demo proves internet-enabled sandbox work without company credentials.
 
 Required changes:
 
 - Keep old demos as regression tests where still meaningful.
 - Add kernel demos:
-  - `make demo-k1`: fake merged plan -> sandbox edit/test -> code PR;
+  - `make demo-k1`: fake merged plan -> sandbox edit/test -> brokered `git`/`gh` code PR;
+  - `make demo-k1-network`: sandbox installs or fetches a public package/doc without secrets;
   - `make demo-k2`: delivery targets fan out to Slack and doc PR;
   - `make demo-k3`: comment/reply iteration continuity;
-  - `make demo-k4`: kill mid-BUILD -> resume -> one PR;
+  - `make demo-k4`: kill mid-BUILD -> resume -> one PR through brokered delivery;
   - `make demo-k5`: status + cost;
   - `make demo-kernel`: full loop umbrella.
 - Update `make demo` ordering to prioritize kernel demos.
-- Add live smoke `make smoke-k1` for a real small PR in a sandbox repo.
+- Add live smoke `make smoke-k1` for a real small PR in a sandbox repo using `git`/`gh`.
 
 ## Suggested Build Order
 
-1. Data model migration for `CodeChange`, richer task inputs/checkpoints, and delivery target
-   write support.
-2. Workspace manager and pinned sandbox toolchain image.
-3. `github.submit_code_changes` with fake/local GitHub tests.
-4. Merge webhook -> implementation task spawning with `plan_ref`, `base_sha`, and delivery
-   targets.
-5. Pi BUILD-stage runtime wiring: workspace lifecycle + sandboxed tools + verification loop.
-6. Delivery fan-out to Slack thread and doc PR.
-7. K1/K2 demos.
-8. K3 iteration paths for doc PR comments, Slack replies, and code PR revisions.
-9. K4 real resume with workspace diff snapshot/replay.
-10. Forge YAML config and quickstart.
-11. Status/cost built through the loop.
-12. Only then revisit Proposed Effects, memory refactor, identity linking, M11, and Claude Code.
+Tracks 1–5 already landed under the older code-handoff design. The next build order should
+course-correct instead of deepening that path:
+
+1. Add the credentialed `gh`/`git` broker.
+2. Give the sandbox internet access while keeping all company credentials out.
+3. Teach the BUILD prompt to use normal `git` and `gh` commands.
+4. Add `delivery.report_pr`.
+5. Rework K1/K2 demos around agent-driven `git`/`gh` delivery.
+6. Keep `github.submit_code_changes` as compatibility until the new path is proven.
+7. Then delete or demote `github.submit_code_changes` to optional strict mode.
+8. Continue with K3 iteration paths for doc PR comments, Slack replies, and code PR revisions.
+9. Forge YAML config and quickstart.
+10. Status/cost built through the loop.
+11. Only then revisit full Proposed Effects, memory refactor, identity linking, M11, network
+    egress broker, and Claude Code.
 
 ## Files Most Likely to Change First
 
@@ -730,9 +1098,11 @@ Required changes:
 - `packages/tools/src/types.ts`
 - `packages/tools/src/policy.ts`
 - `packages/tools/src/gateway.ts`
+- `packages/tools/src/cli.ts`
 - `packages/tools/src/workspace.ts`
 - `packages/tools/src/sandbox.ts`
 - `packages/connector-github/src/client.ts`
+- `packages/connector-github/src/code-tools.ts`
 - `packages/connector-github/src/document-tools.ts`
 - `packages/connector-github/src/tools.ts`
 - `packages/github-app/src/handlers.ts`
@@ -756,6 +1126,8 @@ These are important in the full design, but should not block first blood:
 - Claude Code harness, unless someone works it in parallel without slowing K1-K4.
 - M11 frontier orchestration.
 - MicroVM backend.
+- Strict internet egress broker / DLP for the sandbox. Keep it as a later hardening track;
+  the kernel sandbox needs broad internet access and no company secrets.
 
 The first proof is simpler and harder: Marathon must produce a real, reviewed, tested PR to
 Marathon through its own loop.

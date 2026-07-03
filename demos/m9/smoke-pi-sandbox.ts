@@ -7,7 +7,7 @@
  * Proves the Pattern-2 split end-to-end with a REAL Pi model run:
  *   - Pi runs on the host (it calls the model and holds credentials).
  *   - The agent's `bash`/`write` tools execute INSIDE a hardened DockerContainer
- *     (no network, no host creds) against a bind-mounted workspace — a file the agent
+ *     (no host creds; outbound internet allowed) against a bind-mounted workspace — a file the agent
  *     writes shows up on the host (write-through).
  *   - A GOVERNED `host_hostname` tool runs HOST-SIDE through the Tool Gateway; the host
  *     and sandbox hostnames differ, demonstrating the boundary.

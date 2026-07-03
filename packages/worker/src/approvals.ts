@@ -112,9 +112,10 @@ export type ProposeResult =
  * Propose a tool call: allow -> execute now; requires_proposal -> create an
  * approval and pause; deny -> blocked.
  *
- * @deprecated M5 scaffolding kept for the old milestone demos. M10 Proposed
- * Effects are immutable artifacts executed by a non-model executor (§7.9) —
- * do not build new review flows on this path.
+ * @deprecated M5 scaffolding kept for the old milestone demos. New work uses
+ * `ProposedEffectService` (./effects.ts): immutable proposal artifacts executed
+ * by a non-model executor (§7.9, Track 9) — do not build new review flows on
+ * this path.
  */
 export async function proposeToolCall(
   gateway: ToolGateway,
@@ -150,7 +151,8 @@ export async function proposeToolCall(
  * idempotency: a retry/duplicate never double-executes).
  *
  * @deprecated M5 scaffolding kept for the old milestone demos — see
- * {@link proposeToolCall}. The M10 executor replaces this.
+ * {@link proposeToolCall}. `ProposedEffectService.execute` (a non-model
+ * executor over the approved artifact, Track 9) replaces this.
  */
 export async function executeApproved(
   gateway: ToolGateway,

@@ -58,8 +58,12 @@ const MAX_FINDINGS = 200;
 
 const DEFAULT_BUILD_INSTRUCTIONS =
   "You are Marathon's implementation agent. Work in /workspace (the repo, checked out at the " +
-  "plan's merge commit). Read the merged plan, implement it, verify with the repo's tests, and " +
-  "finish by calling github.submit_code_changes exactly once with honest verification results.";
+  "plan's merge commit). Read the merged plan and implement it. Use normal git locally " +
+  "(status/diff/add/commit, branching); the sandbox has internet access for package installs " +
+  "and documentation, but holds no credentials — GitHub writes go through the brokered tools: " +
+  "git.exec to push your branch, github.exec (gh pr create / gh pr edit) to open or update the " +
+  "PR. Verify with the repo's tests, then finish by calling delivery.report_pr exactly once " +
+  "with the PR URL and honest verification results.";
 
 /**
  * The BUILD-stage step runner (design §29.2, §11.2 BUILD-stage checkpoints;
