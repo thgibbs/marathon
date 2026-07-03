@@ -25,7 +25,11 @@ export interface GithubClient {
   createIssue(repo: string, title: string, body?: string): Promise<{ number: number; url: string }>;
   commentIssue(repo: string, issueNumber: number, body: string): Promise<{ id: number }>;
   closeIssue(repo: string, issueNumber: number): Promise<void>;
-  mergePullRequest(repo: string, prNumber: number): Promise<{ merged: boolean; sha?: string }>;
+  mergePullRequest(
+    repo: string,
+    prNumber: number,
+    opts?: { method?: "merge" | "squash" | "rebase" },
+  ): Promise<{ merged: boolean; sha?: string }>;
   // document writes (branch + file + PR)
   getRef(repo: string, ref: string): Promise<{ sha: string }>;
   createBranch(repo: string, branch: string, fromSha: string): Promise<void>;
@@ -57,6 +61,11 @@ export interface GithubClient {
   /** Move a branch ref; force approximates `--force-with-lease` (a task owns its own branch). */
   updateRef(repo: string, branch: string, sha: string, force: boolean): Promise<void>;
   findPullRequestByHead(repo: string, head: string): Promise<{ number: number; url: string; draft: boolean } | null>;
+  /** PR by number, or null if the repo has no such PR (delivery.report_pr validation). */
+  getPullRequest(
+    repo: string,
+    prNumber: number,
+  ): Promise<{ number: number; url: string; headRef: string; draft: boolean; state: string } | null>;
   updatePullRequest(repo: string, prNumber: number, patch: { title?: string; body?: string }): Promise<void>;
   /** Toggle a PR's draft state (§29.3: draft must track verification). */
   setPullRequestDraft(repo: string, prNumber: number, draft: boolean): Promise<void>;
@@ -153,8 +162,15 @@ export class HttpGithubClient implements GithubClient {
     await this.api(`/repos/${repo}/issues/${issueNumber}`, { method: "PATCH", body: { state: "closed" } });
   }
 
-  async mergePullRequest(repo: string, prNumber: number): Promise<{ merged: boolean; sha?: string }> {
-    const j = await this.api(`/repos/${repo}/pulls/${prNumber}/merge`, { method: "PUT" });
+  async mergePullRequest(
+    repo: string,
+    prNumber: number,
+    opts?: { method?: "merge" | "squash" | "rebase" },
+  ): Promise<{ merged: boolean; sha?: string }> {
+    const j = await this.api(`/repos/${repo}/pulls/${prNumber}/merge`, {
+      method: "PUT",
+      body: opts?.method ? { merge_method: opts.method } : undefined,
+    });
     return { merged: Boolean(j.merged), sha: j.sha };
   }
 
@@ -245,6 +261,25 @@ export class HttpGithubClient implements GithubClient {
     const j = await this.api(`/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${head}`)}`);
     const pr = Array.isArray(j) ? j[0] : undefined;
     return pr ? { number: pr.number, url: pr.html_url, draft: Boolean(pr.draft) } : null;
+  }
+
+  async getPullRequest(
+    repo: string,
+    prNumber: number,
+  ): Promise<{ number: number; url: string; headRef: string; draft: boolean; state: string } | null> {
+    try {
+      const j = await this.api(`/repos/${repo}/pulls/${prNumber}`);
+      return {
+        number: j.number,
+        url: j.html_url,
+        headRef: String(j.head?.ref ?? ""),
+        draft: Boolean(j.draft),
+        state: String(j.state ?? "open"),
+      };
+    } catch (e) {
+      if (/github 404/.test(String(e))) return null;
+      throw e;
+    }
   }
 
   async updatePullRequest(repo: string, prNumber: number, patch: { title?: string; body?: string }): Promise<void> {
@@ -370,8 +405,12 @@ export class FixturesGithubClient implements GithubClient {
     this.writes.push({ op: "closeIssue", args: { repo, issueNumber } });
   }
 
-  async mergePullRequest(repo: string, prNumber: number): Promise<{ merged: boolean; sha?: string }> {
-    this.writes.push({ op: "mergePullRequest", args: { repo, prNumber } });
+  async mergePullRequest(
+    repo: string,
+    prNumber: number,
+    opts?: { method?: "merge" | "squash" | "rebase" },
+  ): Promise<{ merged: boolean; sha?: string }> {
+    this.writes.push({ op: "mergePullRequest", args: { repo, prNumber, ...(opts?.method ? { method: opts.method } : {}) } });
     return { merged: true, sha: "deadbeef" };
   }
 
@@ -492,6 +531,18 @@ export class FixturesGithubClient implements GithubClient {
 
   async findPullRequestByHead(repo: string, head: string): Promise<{ number: number; url: string; draft: boolean } | null> {
     return this.openPrs.get(`${repo}:${head}`) ?? null;
+  }
+
+  async getPullRequest(
+    repo: string,
+    prNumber: number,
+  ): Promise<{ number: number; url: string; headRef: string; draft: boolean; state: string } | null> {
+    for (const [key, pr] of this.openPrs) {
+      if (key.startsWith(`${repo}:`) && pr.number === prNumber) {
+        return { number: pr.number, url: pr.url, headRef: key.slice(repo.length + 1), draft: pr.draft, state: "open" };
+      }
+    }
+    return null;
   }
 
   async updatePullRequest(repo: string, prNumber: number, patch: { title?: string; body?: string }): Promise<void> {

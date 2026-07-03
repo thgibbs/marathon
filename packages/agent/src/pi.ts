@@ -72,7 +72,7 @@ export interface PiAgentOptions {
   /**
    * Route Pi's `bash`/`read`/`write`/`edit` tools into a hardened sandbox container
    * (§12.6, Pattern 2). When set, those tools execute inside a fresh {@link DockerContainer}
-   * (no network, no host credentials) against a bind-mounted workspace, while governed
+   * (no host credentials; outbound internet allowed) against a bind-mounted workspace, while governed
    * tools stay host-side. `createContainer` returns a *not-yet-started* container bound to
    * this task's workspace; the runtime owns `start()`/`stop()` for the call. Containers
    * are never recovered across calls (§11.2) — every call gets a fresh one.

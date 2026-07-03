@@ -8,10 +8,11 @@ describe("dockerRunArgs (isolation flags)", () => {
     return i >= 0 && seq.every((s, k) => argv[i + k] === s);
   };
 
-  it("is ephemeral, network-denied, read-only, capability-stripped, non-root, limited", () => {
+  it("is ephemeral, internet-enabled, read-only, capability-stripped, non-root, limited", () => {
     expect(argv[0]).toBe("run");
     expect(argv).toContain("--rm");
-    expect(has("--network", "none")).toBe(true);
+    // Track 8: outbound internet by default; the boundary is credential-freedom.
+    expect(has("--network", "bridge")).toBe(true);
     expect(argv).toContain("--read-only");
     expect(has("--cap-drop", "ALL")).toBe(true);
     expect(has("--security-opt", "no-new-privileges")).toBe(true);
@@ -38,6 +39,12 @@ describe("dockerRunArgs (isolation flags)", () => {
     expect(ws).toContain("/workspace");
     expect(dockerRunArgs("img", "ls", [])).not.toContain("-v");
   });
+
+  it("supports a strict egress-denied sandbox via network: none", () => {
+    const strict = dockerRunArgs("img", "ls", [], { network: "none" });
+    const i = strict.indexOf("--network");
+    expect(strict[i + 1]).toBe("none");
+  });
 });
 
 describe("dockerStartArgs (persistent container)", () => {
@@ -48,7 +55,7 @@ describe("dockerStartArgs (persistent container)", () => {
   };
   it("runs detached, hardened, with the workspace mounted, kept alive", () => {
     expect(has("run", "-d", "--rm")).toBe(true);
-    expect(has("--network", "none")).toBe(true);
+    expect(has("--network", "bridge")).toBe(true);
     expect(argv).toContain("--read-only");
     expect(has("--cap-drop", "ALL")).toBe(true);
     expect(has("-v", "/host/ws:/workspace:rw")).toBe(true);

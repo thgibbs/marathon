@@ -7,3 +7,5 @@ export * from "./workspace";
 export * from "./broker";
 export * from "./broker-transport";
 export * from "./cli";
+export * from "./command-broker";
+export * from "./effects";

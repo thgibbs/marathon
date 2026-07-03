@@ -15,9 +15,11 @@ import type { DockerContainer } from "@marathon/tools";
  *
  * Pi runs on the host (it calls the model + holds credentials); its file/shell tools
  * are re-implemented against a hardened {@link DockerContainer} so the *agent's* code
- * (`bash`) and file edits execute inside the sandbox — no network, no host secrets —
- * against a bind-mounted workspace at {@link GUEST_WORKSPACE}. Governed (credentialed)
- * tools are NOT routed here; they stay host-side behind the Tool Gateway.
+ * (`bash`) and file edits execute inside the sandbox — credential-free, with normal
+ * outbound internet for package installs and doc lookups (Track 8: the boundary is
+ * "no company secrets in the sandbox", not "no network") — against a bind-mounted
+ * workspace at {@link GUEST_WORKSPACE}. Governed (credentialed) tools are NOT routed
+ * here; they stay host-side behind the Tool Gateway.
  *
  * The container is the **execution** boundary; the workspace is the **data** boundary.
  * Every op resolves against the guest workspace path, so the container's filesystem

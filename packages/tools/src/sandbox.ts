@@ -44,7 +44,12 @@ export interface DockerSandboxOptions {
   memory?: string; // e.g. "256m"
   cpus?: string; // e.g. "1"
   pidsLimit?: number; // anti fork-bomb
-  /** "none" (default) denies all egress; a network name enables an allowlisted one. */
+  /**
+   * Docker network. Default "bridge": normal outbound internet — the kernel
+   * sandbox needs package installs, docs, and framework CLIs (Track 8; the
+   * boundary is "no company secrets in the sandbox", not "no network").
+   * Set "none" for a strict, egress-denied sandbox.
+   */
   network?: string;
   /** Host dir mounted read-write at /workspace; otherwise only a tmpfs scratch. */
   workspaceDir?: string;
@@ -53,15 +58,18 @@ export interface DockerSandboxOptions {
 }
 
 /**
- * The shared isolation flags (design §12.6): **no network**, read-only rootfs + tmpfs
- * scratch, all capabilities dropped, `no-new-privileges`, non-root user, CPU/memory/pids
- * limits — and **no env/secrets** (the sandbox is credential-free). Used by both the
- * one-shot `docker run` and the persistent container.
+ * The shared isolation flags (design §12.6, corrected by Track 8): read-only
+ * rootfs + tmpfs scratch, all capabilities dropped, `no-new-privileges`,
+ * non-root user, CPU/memory/pids limits — and **no env/secrets** (the sandbox
+ * is credential-free; that, not the network, is the security boundary).
+ * Outbound internet is ON by default so normal dependency/doc work succeeds;
+ * pass `network: "none"` for a strict sandbox. Used by both the one-shot
+ * `docker run` and the persistent container.
  */
 export function hardeningFlags(opts: DockerSandboxOptions = {}): string[] {
   return [
     "--network",
-    opts.network ?? "none",
+    opts.network ?? "bridge",
     "--read-only",
     "--tmpfs",
     "/tmp:rw,size=64m,exec",
@@ -247,12 +255,13 @@ export class DockerContainer {
 
 /**
  * Pick the sandbox backend from config (design §12.6: deployment chooses). Default
- * `none` (fail closed — no shell). `MARATHON_SANDBOX` = `none` | `local` | `docker`.
+ * `none` (fail closed — no shell). `MARATHON_SANDBOX` = `none` | `local` | `docker`;
+ * `MARATHON_SANDBOX_NETWORK` overrides the Docker network (e.g. `none` for strict).
  */
 export function sandboxFromEnv(env: NodeJS.ProcessEnv = process.env): ToolSandbox {
   switch ((env.MARATHON_SANDBOX ?? "none").toLowerCase()) {
     case "docker":
-      return new DockerSandbox({ image: env.MARATHON_SANDBOX_IMAGE });
+      return new DockerSandbox({ image: env.MARATHON_SANDBOX_IMAGE, network: env.MARATHON_SANDBOX_NETWORK });
     case "local":
       return new LocalSubprocessSandbox();
     default:

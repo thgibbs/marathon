@@ -32,11 +32,18 @@ export interface GithubCodeToolsOptions {
 const UNVERIFIED_LABEL = "marathon:unverified";
 
 /**
- * The single BUILD handoff tool (design §29.4): `github.submit_code_changes`.
+ * The original single BUILD handoff tool (design §29.4): `github.submit_code_changes`.
  * The model passes metadata only — no diff, no file list, no patches; the
  * gateway reads the truth from the workspace. **Native review** (§7.8): the
  * call runs autonomously and the PR it opens is the review surface — merge is
  * the human approval (§29.9).
+ *
+ * **Demoted (Track 7):** the primary delivery path is now agent-driven —
+ * normal `git`/`gh` through the credentialed broker (`git.exec`/`github.exec`)
+ * plus `delivery.report_pr` — with content policy owned by GitHub (branch
+ * protection, rulesets, CODEOWNERS, secret scanning, CI), not re-implemented
+ * here. This tool survives as an optional strict mode until the brokered path
+ * has equal demo coverage, then may be deleted.
  */
 export function makeGithubCodeTools(opts: GithubCodeToolsOptions): Tool[] {
   const caps: DiffCaps = { ...DEFAULT_DIFF_CAPS, ...opts.caps };

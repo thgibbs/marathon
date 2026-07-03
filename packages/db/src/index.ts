@@ -502,6 +502,70 @@ export class Database implements AuditWriter, IdempotencyStore {
     return rows[0] ? rowToProposedEffect(rows[0]) : null;
   }
 
+  /**
+   * proposed → approved | rejected | expired (design §7.9, Track 9). The state
+   * guard is in the WHERE clause, so a lost race returns null instead of
+   * clobbering a resolution.
+   */
+  async resolveProposedEffect(
+    id: Id,
+    to: "approved" | "rejected" | "expired",
+    reviewerId?: Id | null,
+  ): Promise<ProposedEffect | null> {
+    const { rows } = await this.pool.query(
+      `update proposed_effect
+         set execution_state = $2, resolved_at = now(), reviewer_id = coalesce($3, reviewer_id)
+       where id = $1 and execution_state = 'proposed' returning *`,
+      [id, to, reviewerId ?? null],
+    );
+    return rows[0] ? rowToProposedEffect(rows[0]) : null;
+  }
+
+  /**
+   * Atomic approved → executing claim: the at-most-once bound for the
+   * non-model executor. Null when the effect was not claimable.
+   */
+  async startProposedEffectExecution(id: Id): Promise<ProposedEffect | null> {
+    const { rows } = await this.pool.query(
+      `update proposed_effect set execution_state = 'executing'
+       where id = $1 and execution_state = 'approved' returning *`,
+      [id],
+    );
+    return rows[0] ? rowToProposedEffect(rows[0]) : null;
+  }
+
+  async finishProposedEffectExecution(id: Id, state: "executed" | "failed"): Promise<ProposedEffect> {
+    const { rows } = await this.pool.query(
+      `update proposed_effect set execution_state = $2, executed_at = now()
+       where id = $1 and execution_state = 'executing' returning *`,
+      [id, state],
+    );
+    if (!rows[0]) throw new Error(`proposed_effect ${id} is not executing`);
+    return rowToProposedEffect(rows[0]);
+  }
+
+  async getPendingApprovalForEffect(effectId: Id): Promise<ApprovalRequest | null> {
+    const { rows } = await this.pool.query(
+      `select * from approval_request where proposed_effect_id = $1 and status = 'pending' limit 1`,
+      [effectId],
+    );
+    return rows[0] ? rowToApproval(rows[0]) : null;
+  }
+
+  /** Resolve the pending approval bound to an effect (approve/reject/expire together). */
+  async resolveApprovalRequestByEffect(
+    effectId: Id,
+    to: "approved" | "rejected" | "expired",
+    byUserId?: Id | null,
+  ): Promise<void> {
+    await this.pool.query(
+      `update approval_request
+         set status = $2, resolved_at = now(), resolved_by_user_id = $3
+       where proposed_effect_id = $1 and status = 'pending'`,
+      [effectId, to, byUserId ?? null],
+    );
+  }
+
   // --- IdempotencyStore ---
 
   async claim(key: string): Promise<boolean> {
@@ -705,6 +769,31 @@ export class Database implements AuditWriter, IdempotencyStore {
          set tree_hash = $2, pr_number = $3, pr_url = $4, state = $5, verification = $6, updated_at = now()
        where task_id = $1 returning *`,
       [taskId, patch.treeHash, patch.prNumber, patch.prUrl, patch.state, JSON.stringify(patch.verification)],
+    );
+    if (!rows[0]) throw new Error(`code_change not found for task: ${taskId}`);
+    return rowToCodeChange(rows[0]);
+  }
+
+  /**
+   * Record an agent-driven delivery (`delivery.report_pr`, Track 7): the agent
+   * pushed and opened the PR itself, so there is no gateway tree hash — the
+   * record binds the task to the PR (branch comes from GitHub, not the model).
+   */
+  async recordCodeChangeReport(
+    taskId: Id,
+    patch: {
+      prNumber: number;
+      prUrl: string;
+      branch: string;
+      state: CodeChangeState;
+      verification: VerificationResult[];
+    },
+  ): Promise<CodeChange> {
+    const { rows } = await this.pool.query(
+      `update code_change
+         set pr_number = $2, pr_url = $3, branch = $4, state = $5, verification = $6, updated_at = now()
+       where task_id = $1 returning *`,
+      [taskId, patch.prNumber, patch.prUrl, patch.branch, patch.state, JSON.stringify(patch.verification)],
     );
     if (!rows[0]) throw new Error(`code_change not found for task: ${taskId}`);
     return rowToCodeChange(rows[0]);
