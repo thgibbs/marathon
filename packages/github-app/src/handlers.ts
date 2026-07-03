@@ -1,16 +1,25 @@
 import type { AgentRuntime } from "@marathon/agent";
 import { getRepoAccess, type GithubClient, type GithubDelivery } from "@marathon/connector-github";
-import { emptyCheckpoint, type Id } from "@marathon/core";
+import {
+  emptyCheckpoint,
+  implementationTaskKey,
+  stableStringify,
+  type DeliveryTarget,
+  type Id,
+  type PlanRef,
+} from "@marathon/core";
 import { Database } from "@marathon/db";
 import type { MemoryStore } from "@marathon/memory";
-import type { AgentDescriptor, NormalizedInvocation } from "@marathon/surface";
+import { DeliveryFanout, type AgentDescriptor, type NormalizedInvocation } from "@marathon/surface";
 import { classifyGithubEvent } from "@marathon/surface-github";
 import { ToolGateway } from "@marathon/tools";
-import { buildAgentPrompt, InvocationRouter } from "@marathon/worker";
+import { buildAgentPrompt, InvocationRouter, Orchestrator } from "@marathon/worker";
 
 export interface GithubAppDeps {
   db: Database;
   router: InvocationRouter;
+  /** Spawns the merge-triggered implementation task (K2 task chain). */
+  orchestrator: Orchestrator;
   gateway: ToolGateway; // must include document.* tools
   delivery: GithubDelivery;
   runtime: AgentRuntime;
@@ -18,6 +27,11 @@ export interface GithubAppDeps {
   client: GithubClient;
   /** When set, recall is injected into prompts (design §7.18). */
   memory?: MemoryStore;
+  /**
+   * Cross-surface fan-out (K2). When absent, a GitHub-only fan-out is built
+   * from `delivery`, so Slack targets are skipped until a Slack adapter is wired.
+   */
+  fanout?: DeliveryFanout;
   tenantId: Id;
   agents: AgentDescriptor[];
   agentIdByName: Record<string, Id>;
@@ -28,7 +42,23 @@ export interface GithubAppDeps {
 
 const DRAFT_PERSONA = "You are a documentation agent. Draft a concise markdown design document that fulfills the request.";
 const REVISE_PERSONA = "You are a documentation agent. Revise the document in <context> per the request. Return ONLY the full revised markdown.";
-const EXECUTE_PERSONA = "You execute an approved plan and report what you did, concisely.";
+
+function fanoutOf(deps: GithubAppDeps): DeliveryFanout {
+  return deps.fanout ?? new DeliveryFanout({ github: deps.delivery }, deps.db);
+}
+
+/** Append targets, deduping structurally (webhook retries must converge). */
+function addTargets(existing: DeliveryTarget[] | null, ...added: DeliveryTarget[]): DeliveryTarget[] {
+  const out: DeliveryTarget[] = [];
+  const seen = new Set<string>();
+  for (const t of [...(existing ?? []), ...added]) {
+    const key = stableStringify(t);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
+  }
+  return out;
+}
 
 function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "doc";
@@ -102,28 +132,75 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
     title: path,
   });
 
+  // K2: the doc PR becomes a delivery target alongside the originating place,
+  // so the implementation task spawned on merge inherits both.
+  await deps.db.updateTaskDeliveryTargets(
+    task.id,
+    addTargets(task.deliveryTargets, { surfaceType: "github", ref: { repo, number: prNumber, kind: "pr" } }),
+  );
+
   await deps.delivery.deliverResult({ repo, number }, { summary: `Drafted design doc: PR #${prNumber} — comment to revise, merge to execute.` });
   await deps.db.transitionTask(task.id, "running");
   await deps.db.transitionTask(task.id, "waiting_for_approval");
 }
 
-/** A merged PR: find the produced doc and execute the approved plan. */
-export async function handleGithubMerge(deps: GithubAppDeps, repo: string, prNumber: number): Promise<boolean> {
+/**
+ * A merged design-doc PR is the approval (§0.1 stage 4): complete the doc task
+ * and spawn a *new* implementation task (§29.1), chained to it —
+ * `plan_ref`/`base_sha` pinned to the merge commit, delivery targets inherited,
+ * idempotent per merged plan version.
+ */
+export async function handleGithubMerge(
+  deps: GithubAppDeps,
+  repo: string,
+  prNumber: number,
+  mergeCommitSha?: string,
+): Promise<boolean> {
   const artifact = await deps.db.findDocumentArtifactByPr(deps.tenantId, repo, prNumber);
   if (!artifact?.owningTaskId) return false;
+  const loc = artifact.location as { path?: string };
+  const docTask = await deps.db.getTask(artifact.owningTaskId);
+  if (!docTask || !loc.path || !mergeCommitSha) return false;
 
-  await deps.db.transitionTask(artifact.owningTaskId, "running");
-  await deps.delivery.postProgress({ repo, number: prNumber }, "Merged — executing the approved plan…");
-  const task = await deps.db.getTask(artifact.owningTaskId);
-  const prompt = task
-    ? await buildAgentPrompt({ db: deps.db, memory: deps.memory }, task, { basePersona: EXECUTE_PERSONA })
-    : { instructions: EXECUTE_PERSONA, input: "execute the approved plan" };
-  const turn = await deps.runtime.nextTurn({
-    request: { taskId: artifact.owningTaskId, instructions: prompt.instructions, input: prompt.input, modelRef: deps.modelRef ?? "openai:gpt-4o-mini" },
-    checkpoint: emptyCheckpoint(),
+  const planRef: PlanRef = { repo, docPath: loc.path, mergeCommitSha };
+  const docPrTarget: DeliveryTarget = { surfaceType: "github", ref: { repo, number: prNumber, kind: "pr" } };
+  const deliveryTargets = addTargets(docTask.deliveryTargets, docPrTarget);
+
+  const { task: implTask, deduped } = await deps.orchestrator.submit({
+    tenantId: deps.tenantId,
+    agentId: docTask.agentId ?? undefined,
+    agentVersionId: docTask.agentVersionId ?? undefined,
+    invokingUserId: docTask.invokingUserId ?? undefined,
+    sourceTaskId: docTask.id,
+    sourceType: "github",
+    // plan_ref + base_sha ride in the task input (§29.1): the BUILD stage pins
+    // its workspace to the plan's merge commit and validates the handoff against it.
+    sourceRef: {
+      kind: "implementation",
+      repo,
+      docPrNumber: prNumber,
+      planRef: { repo, docPath: planRef.docPath, mergeCommitSha },
+      baseSha: mergeCommitSha,
+    },
+    deliveryTargets,
+    inputText: `Implement the approved plan in ${loc.path} (merged as ${mergeCommitSha}).`,
+    idempotencyKey: implementationTaskKey(repo, loc.path, mergeCommitSha),
   });
-  await deps.delivery.deliverResult({ repo, number: prNumber }, { summary: turn.text.split("\n")[0] || "Done." });
-  await deps.db.transitionTask(artifact.owningTaskId, "completed");
+
+  // The doc task's job ends at the merge; the chain continues in implTask.
+  if (docTask.status === "waiting_for_approval") {
+    await deps.db.transitionTask(docTask.id, "running");
+    await deps.db.transitionTask(docTask.id, "completed");
+  }
+
+  if (!deduped) {
+    await fanoutOf(deps).postProgress(
+      implTask.id,
+      deliveryTargets,
+      `Plan merged (\`${planRef.docPath}\` @ \`${mergeCommitSha.slice(0, 7)}\`) — implementation task queued.`,
+      "implementation_queued",
+    );
+  }
   return true;
 }
 
@@ -169,6 +246,6 @@ export async function dispatchGithubEvent(
 ): Promise<void> {
   const action = classifyGithubEvent(eventType, payload, { knownAgents: deps.agents.map((a) => a.name) });
   if (action.kind === "mention") await handleGithubMention(deps, action.invocation);
-  else if (action.kind === "merge") await handleGithubMerge(deps, action.repo, action.number);
+  else if (action.kind === "merge") await handleGithubMerge(deps, action.repo, action.number, action.mergeCommitSha);
   else if (action.kind === "push") await handleGithubPush(deps, action.repo, action.after, action.paths);
 }

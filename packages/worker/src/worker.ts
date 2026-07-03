@@ -1,6 +1,7 @@
 import {
   isTerminal,
   parseCheckpoint,
+  type DeliveryTarget,
   type Id,
   type StepRunner,
   type SurfaceType,
@@ -161,8 +162,12 @@ export class Orchestrator {
     agentId?: Id;
     agentVersionId?: Id;
     invokingUserId?: Id;
+    /** Chains this task to the one that spawned it (K2 task chain). */
+    sourceTaskId?: Id;
     sourceType: SurfaceType;
     sourceRef?: Record<string, unknown>;
+    /** Where progress/results land (design §10.8); defaults to [the source]. */
+    deliveryTargets?: DeliveryTarget[];
     inputText?: string;
     idempotencyKey?: string;
   }): Promise<{ task: Task; deduped: boolean }> {
@@ -180,8 +185,10 @@ export class Orchestrator {
       agentId: input.agentId,
       agentVersionId: input.agentVersionId,
       invokingUserId: input.invokingUserId,
+      sourceTaskId: input.sourceTaskId,
       sourceType: input.sourceType,
       sourceRef: input.sourceRef,
+      deliveryTargets: input.deliveryTargets,
       inputText: input.inputText,
     });
     const { deduped } = await this.queue.enqueue({

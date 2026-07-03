@@ -11,20 +11,13 @@ queued
   v
 running
   |
-  +--> waiting_for_input
-  |       |
-  |       v
-  |     running
+  +--> waiting_for_input ----+--> running    (input arrives — §11.6)
+  |                          +--> expired    (wait lapses — terminal)
   |
-  +--> waiting_for_approval
-  |       |
-  |       v
-  |     running
+  +--> waiting_for_approval -+--> running    (proposal resolved — §7.9, §11.6)
+  |                          +--> expired    (approval expiry — terminal)
   |
-  +--> retrying
-  |       |
-  |       v
-  |     running
+  +--> retrying --> running
   |
   +--> completed
   |
@@ -32,6 +25,11 @@ running
   |
   +--> cancelled
 ```
+
+**`expired` is the clear terminal state** for a lapsed wait or a task that outlives its
+overall deadline: it carries an explanation and is inspectable like any failure (§11.5,
+§11.6). (`blocked` is retired from the state list — `retrying` and the waiting states cover
+its cases.)
 
 ---
 
@@ -55,6 +53,27 @@ Checkpoint examples:
   "pending_tool_call": null
 }
 ```
+
+### BUILD-stage checkpoints (code work — K4, §29)
+
+The generic example above is not enough for the kernel's BUILD stage, where a crash lands
+mid-code-writing. The contract:
+
+* **Checkpoint unit = one harness turn.** After each completed turn, persist: the session
+  JSONL, the **workspace diff vs `base_sha`**, and the turn index. Turns are atomic.
+* **Crash mid-turn → replay the turn, never splice it.** Partial tool results from an
+  interrupted turn are untrustworthy; resume discards the incomplete turn and replays from
+  the last completed checkpoint. Tool calls inside the replayed turn re-execute — safe
+  because governed effects are idempotent (§11.3, §29.4) and the workspace is restored to
+  turn-start state.
+* **Containers are never recovered.** Resume always re-provisions a fresh sandbox and
+  re-materializes the workspace (clone at `base_sha` + apply the checkpointed diff). A shell
+  command in flight at crash time is simply gone; it reruns with its turn.
+* **Test runs rerun, never resume.** A verification run interrupted mid-flight counts for
+  nothing; only completed runs record results (§29.3).
+* **The handoff is convergent.** A crash between push and record heals on re-submit:
+  `github.submit_code_changes` is create-or-update, idempotent on `(task_id, tree_hash)`
+  (§29.4).
 
 ---
 
@@ -90,7 +109,7 @@ Default retry behavior:
 | Worker crash            | Resume from checkpoint |
 | Unknown transient error | Limited retry          |
 
-Transient failures retry **automatically** (with backoff) without asking the user. Destructive actions are never silently retried — if a destructive step's outcome is uncertain, the agent re-confirms with a human rather than retrying.
+Transient failures retry **automatically** (with backoff) without asking the user. High-risk effects are never silently retried — an approved proposal executes **at most once** (idempotency key, §7.9); if an effect's outcome is uncertain, the agent re-confirms with a human rather than retrying.
 
 ---
 
@@ -121,12 +140,18 @@ Requirements:
 * Persist the full wait state and resume cleanly when the human responds.
 * Set an expiration and re-notify before expiry.
 * Hold no worker or open connection for the duration of the wait.
-* On expiry, move to a clear terminal state with explanation.
+* On expiry, move to **`expired`** — the clear terminal state (§11.1) — with an explanation.
 
-**Mechanism on Pi (block-persist-resume).** Pi has no native "suspend a turn for days,"
-but its sessions are resumable. So a destructive action is handled by: the `tool_call` hook
-**blocks** the call (no execution, no process held) → Marathon persists the Pi **session
-JSONL**, sets `waiting_for_approval`, posts the in-place prompt, and tears down the worker →
-on approval, a worker **re-opens the session and re-enters** so the approved action runs. The
-re-entry mechanism (re-prompt-to-continue vs. fork-before-the-blocked-call) is a Pi
-integration detail to settle in the early spike; see `pi-details.md` §6.3.
+**Mechanism: async proposals + between-turn waits (no mid-turn suspend).** Neither harness
+has a native "suspend a turn for days" — and neither needs one. `propose_effect` is an ordinary tool
+call that **returns immediately** with an `effect_id` and a monitor handle (§7.9); the
+proposal is worked on a durable queue. The agent finishes its turn normally — it can poll
+`get_effect_status`, do other work, or report the pending proposal. If the task cannot
+proceed without the outcome, the **turn ends** and the *task* enters `waiting_for_approval`:
+a pure orchestration-layer wait (session JSONL persisted; no worker or process held — the M5
+engine). On resolution, the non-model **executor performs the exact approved artifact**
+(§7.9 — the model never re-executes it), and a worker **resumes the session between turns**,
+appending the outcome as the next turn's input — the resume path both harnesses support
+natively (re-opening a Pi session; Claude Code `--resume`). This
+retires the mid-call suspend/fork question entirely. `waiting_for_input` (clarifying
+questions) uses the same shape: ask, end the turn, resume with the answer.

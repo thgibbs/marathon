@@ -27,12 +27,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Meta-harness.md",
+                "file": "open-questions.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Meta-harness"
+              "title": "open-questions"
             }
           }
         ],
@@ -200,9 +200,18 @@
   },
   "active": "4b11b4c835d6ed32",
   "lastOpenFiles": [
+    "29-code-handoff.md",
+    "index.md.tmp.11304.bf94ba5fe079",
+    "13-model-and-cost-design.md.tmp.11304.2c7226636ad5",
+    "00-core-kernel.md",
+    "fable.md",
+    "09-reference-architecture.md.tmp.11304.45ca316e244d",
+    "open-questions.md",
+    "26-marathon-positioning.md.tmp.11304.8da4a31ade4d",
+    "19-mvp-scope.md.tmp.11304.434a454f316b",
+    "Meta-harness.md",
     "28-meta-harness-organ-map.md",
     "12-security-design.md",
-    "Meta-harness.md",
     "index.md"
   ]
 }

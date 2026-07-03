@@ -34,7 +34,7 @@ providers:
 
 The **current default model is `openai:gpt-4o-mini`** (`DEFAULT_MODEL_POLICY`); Claude/OpenRouter are configurable per tenant/agent.
 
-Much of this interface is provided by the Pi harness and the provider SDKs; Marathon's own model layer stays minimal (see §9.2). Pi exposes per-model **cost metadata** (price per 1M tokens) and session cost/token stats that Marathon reads for budgets; per-tenant keys are injected at runtime (`setRuntimeApiKey`), and OpenRouter is registered as an OpenAI-compatible provider (see `pi-details.md` §4).
+Much of this interface is provided by the harness and the provider SDKs; Marathon's own model layer stays minimal (see §9.2). Pi exposes per-model **cost metadata** (price per 1M tokens) and session cost/token stats that Marathon reads for budgets; per-tenant keys are injected at runtime (`setRuntimeApiKey`), and OpenRouter is registered as an OpenAI-compatible provider (see `pi-details.md` §4). Under the **Claude Code harness**, per-tenant keys are injected by the **host-side model proxy** (`ANTHROPIC_BASE_URL`) instead — the key never enters the sandbox (§12.6) — and cost/usage is read from the run's `stream-json` result. Note the coupling: **harness choice constrains provider choice** — Claude Code runs Anthropic models, while Pi is provider-agnostic (Claude, ChatGPT, OpenRouter).
 
 ---
 

@@ -12,10 +12,10 @@ Marathon is for work agents operating on a team's existing surfaces — Slack an
 
 ### 2. Autonomous unrestricted agents
 
-Agents should not freely perform arbitrary *destructive* actions across internal systems — but they should be autonomous for the common, non-destructive case. The platform should favor:
+Agents should not freely perform arbitrary *high-risk* actions across internal systems — but they should be autonomous for the common, low-risk case. The platform should favor:
 
-* Scoped permissions
-* Human approval for **destructive** actions only (most actions run autonomously)
+* Scoped, least-privilege credentials (reads as well as writes — §12.2)
+* Risk-routed effects (§7.8): autonomous when reversible and audience-bounded; native review (a PR a human merges) where the surface supports it; **Proposed Effects** (§7.9) for high-risk effects — irreversible, cross-trust-boundary, public/external, or costly
 * Audit logs
 * Explicit tool policies
 * Safe defaults that still keep agents useful (safety should not make them useless)
@@ -39,3 +39,5 @@ Note the distinction: *producing and collaborating in* documents is in scope (th
 ### 5. Full workflow automation suite
 
 Marathon may eventually support scheduled jobs, recurring workflows, and event-driven agents, but the initial product should focus on tasks triggered from a surface — a Slack mention or a document (PR/file) comment.
+
+(One deliberate exception already exists: **watched documents** — a push touching a tracked file spawns a review task (roadmap M7). That is a narrow, document-surface-scoped trigger, not a general event system.)

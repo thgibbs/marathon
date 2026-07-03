@@ -18,7 +18,7 @@ Differentiators:
 2. Documents as a first-class surface: agents produce documents and can be tagged into them.
 3. Durable task execution.
 4. Permissioned internal tools.
-5. Human approval for destructive actions only (autonomous otherwise).
+5. Risk-routed autonomy: autonomous for reversible, audience-bounded work; native review (a PR a human merges) where the surface supports it; propose → review → execute for high-risk effects.
 6. Model routing and cost controls.
 7. Inspectable traces and audit logs.
 8. Feedback-to-eval loop.

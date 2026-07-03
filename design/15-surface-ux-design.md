@@ -12,6 +12,7 @@ Agents should be:
 * Honest about uncertainty
 * Explicit about actions taken
 * Respectful of Slack noise
+* **Attributed** — every message names the acting agent (all agents share the single `@marathon` bot identity, §7.1), so users can tell *which* agent — and therefore which tool grants — acted
 
 Default response structure for investigation agents:
 
@@ -49,6 +50,7 @@ Default progress policy:
 * Post update on failure.
 * Post final answer.
 * Avoid updates more often than every 30–60 seconds unless interactive.
+* On Slack, progress posts are separate thread messages under this cadence; on the document surface, progress **edits the single acknowledgement reply** instead (§15.6).
 
 ---
 
@@ -142,5 +144,5 @@ When invoked on a document (GitHub markdown):
 * Acknowledge with a quick reply in the comment thread on the mention.
 * Post progress by editing that reply (not many new comments).
 * Deliver the structured result as a comment reply by default; when producing or changing a document, open a pull request and link it from the reply.
-* For edits, propose a pull request or review suggestion for approval rather than committing silently to a shared branch.
-* Respect repository permissions and never change visibility or settings without approval.
+* For edits, propose a pull request or review suggestion (native review — the merge is the approval, §7.8) rather than committing silently to a shared branch.
+* Respect repository permissions; visibility or settings changes are high-risk and route through a `propose_effect` (§7.9).

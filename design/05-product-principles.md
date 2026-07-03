@@ -40,35 +40,45 @@ The system should record:
 
 ## 5.3 Secure by construction
 
-Agents should be treated as untrusted actors. All tool calls run through the **Pi harness's tool layer**, which enforces Marathon's permissioning before any side effect — the model proposes a tool call, but the harness (not the model) decides whether it runs.
+Agents should be treated as untrusted actors. Every governed tool call executes in Marathon's **`ToolGateway`** — a host-side chokepoint outside the model. Pi runs the agent loop; the gateway does the mechanical plumbing: tenant credential selection + injection, a ledger of what the task has read, egress routing (§7.8), output redaction, audit, caps, and a kill switch.
 
 The model should not directly receive secrets.
 
 The model should not directly execute arbitrary privileged actions.
 
-Policy is enforced outside the model: Marathon defines the tool policy and credentials; Pi enforces them on every call; neither the model nor the agent can alter or bypass them.
+*What an agent may do* is enforced by construction, not by a policy engine: the **credential's scope** (least-privilege, tenant-owned), the **resource's own permissions** (branch protection, repo/DB roles), and the **egress policy** (§7.8) — with high-risk effects only proposable, never direct (§7.9). *Which tools an agent has at all* is fixed at construction time (tool registration), not decided at runtime. Neither the model nor the agent can alter or bypass any of it.
 
 ---
 
-## 5.4 Human approval for risky actions
+## 5.4 Human review for high-risk effects
 
-Read-only and non-destructive write actions can run automatically. **Only destructive, irreversible, or externally-irreversible actions require approval** — the gate is "destructive," not "write."
+There is no single "destructive" flag. Effects are classified on several axes — **reversibility, trust-boundary crossing, audience, and cost** (§7.8) — and routed by risk:
 
-Examples that **require** approval (destructive / irreversible / external):
+* **Autonomous** — reversible, no trust-boundary crossing, bounded audience: read, create a branch, open a PR, reply in the originating thread.
+* **Native review** — where the surface has a draft/review mechanism, prefer it: the agent opens a PR, a human merges; the merge *is* the approval.
+* **Proposed Effect** (§7.9) — high-risk effects (irreversible, cross-trust-boundary, public/external, or costly) are never direct tools: the model *proposes* the exact artifact, an authorized human reviews it, and a non-model executor performs it.
 
-* Merge a PR
-* Delete an issue
-* Modify a database row
-* Send an external email
-* Trigger a deployment
-* Rotate a secret
+Examples that route to **native review or a proposal**:
 
-Examples that **do not** require approval (non-destructive, easily reversible):
+* Merge a PR (native: branch protection + a human merge)
+* Delete an issue (irreversible)
+* Modify a database row (irreversible)
+* Send an external email (external audience)
+* Trigger a deployment (irreversible, costly)
+* Rotate a secret (irreversible)
+* Tenant-external egress — external/shared channels, external email, public artifacts derived from restricted sources (§7.8)
 
-* Create a GitHub PR
-* Comment on an issue or PR
-* Post to a public channel
+Examples that run **autonomously** (reversible, bounded audience):
+
+* Create a GitHub PR or branch
+* Comment on an issue or PR in the repo the task is working in
+* Post a status update or clarifying question in the originating thread
+* Post findings to an internal channel when the requesting user has access to the task's sources (the default *on-behalf-of* egress policy — §7.8)
 * Change incident status
+
+And one outcome is stronger than a proposal: disclosure beyond the requesting user's own access is **denied** under the default egress policy — an approver cannot extend access the requestor lacks (§7.8).
+
+> **Approval fatigue is a design force** (§7.8): maximize native handoff and autonomous-safe; keep in-app approval rare.
 
 ---
 

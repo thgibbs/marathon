@@ -50,7 +50,7 @@ They care about:
 
 This person builds agents and connectors.
 
-> Initial scope: agents and connectors are built by the Marathon team (internal). There is no external agent-developer experience yet; this persona is documented for direction, not built first.
+> Initial scope: agents are **defined in YAML config** by whoever operates the deployment (§6.2) — but there is no agent-developer *experience* yet: no SDK, no GUI, no hot-reload or test harness; changing an agent means editing config and redeploying. Connectors are built by the Marathon team. This persona is documented for direction, not built first.
 
 They care about:
 

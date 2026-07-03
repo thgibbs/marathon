@@ -1,0 +1,15 @@
+{
+  "name": "@marathon/demo-k1",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx run.ts"
+  },
+  "dependencies": {
+    "@marathon/code-handoff": "workspace:*",
+    "@marathon/connector-github": "workspace:*",
+    "@marathon/core": "workspace:*",
+    "@marathon/tools": "workspace:*"
+  }
+}

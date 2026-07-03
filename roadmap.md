@@ -24,8 +24,8 @@ These are decided in `design.md`; the plan assumes them.
 | --- | --- |
 | Surfaces (MVP) | Slack **and** GitHub-backed markdown documents (both day-one) |
 | Invocation | Single `@marathon` bot; agent named after it; **default agent** if none |
-| Agent runtime | **Pi harness** (agent loop + tool calling + logging/retries/redaction), wrapped by a durable worker |
-| Tool permissioning | **Embedded in Pi**; Marathon owns policy, credentials, approval, audit |
+| Agent runtime | **Pi** (in-process) **or Claude Code (headless)** behind `AgentRuntime` — one per deployment, per-agent override; wrapped by a durable worker |
+| Tool permissioning | Gateway = **deterministic safety perimeter** (creds, redaction, audit, tenant isolation); enforcement via **credential scope + resource-native permissions**; high-risk via **Proposed Effects** (§7.9, `policy.md`) |
 | Models | Claude, ChatGPT, OpenRouter (no local). **Minimal** model gateway: routing + cost only |
 | Approval | **Destructive actions only**, requested in place on the surface; durable waits |
 | Retries | Automatic for transient failures; never silent for destructive actions |
@@ -71,16 +71,22 @@ this contract is now confirmed from the docs:
   we use **block-persist-resume** (block the call, persist the session JSONL, resume by
   re-opening it). Only the re-entry mechanism is open — see risk §6.1.
 
-### 1.3 `ToolPolicy` (what Pi enforces, supplied by Marathon)
+### 1.3 `ToolGrant` (construction-time tool wiring — not a runtime policy)
 ```ts
 interface ToolGrant {
-  tool: string; riskLevel: 'low'|'medium'|'high'|'critical';
-  destructive: boolean; requiresApproval: boolean;
-  constraints?: { repos?: string[]; readonly?: boolean; ... };
+  tool: string;
+  riskAxes: { reversible: boolean; crossesTrustBoundary: boolean;
+              audience: 'private'|'project'|'tenant'|'external'; costly: boolean };
+  defaultMode: 'autonomous'|'native_review'|'proposed_effect'|'disabled';   // §7.8
+  constraints?: { repos?: string[]; readonly?: boolean };  // read-scoping (least-privilege reads)
   credentialRef: string;          // resolved + injected at exec, never shown to model
   rateLimit?: RateLimit; redaction?: RedactionRule[];
 }
 ```
+A grant decides which tools get **registered** into the agent's session and how their effects
+route (§7.8); it is not a runtime permission check. Enforcement lives in credential scope,
+resource-native permissions, and the egress policy (`policy.md` §11); the `ToolGateway` is
+mechanical plumbing (credentials, read ledger, egress routing, redaction, audit).
 
 ### 1.4 Durable task records
 `Task`, `TaskStep`, `ModelInvocation`, `ToolInvocation`, `ApprovalRequest` per
@@ -97,10 +103,24 @@ approval, the document-driven workflow, basic feedback). M7–M9 round it out.
 > **Status (build progress).** ✅ **Done & CI-green:** M0–M6, **M5.5**, **M6.1** (governed
 > tools, now wired into the live Slack agent too), **M6.2**, **M7** (memory), **M8** (core
 > inspectability/cost/budgets) — each runtime-verified against real OpenAI / GitHub / Slack.
-> ⏳ **Remaining:** **M9** (hardening + sandbox — Docker backend + broker landed), **M10** (live
-> destructive-action approval: suspend/resume + in-line + Agent Hub), and **M11** (the
-> frontier-orchestrated **loop** — design §28). The **meta-harness organ map (design §28)** frames
+> ⏳ **Remaining:** **M9** (hardening + sandbox — Docker backend + broker + Pattern-2 tool routing
+> landed), **M10** (**Proposed Effects** — propose→review→execute + Agent Hub; see `policy.md`), and
+> **M11** (the frontier-orchestrated **loop** — design §28). The **meta-harness organ map (design §28)** frames
 > Marathon as a Layer-2 orchestrator: strong on governor + state + isolation; the loop is M11.
+>
+> **⚠ Kernel focus (2026-07-02 — supersedes the ordering above).** Marathon has no customers
+> yet; the priority is the **core kernel loop** (design **§0** / `design/00-core-kernel.md`):
+> Slack ask → design-doc PR → iterate via comments/questions → merge-as-approval → sandboxed
+> code implementation → code PR, delivered back to the thread and the doc. **Build the kernel
+> milestones K1–K7 (§2c below; gaps identified in design §0.3) before anything else** —
+> chiefly K1 (code-writing path end-to-end: clone → sandboxed edit/test → governed branch
+> push → PR), K2 (loop task chain + `delivery_targets`), and K4 (durable resume, §2b #4). **Deferred
+> behind the kernel:** M10, M11, §2b #9 (memory refactor), §2b #10 (identity linking), and the
+> remaining M9 non-essentials (microVM, uid mapping). The kernel needs zero in-app approvals
+> (all approvals are native PR merges), so nothing in M10 blocks it. Exit bar: **Marathon
+> codes Marathon** — the loop is the default way changes to this repo get made (design §0.6,
+> the ratchet: first merged Marathon-authored change → default path → stranger-ready);
+> `make demo-kernel` is the CI guard beneath it.
 
 **Definition of done (every milestone).** A milestone is not complete until both of
 these are green in CI:
@@ -161,7 +181,8 @@ Build:
 - **Task Orchestrator:** lifecycle, step scheduling, checkpoint persistence, resume
   after crash, dead-letter on terminal failure.
 - **Postgres-backed queue:** enqueue/lease/heartbeat/ack; worker leases; visibility
-  timeouts; kept workflow-engine-compatible (Temporal swappable later).
+  timeouts. **Temporal-shaped semantics, no swap hedge** — the engine is owned (design
+  §18.2, §22.3).
 - **Agent Worker** shell: pulls leased work, runs a step, checkpoints, releases.
 - **Idempotency** keys (`surface_type+external_event_id`, `task+tool+input_hash`);
   **automatic retry** with backoff for transient errors; durable-wait state plumbing.
@@ -172,8 +193,9 @@ Exit criteria — unit tests + automated demo:
   serialize/restore, idempotency-key dedupe, retry/backoff error classifier,
   dead-letter transition.
 - *Automated demo* (`make demo-m1`): enqueue a synthetic multi-step task; the harness
-  kills the worker mid-run; a fresh worker resumes from checkpoint and completes
-  **exactly once**; a duplicate enqueue is asserted to be a no-op.
+  kills the worker mid-run; a fresh worker resumes from checkpoint and completes, with side
+  effects applied **at most once** (at-least-once delivery + idempotent effects); a duplicate
+  enqueue is asserted to be a no-op.
 
 ---
 
@@ -209,7 +231,7 @@ Exit criteria — unit tests + automated demo:
 
 ---
 
-### M3 — Tool layer (embedded permissioning) + first tools
+### M3 — Tool layer (governed via the ToolGateway) + first tools
 **Goal:** the agent can use tools, with permissioning enforced inside Pi and policy/
 credentials/audit owned by Marathon.
 
@@ -614,66 +636,108 @@ Exit criteria — unit tests + automated demo:
 
 ---
 
-### M10 — Live destructive-action approval (suspend/resume) + Agent Hub
+### M10 — Proposed Effects (propose → review → execute) + Agent Hub
 
-**Goal:** when a live agent run hits a **destructive** action, it pauses durably, a human
-approves/rejects (in-thread or in a web hub), and the run resumes — exactly once. Folds in
-the headline gap (§2b #1) and the deferred inspectability UI (M8).
+**Goal:** high-risk external effects are never direct model tools. The model calls one typed
+`propose_effect` tool; a deterministic workflow routes the proposal; a **non-model executor**
+performs approved effects using scoped tenant creds, **bound to the exact approved artifact**.
+Folds in the durable-wait gap (§2b #1) and the deferred inspectability UI (M8). Full rationale +
+options in [`policy.md`](./policy.md); design in **§7.8/§7.9, §12.1–§12.2, §14.1**.
 
-**Approval philosophy (settled).** Approval is **destructive/irreversible only** (deploys,
-deletes, data changes, merge-to-protected, force-push). Additive/reversible actions —
-create a comment, open an issue, open a PR with a small edit, edit a document (undoable via
-PR) — are **not destructive and run autonomously, no approval**. This already matches the
-code: `enforce` gates on `tool.destructive`, not on a risk score.
+**Model (settled — supersedes the old "destructive-only approval" framing).** *The model gets
+Option B; the system gets a minimal Option C.* Reversible, bounded actions (read, create branch,
+open PR, reply in the originating thread) run **autonomously** through the gateway. High-risk
+effects — irreversible, cross-trust-boundary (**exfiltration** is the primary threat, not just
+destruction), public/external, or costly — go through Proposed Effects. Enforcement of *what an
+agent can do at all* lives in **credential scope + resource-native permissions** (branch
+protection, roles), not a Marathon policy engine; the gateway is a **deterministic safety
+perimeter**. **Prefer native handoff** (a PR the human merges) over in-app approval — approval
+fatigue is real, so keep in-app approvals rare.
+
+> **Code impact (pre-work).** This retires the single `tool.destructive` boolean that `enforce`
+> currently gates on. Refactor to the multi-axis risk model (§7.8) + a `propose_effect` path
+> before more connectors accrete against the old flag. Touches `ToolGateway`, the `Tool` type,
+> and the governed GitHub tools already landed (M6.1).
 
 Human prerequisites:
-- For the hub: a place to **host the web app** + an **auth/SSO** provider (or use surface
-  OAuth); decide who may approve (role/owner).
+- For the hub: a place to **host the web app** + an **auth/SSO** provider (or use surface OAuth);
+  decide who may approve (role/owner). Configure **least-privilege tenant creds** (prefer GitHub
+  Apps) + **branch protection** on target repos.
 
-Build:
-- **Suspend/resume seam (the core; §2b #1).** On a destructive governed tool call, the agent
-  loop **blocks → persists the Pi session + a pending `ApprovalRequest` → tears down**; on
-  resolution a worker **re-opens the session and resumes** so the approved action runs
-  **exactly once** (reuses the M5 engine + idempotency). Run the §6.1 spike first to pick the
-  re-entry mechanism (re-prompt-to-continue vs. fork-before-the-blocked-call).
-- **`ApprovalChannel` abstraction** over the existing `ApprovalService` — `present(request)`
-  (notify + render) and resolve; surface-agnostic.
-- **In-line channel (Slack first).** Handle `interactive` (block_actions) envelopes on the
-  existing Socket Mode listener; post a Block Kit Approve/Reject prompt for the *specific
-  destructive action*, mapping the Slack user → Marathon user and enforcing that the approver
-  is authorized (`requested_from_user` / role). Include a deep link to the hub for full context.
-- **Agent Hub (web UI).** A queue of outstanding approvals across agents/surfaces with full
-  context rendered from the M8 data API (`getTaskReport`/timeline, proposed action/diff, cost,
-  risk), plus approve / reject / **edit-then-approve**; real auth + RBAC + audit
-  (`resolved_by_user_id`, who-saw-what). Also hosts the **inspectability dashboard** (M8
-  carry-over) and can show cross-surface task status.
-- Expiry/escalation already exist (M5) — surface them in both channels.
+Build (**phased**):
 
-Depends on: M5 (approval engine + durable waits), M6.1 (governed tools in the live run),
-M8 (data API the hub renders), M2/§6.1 (Pi session suspend/resume).
+**Phase 1 — GitHub + Slack.**
+- **`propose_effect` tool + typed effect schemas** (per connector) + a `ProposedEffect` record
+  binding `effect_id · task · tenant · connector · effect_type · payload_hash · proposal_version ·
+  provenance · reviewer_id(+authority) · approval_expiry · idempotency_key · execution_state`. The
+  model never gets the high-risk tool directly.
+- **Declarative router** (static config + deterministic predicates: connector, effect type,
+  destination, audience, sensitivity, size, cost, reviewer role → autonomous / native_review /
+  in_app_approval / disabled). *Not* a programmable policy DSL (that would recreate Option A).
+- **Immutable proposals** — an edit creates a **new version**; approval binds to exactly one
+  version + `payload_hash`.
+- **Non-model executor.** Performs the approved effect with scoped tenant creds; **revalidates at
+  execution** (tenant, credential, resource, destination, **payload hash**, approver authority);
+  **idempotent / at-most-once** via `idempotency_key` (reuses M5 engine). The model cannot execute.
+- **Async proposal + between-turn wait (§2b #1 — superseded design, 2026-07-01).**
+  `propose_effect` **returns immediately** (`effect_id` + a `get_effect_status` monitor tool);
+  the proposal is worked on the durable queue. The agent polls / does other work / ends its
+  turn; if the task can't proceed, the *task* waits between turns (M5 engine; session JSONL
+  persisted, no process held) and resumes with the outcome appended as the next turn's input.
+  **No mid-turn Pi suspend — the §6.1 spike (re-prompt vs. fork) is obsolete.** At-most-once
+  execution via `idempotency_key`.
+- **GitHub default = PR-as-approval** (native handoff, ~zero in-app dialogs). **Slack replies route
+  by type** (deterministic audience predicate, not a content classifier): status / clarifying /
+  same-thread-summary → autonomous; a reply carrying private repo/doc context, a post outside the
+  thread, external/shared channels, or broad mentions → `propose_effect`.
+- **Reviewer authority (minimal).** Approval must come from the **invoking user or a configured
+  approver** (the full authority matrix is Phase 2).
+- **Capability-profile schema defined now, filled only for GitHub + Slack** (don't overbuild).
+- **In-line channel (Slack).** `block_actions` envelopes on the Socket Mode listener; render the
+  **exact artifact** + provenance; map Slack user → Marathon user + approver authz; deep link to hub.
+
+**Phase 2 — Agent Hub (web UI).**
+- A queue of outstanding proposals rendering the **exact artifact** (diff / message / mutation),
+  **provenance** ("based on repo X / issue Y / thread Z"), cost, and risk axes, with approve /
+  reject / **edit-then-approve** (editing changes the hash → re-approval). Real auth + RBAC +
+  audit (`resolved_by_user_id`, who-saw-what). Also hosts the **inspectability dashboard** (M8
+  carry-over) + cross-surface task status.
+- Expiry/escalation (M5) surfaced in both channels.
+
+Depends on: M5 (durable waits + idempotency), M6.1 (governed tools in the live run), M8 (data API
+the hub renders), M2/§6.1 (Pi session suspend/resume).
+**v1 success criterion (the one that matters):** a **prompt-injected model can *propose* a bad
+effect but cannot *directly execute* it.** If that holds, the architecture is doing its job.
+
 Exit criteria — unit tests + automated demo (+ live smoke):
-- *Unit tests:* `ApprovalChannel` dispatch, Slack `block_actions` parse + approver authz,
-  pending-approvals queue query, suspend→resume resolves the same `ApprovalRequest` once.
-- *Automated demo* (`make demo-m10`): a (fake) agent run proposes a destructive tool →
-  task suspends with a pending approval → approve via the channel → run resumes and the action
-  executes **exactly once**; a second run → reject → action never runs; assert non-destructive
-  actions in the same run never prompted.
-- *Live smoke:* `@marathon …` that triggers a destructive GitHub action in Slack → Approve
-  button (or hub) → the action runs; reject → it doesn't.
+- *Unit tests:* `propose_effect` schema validation; declarative router mapping (incl. the Slack
+  audience predicate); **payload-hash binding + revalidation** (a mutated payload voids approval);
+  **at-most-once execution** under a retry storm (idempotency_key); **reviewer authority**
+  (unauthorized principal can't approve); suspend→resume resolves the same `ProposedEffect` once.
+- *Automated demo* (`make demo-m10`): a (fake) run proposes a high-risk effect → task suspends →
+  approve → executor runs it **exactly once** (re-fire the executor → no second effect); a second
+  run → reject → never runs; a third → **edit the payload after approval** → execution rejected
+  (hash mismatch / new version required); assert autonomous/native actions in the same run never
+  prompted; assert an **injected model that tries to call an effect directly cannot** (only
+  `propose_effect` exists).
+- *Live smoke:* `@marathon …` that would merge/delete in Slack → proposal → Approve (or hub) →
+  executor acts; reject/edit → it doesn't; a normal code change → **PR (no in-app approval)**.
 
-> **Staging.** The suspend/resume seam + Slack in-line is the smaller first half; the **hub**
-> (web app + auth) is the larger second half and may split into its own milestone — but both
-> render/resolve the *same* `ApprovalRequest`, so the seam is built once.
+> **Staging.** Phase 1 (propose/route/execute + Slack in-line) is the core; the **hub** (web app
+> + auth) is Phase 2 and may split into its own milestone — both render/resolve the *same*
+> `ProposedEffect`, so the seam is built once.
 
 ---
 
 ### M11 — Orchestrated agent loop (frontier plan/verify + sub-agents)
 
-**Goal:** an invocation runs a **frontier-orchestrated loop**, not a single agent turn — the
+**Goal:** an invocation with a **verifiable goal** runs a **frontier-orchestrated loop** — the
 meta-harness "loop" organ (design **§28.2**). A frontier "lead" model plans the work and
 validates each iteration; cheaper sub-agents execute it under isolation + governance; the loop
 runs to a verified outcome and reports back. (Folds in the **coordinator** organ — the lead
-picks the sub-agents.)
+picks the sub-agents.) **Loop only where a verifier exists:** the plan must state an objective
+verifier (tests/types/build/checkable criteria); tasks without one (summaries, investigations,
+judgment calls) run as a **one-shot prompt** — a single agent turn, today's behavior.
 
 Human prerequisites:
 - None new (reuses model + surface + sandbox setup). Set the **reasoning-tier** model for the
@@ -681,8 +745,11 @@ Human prerequisites:
 
 Build (per §28.2):
 - **Plan step** — a frontier orchestrator (reasoning tier, §7.19) turns goal + context (§7.18) +
-  recalled memory (§7.12) into a **plan** (success criteria, iteration shape, chosen sub-agents/
-  tools) and a **clean sub-agent prompt** (also the §12.2 sanitization point).
+  recalled memory (§7.12) into a **plan** (success criteria + objective verifier, iteration
+  shape, chosen sub-agents/tools) and a **clean sub-agent prompt** (also the §12.2 sanitization
+  point; the generated prompt lands in the sub-agent's *untrusted* context layer, §7.18). If no
+  objective verifier can be stated, the plan returns **one-shot** and the task runs as a single
+  turn.
 - **Loop StepRunner** — iterate **execute → verify → {done | continue | escalate}**, each
   iteration a checkpointed `TaskStep` (§11.2) so it resumes mid-loop; sub-agents run via
   `AgentRuntime` in the **sandbox** (§12.6) under the **gateway** (§7.8).
@@ -711,10 +778,13 @@ Exit criteria — unit tests + automated demo:
 Surfaced while implementing M0–M6.2. These update the plan based on what the code taught us;
 fold into M7–M9 sequencing as capacity allows.
 
-1. **Live-Pi approval suspend/resume** *(now scheduled: **M10**).* The approval engine exists
-   at the orchestration layer, but suspending an in-flight Pi turn and re-entering on approval
-   is unbuilt. Promoted to its own milestone (**M10** — suspend/resume seam + in-line + Agent
-   Hub). Run the §6.1 spike (re-prompt vs. fork) there. **This is the headline gap.**
+1. **Live-Pi approval suspend/resume** *(scheduled M10 — then **redesigned away**,
+   2026-07-01).* The approval engine exists at the orchestration layer; suspending an
+   in-flight Pi turn was the gap. Superseded: `propose_effect` is an **async tool call**
+   (returns `effect_id` + monitor immediately; queue-worked; the task waits **between turns**
+   and resumes with the outcome — design §7.9, §11.6). The §6.1 spike (re-prompt vs. fork) is
+   obsolete; M6.1's current "return 'approval required' to the model" behavior is roughly the
+   right shape, and gains the monitor handle + continuation wiring in M10.
 2. **Govern Pi's built-in tools** *(security; M9 — largely done).* `read/grep/find/ls` bypass
    the `ToolGateway`, so they are **off by default** (`PiAgentRuntime.builtinTools`). The live
    agent runs with only governed tools, and the **`sandbox` option now routes
@@ -739,10 +809,239 @@ fold into M7–M9 sequencing as capacity allows.
    + live smoke (real services, local)** split worked well and caught real bugs. Rule learned
    the hard way: **await all side effects in demos** — a fire-and-forget audit write made the
    M3 demo flaky in CI (now fixed by awaiting recorder writes).
-8. **Adapter breadth — a 2nd harness** *(meta-harness organ #1, §28).* `AgentRuntime` abstracts
-   the harness but only `PiAgentRuntime` exists. Add a second adapter (e.g. Claude Code / Codex)
-   behind the seam to prove "harnesses are replaceable" — a real `FakeAgentRuntime`-shaped
-   integration validated by a live smoke. Pairs with the router (organ #2) choosing a harness.
+8. **Adapter breadth — a 2nd harness** *(meta-harness organ #1, §28 — **promoted to K7**,
+   2026-07-02).* No longer just a replaceability proof: **Claude Code (headless)** is a
+   product requirement — the harness is selectable one-or-the-other per deployment
+   (design §7.5). Built as **K7** (§2c); the router (organ #2) choosing a harness per task
+   remains future.
+9. **Memory access model redesigned** *(security; supersedes the M7 as-built model — design
+   §7.12, decided 2026-07-01).* Scopes are audiences (**tenant / project / user / thread**);
+   **agent scope retired** as an access boundary (now relevance metadata). Recall is
+   **audience-gated** (task audience ⊆ scope audience; computed deterministically — repo
+   audience natively on GitHub, Slack via an admin-declared channel↔project mapping +
+   external-member flags; unknown → tenant-only, external present → none). Writes go to the
+   narrowest scope, gated by breadth (tenant writes require confirmation); recalled scopes
+   count as sources in the egress policy (§7.8). Refactor the M7 `MemoryStore`/
+   `PgVectorMemoryStore` schema, feedback→memory writes (👎 corrections become **user-scoped**,
+   promotable), and prompt-builder recall (pass the computed `TaskAudience`). Pairs with #10
+   (identity linking) and OQ-4 (sensitivity metadata).
+10. **Identity linking** *(OQ-1 resolved — design §7.20; unblocks on-behalf-of).* Build the
+    Slack-initiated OAuth link: `/marathon link github` + a CTA on the §7.8 denial notice → a
+    **single-use signed URL** (tenant, slack_user_id, nonce, expiry) → **GitHub App user
+    authorization** (identity-only scope) → `UserIdentity` write with
+    `verification_method: oauth`. Store the user-to-server token as the per-user **access
+    checker** (ask GitHub *as the user*); a failed refresh marks the link `stale` → deny until
+    re-linked. GitHub-surface users are auto-created keyed on the webhook-authenticated GitHub
+    login. The hub **Identities** page lands with M10 Phase 2; IdP bulk-provisioning
+    (`verification_method: idp`) when a tenant asks.
+
+---
+
+## 2c. Kernel milestones (K1–K7)
+
+> The build order for the **core kernel loop** (design §0): Slack ask → design-doc PR →
+> iterate → merge-as-approval → sandboxed code implementation → code PR, delivered back to
+> the thread and the doc. These are **the only critical path** until the §0.6 bar is met
+> (**Marathon codes Marathon**); M10, M11, §2b #9/#10, and the M9 remainder queue behind it.
+> Same definition of done as the M-series: unit tests + an automated demo in CI, plus a live
+> smoke where a real service matters. K1–K4 are hand-built (they *are* the loop's machinery);
+> **K5 is the designated "first blood" change, built through the loop itself**; K6 makes it
+> stranger-ready; **K7 adds the Claude Code harness** — parallelizable from K1 and **not
+> required for the §0.6 bar** (first blood ships on the already-integrated harness).
+
+### K1 — Code-writing path end-to-end (BUILD → DELIVER)
+**Goal:** implement the **execution contract in design §29** — a merged design-doc plan
+produces a **green-tested code PR**, entirely through governed + sandboxed machinery. The
+contract is the spec; this milestone builds it.
+
+Human prerequisites:
+- GitHub App **write** scopes on the dogfood repo (in place since M5); confirm branch
+  protection on `main` so the agent can only land work via PR.
+- Approve a **pinned toolchain base image** (git + Node + pnpm) for the sandbox, so `bash`
+  can run the target repo's test suite.
+- Decide the initial **protected-path list** (default: `.github/workflows/**` refused —
+  CI config runs with repo secrets) and the **diff-size caps** (§29.4).
+- Docker available on the CI runner for the sandbox-backed demo (or the demo uses
+  `FakeSandbox` with the image path covered by the live smoke).
+
+Build (per design §29):
+- **Trigger + input (§29.1):** merge webhook → implementation task with `plan_ref`,
+  `base_sha` **pinned to the plan's merge commit**, and the
+  `(repo, doc_path, merge_commit_sha, "implement")` idempotency key.
+- **Workspace lifecycle (§29.2):** host-side clone at `base_sha`, **remotes + credential
+  helpers stripped** before mounting; the merged plan is already in the tree at its doc path
+  (no side-channel plan delivery); teardown always destroys everything.
+- **`github.submit_code_changes` (§29.4):** the single governed handoff tool — the model
+  passes title/summary/plan-ref/verification only; **the gateway reads the diff from the
+  workspace** (`git diff base_sha..worktree`, host-side), then: size caps, protected-path
+  refusal, secret scan on added lines, `marathon/<task_id>-<slug>` branch, bot-authored
+  commit with a `Marathon-Task:` trailer, `--force-with-lease` push with tenant App creds,
+  create-or-update PR idempotent on `(task_id, tree_hash)`. All failures are **typed,
+  agent-visible errors** so the agent corrects course in-session.
+- **Verify (§29.3):** command sources in precedence order (repo `.marathon/config.yml`
+  `verify:` → the plan's Verification section → agent judgment); green → ready PR; red at
+  the iteration/spend cap → **draft PR + `marathon:unverified` + honest failure report**.
+  (The harness's in-session loop is the verifier — no M11.)
+
+Depends on: M9 Pattern-2 sandbox (landed), M6.1 governed tools, M6 merge webhook.
+Exit criteria:
+- *Unit tests:* workspace materialization (pinning, remote/credential stripping), the §29.4
+  gateway algorithm (diff capture, size caps, **protected-path refusal**, secret scan,
+  branch naming, `(task, tree_hash)` idempotency), plan-ref binding, draft-forcing on red
+  verification.
+- *Automated demo* (`make demo-k1`): a fake merged plan against a local fixture repo →
+  sandboxed edits → verify runs → handoff → branch + PR on a fake/local git host. Assert:
+  the sandbox env is credential-free; the trace has no secrets; a diff touching
+  `.github/workflows/` is **refused**; a re-submit with the same tree is a **no-op**; a
+  red-verify run yields a **draft** PR with the failure report.
+- *Live smoke* (`make smoke-k1`): a real, small change on the sandbox repo lands as a green
+  PR end-to-end, with the plan link and verification results in the PR body (§29.5).
+
+### K2 — Loop task chain + delivery targets
+**Goal:** the loop's tasks form one chain, and progress/results are delivered to **both** the
+originating Slack thread and the doc PR (design §29.1, §29.6).
+
+Human prerequisites: none new.
+Build:
+- Persist `delivery_targets` on `Task` (§10.8); the doc-draft task records its originating
+  thread; the merge-spawned execution task **inherits** `[Slack thread, doc PR]`.
+- Surface delivery fan-out to multiple targets (post-once-per-target, idempotent per §11.3).
+- The final result (PR link + summary) and milestone progress land on both; the ack in each
+  place links the other.
+
+Depends on: M6 (merge→execute), M5.5/M6.2 (live delivery paths).
+Exit criteria:
+- *Unit tests:* target inheritance across the chain, multi-target fan-out idempotency.
+- *Automated demo* (`make demo-k2`): simulated full chain with fake Slack + GitHub → assert
+  both fakes received progress and the final PR link exactly once.
+
+### K3 — Iteration continuity (ITERATE), verified against the loop
+**Goal:** doc-PR comments revise the draft; thread replies continue the conversation;
+clarifying questions get asked, answered, and incorporated.
+
+Human prerequisites: none new.
+Build (mostly verification + gap-fixing of built pieces):
+- Thread reply → follow-up task with thread context + thread memory (M7) — exercised against
+  this loop specifically.
+- Clarifying-question pattern: ask in-thread, end the turn (§11.6 async shape); the user's
+  reply spawns the continuation with full context.
+- Doc-PR comment → `document.revise` on the draft branch (built in M7) — regression-proofed,
+  including a comment arriving **while** another loop task runs (parallel tasks, §7.4).
+- **Code-PR revisions (§29.6):** an `@marathon` comment on the *code* PR spawns a revision
+  task pinned to the task branch's tip, handing off through the same `submit_code_changes`
+  onto the **same branch and PR**.
+
+Depends on: M7 (memory + revision loop), K2 (chain context).
+Exit criteria:
+- *Unit tests:* thread-continuation context assembly, revise-vs-new-PR routing.
+- *Automated demo* (`make demo-k3`): a scripted multi-round conversation fixture — draft →
+  comment → revision → question → answer → updated draft — asserting each round builds on
+  the last.
+- *Live smoke:* one real multi-round doc iteration on the sandbox repo.
+
+### K4 — Durable resume of a real run (§2b #4)
+**Goal:** a worker crash mid-BUILD resumes from the per-turn checkpoint — no restart, no
+double effects. Long code-writing stages make this kernel, and it's the demo-kernel kill test.
+
+Human prerequisites: none new.
+Build:
+- Multi-turn tool loop in `PiAgentRuntime` with **per-turn session persistence** (today the
+  real path is single-turn; only fakes exercise resume).
+- On resume: re-open the session, **re-provision the sandbox + re-materialize the workspace**
+  (same pinned SHA + replay the checkpointed workspace diff), continue the turn sequence.
+- Idempotency on re-executed tool calls (existing keys; verify under resume).
+- **Turn atomicity (design §11.2 BUILD-stage contract):** a crash mid-turn **discards the
+  incomplete turn and replays** from the last completed checkpoint; **containers are never
+  recovered** (always re-provision + re-materialize); interrupted test runs rerun and count
+  for nothing until complete; the handoff converges via `(task_id, tree_hash)`.
+
+Depends on: K1 (the real run to resume), M1 (checkpoint spine).
+Exit criteria:
+- *Unit tests:* per-turn checkpoint serialize/restore, workspace diff snapshot/replay.
+- *Automated demo* (`make demo-k4`): kill the worker mid multi-turn run → a fresh worker
+  resumes and completes; effects asserted at-most-once.
+- *Live smoke:* kill during a real code task; the PR still lands, once.
+
+### K5 — Status + cost visibility — **the first-blood change, built via the loop**
+**Goal:** `@marathon status` replies in-thread with the §15.3 view (current step, completed
+steps, waiting state); final results carry the silent cost footer (§13.3).
+
+**Build method (ratchet #1):** once K1–K4 land, this change is **asked for in Slack and built
+by Marathon through its own loop** — doc PR, review, merge, implementation, code PR. Every
+stumble is a kernel bug to file and fix; hand-finish only if the loop falls short, recording
+exactly where it fell short.
+
+Depends on: K1–K4; M8 (timeline + cost rollups — the data already exists).
+Exit criteria:
+- *Unit tests + automated demo* (`make demo-k5`): status command → rendered state for
+  running / waiting / completed tasks; cost footer on the final result.
+- *Meta-exit:* the change **merged to `main` via the loop** — or a written list of the loop
+  failures that prevented it (which becomes the next work list).
+
+### K6 — Quickstart + flagship agent (stranger-ready)
+**Goal:** `git clone → docker compose up → YAML agent → Slack app + GitHub App → first loop`
+on a stranger's own repo in **under ~30 minutes** (ratchet #3).
+
+Human prerequisites:
+- A fresh test machine/account for the timed walkthrough; a reviewer who has never set
+  Marathon up.
+
+Build:
+- **One flagship agent** — **Forge**, defined in design §21.0 (YAML persona spanning the
+  whole loop: drafts design docs *and* writes code; grants enforced by construction;
+  conservative per §7.3).
+- Setup docs: Slack app manifest, GitHub App creation walkthrough, `.env` template; compose
+  profile that builds/pulls the sandbox toolchain image.
+- **`make demo-kernel`** — the full scripted CI umbrella (ask → doc PR → comment → revision →
+  question → merge → sandboxed build with tests → code PR → links in both places → mid-BUILD
+  kill + resume), built from the K1–K5 demos.
+- README rewritten around the loop (§0.1 is the pitch).
+
+Depends on: K1–K5.
+Exit criteria:
+- *Automated demo:* `make demo-kernel` green in CI.
+- *Human test:* the timed fresh-machine walkthrough completes the first loop in ≤ 30 minutes
+  without help.
+
+### K7 — Claude Code harness (headless) behind `AgentRuntime`
+**Goal:** Marathon runs with **either harness** — `harness: pi | claude-code`, selected per
+deployment with a per-agent override (design §7.5) — with identical governance, durability,
+and delivery. Same gateway chokepoint, same session-JSONL checkpoint, same between-turn
+resume. **Non-blocking:** this milestone does not gate the §0.6 bar — sequence it alongside
+or after first blood.
+
+Human prerequisites:
+- An **Anthropic API key** (billing + spend cap) in the secret store.
+- Approve adding the `claude` CLI to the **pinned sandbox toolchain image** (K1's image).
+- Approve the sandbox **egress-allowlist entry** for the host-side model proxy (the only
+  network exit besides the broker).
+
+Build:
+- **`ClaudeCodeAgentRuntime`:** spawn `claude -p --output-format stream-json` **inside the
+  sandbox** (Pattern 1, §12.6); parse the event stream onto `TaskStep`s / progress; capture
+  cost + usage from the result event into `ModelInvocation`.
+- **Governed tools over MCP:** an MCP server backed by `gateway.run`, served over the host
+  broker socket — same validate → ledger → egress-route → inject → execute → redact → audit
+  path as Pi's custom tools. Constrain built-ins via the harness allow/deny tool lists;
+  file/bash tools are contained by construction (the process lives in the container, seeing
+  only the workspace).
+- **Model proxy:** host-side key-injecting proxy (`ANTHROPIC_BASE_URL`); per-tenant Anthropic
+  keys stay host-side; no key material in the container image, FS, or env.
+- **Checkpoint/resume:** persist the Claude Code session JSONL + session id per task;
+  between-turn resume via `--resume <id>` (the same async-proposal shape, §11.6).
+- **Config:** deployment default + per-agent `harness:` override in the agent YAML (§6.2).
+
+Depends on: K1 (the code path it must reproduce), M9 broker (built). Can proceed **in
+parallel** with K2–K4.
+Exit criteria:
+- *Unit tests:* stream-json event parsing → TaskStep mapping; MCP↔gateway bridging (audit,
+  redaction, egress routing preserved); proxy key injection (assert **no key in the container
+  env**); session-id checkpoint/resume mapping.
+- *Automated demo* (`make demo-k7`): a recorded/fake Claude Code run drives the same task
+  pipeline green — threaded reply, tool calls audited, cost captured.
+- *Live smoke + the real bar:* **re-run the K1–K4 demos and `make demo-kernel` green with
+  `harness=claude-code`** — the loop works identically on either harness, which is what
+  "harnesses are replaceable" (§28 organ #1) means in practice.
 
 ---
 
@@ -750,22 +1049,35 @@ fold into M7–M9 sequencing as capacity allows.
 
 ```
 M0 ─► … ─► M5 ─► M5.5 ─► M6 ─► M6.1 ─► M6.2 ─► M7 ─► M8   ✅ done & CI-green
-                                                  ├► M9  (hardening + sandbox; gates release)
-                                                  └► M10 (live destructive-action approval:
-                                                          suspend/resume + in-line + Agent Hub)
+                                                  │        (M9 core + Pattern-2 sandbox landed — feeds K1)
+                                                  ▼
+        K1 ─► K2 ─► K3 ─► K4 ─► K5 ─► K6                   ← the kernel (§2c) is the whole critical path
+     (code PR) (chain) (iterate) (resume) (first blood,   (stranger-
+        │                                  via the loop)    ready)
+        └────► K7 (Claude Code harness — parallel from K1; re-proves K1–K4 + demo-kernel
+                   under harness=claude-code)
+                                                  │
+                                                  ▼  after the §0.6 bar (Marathon codes Marathon)
+        M10 (async proposals + Agent Hub) · M11 (orchestrated loop) ·
+        §2b #9 (memory refactor) · §2b #10 (identity linking) · M9 remainder (microVM, uid)
 ```
-**M6.1** governed tools are now wired into the live Slack agent (read-only). **M10** builds the
-live-Pi **suspend/resume** seam (the §2b #1 headline gap) plus the in-line and Agent-Hub
-approval channels over the same `ApprovalRequest`; it also hosts M8's deferred inspectability
-UI. **M9** (sandbox/hardening) and **M10** can proceed in parallel; M9 gates a production
-release.
+
+The **kernel (§2c) is the only critical path** until the §0.6 bar is met. K1→K2 can overlap
+K3 (different subsystems); K4 needs K1's real run; **K5 is built through the loop itself**
+(ratchet #1); K6 closes with the stranger test; **K7** (the Claude Code harness) runs in
+parallel from K1 and completes by re-proving K1–K4 and `demo-kernel` under
+`harness=claude-code` — it does **not** gate the bar; the fastest path to first blood is the
+already-integrated harness (Pi). Everything below the bar line keeps its
+design (see `design/` + `policy.md`) and queues: M10's async-proposal wiring becomes relevant
+when a high-risk connector is first enabled; M11 when tasks outgrow one Pi session; §2b #9/#10
+with restricted-tier tenants (OQ-4's reopen trigger).
 
 ---
 
 ## 4. Cross-cutting, built in from the start
 
-- **Idempotency & exactly-once effects** — established in M1, honored by every write
-  tool (M5) and document edit (M6).
+- **Idempotency — at-least-once delivery, at-most-once effects** — established in M1,
+  honored by every write tool (M5), document edit (M6), and proposed effect (M10).
 - **Durability** — checkpoints at every `TaskStep`; no state only in process memory.
 - **Security** — credentials injected only at tool execution; trace redaction; tenant
   scoping on every query. Hardened in M9 but enforced as code is written.
@@ -778,7 +1090,7 @@ release.
 
 ---
 
-## 5. Out of scope for MVP (explicit)
+## 5. Out of scope for MVP (historical — the current scope lens is the kernel, design §0)
 
 User-initiated cancellation · multi-tenant enterprise mgmt / SSO / advanced RBAC ·
 external agent/connector/SDK builder experience · document providers beyond GitHub
@@ -789,14 +1101,14 @@ markdown (Google Docs, Notion — on request) · per-agent Slack identities · a
 
 ## 6. Key risks & open questions
 
-1. **Pi durable approval wait — PARTIALLY BUILT; the live-Pi half is the top open risk.**
-   The durable approval *engine* is built and tested at the Marathon **orchestration layer**
-   (block/approve/reject/expire, survives worker restart, idempotent — M5). **Not yet built:**
-   suspending an in-flight **Pi** turn and re-entering it on approval. Block-persist-resume is
-   the chosen approach, but the spike to pick the re-entry mechanism —
-   (a) re-prompt-to-continue or (b) fork-before-the-blocked-call — has **not** been run; M6.1
-   currently just returns "approval required" to the model. Promoted to a follow-on in §2b.
-   See `pi-details.md` §6.3.
+1. **Pi durable approval wait — RESOLVED BY REDESIGN (2026-07-01).** The durable approval
+   *engine* is built and tested at the orchestration layer (M5). The formerly-open half —
+   suspending an in-flight **Pi** turn — is designed away: `propose_effect` is an **async
+   tool call** returning immediately with `effect_id` + a monitor handle; waits happen
+   **between turns** at the task level, and the session resumes with the outcome as the next
+   turn's input (design §7.9, §11.6). The re-entry spike (re-prompt vs. fork) is obsolete.
+   Remaining M10 work: the `get_effect_status` tool, the continuation wiring, and the
+   executor.
 2. **Tool interception — RESOLVED, but via a different mechanism than planned.** Embedded
    permissioning is implemented by registering Marathon tools as Pi **custom tools that
    delegate to the `ToolGateway`** (the chokepoint: policy, credential injection, audit,

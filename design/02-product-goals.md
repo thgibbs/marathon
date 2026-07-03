@@ -29,7 +29,7 @@ The platform should support threaded conversations, in-document comment threads,
 
 Marathon should treat documents as a peer to chat, in two modes:
 
-* **Producing documents.** Agents create and update markdown documents (postmortems, release notes, PRDs, design docs, research summaries) by opening pull requests — a non-destructive action the agent takes autonomously; a human reviews and merges.
+* **Producing documents.** Agents create and update markdown documents (postmortems, release notes, PRDs, design docs, research summaries) by opening pull requests — a reversible action with a native review surface, taken autonomously; a human reviews and merges (the merge *is* the approval — §7.8).
 * **Being tagged into documents.** Users can summon an agent on a document — via an `@mention` in a comment or review — anchored to a specific file or region. The agent replies in context (a comment reply by default; changes are proposed as a pull request for a human to merge).
 
 The first document surface is **GitHub-backed markdown**: markdown files in a repository, with pull-request, issue, and review comments for tagging and discussion. It reuses the GitHub connector, is the easiest target for an agent, and gives versioning, anchored comments, and `@mention` webhooks for free. Other document providers (e.g. Google Docs, Notion) can be added later on request, behind the same surface interface.
@@ -121,7 +121,7 @@ The default developer experience should be:
 git clone
 docker compose up
 install Slack app
-create first agent
+define first agent (a YAML file — §6.2)
 invoke from Slack
 ```
 

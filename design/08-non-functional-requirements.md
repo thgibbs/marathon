@@ -4,7 +4,7 @@
 
 Requirements:
 
-* Surface events must be acknowledged within the surface's timeout window (e.g. Slack's ~3s).
+* Surface events must be acknowledged within the transport's window — e.g. Slack HTTP events within ~3s; Socket Mode (the as-built Slack transport, §9.2) acks each envelope promptly.
 * Task execution must be asynchronous.
 * Tasks must survive worker crashes.
 * Workers must use leases or heartbeats.
@@ -35,7 +35,7 @@ Security requirements:
 * Least privilege tool access
 * Encrypted secrets
 * No secrets in prompts
-* Human approval for risky tools
+* High-risk effects via propose → review → execute (§7.9)
 * Audit logs for all tool calls
 * Per-user authorization where possible
 * Connector credential scoping
@@ -52,7 +52,8 @@ Threats to address:
 | Agent leaks secret                                 | Never expose raw secrets to model                                     |
 | User tricks agent into accessing unauthorized repo | Check user + agent permissions before tool call                       |
 | Tool output contains malicious instruction         | Mark tool output as data, not instruction                             |
-| Agent performs destructive write                   | Require approval and policy check                                     |
+| Agent attempts a high-risk effect                  | Never a direct tool — propose → review → execute (§7.9)               |
+| Injected agent exfiltrates (read private → write lower-trust) | Least-privilege reads, redaction, egress policy (§7.8): external egress and beyond-requestor-access disclosure → proposals |
 | Cross-tenant data leak                             | Tenant-scoped storage and auth checks                              |
 | Excessive model cost                               | Budgets, routing, alerts, hard limits                                 |
 

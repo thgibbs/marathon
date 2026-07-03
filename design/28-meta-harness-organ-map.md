@@ -12,25 +12,32 @@ series; the original is a copyrighted article and is **not** reproduced in this 
 
 | Organ | Marathon component(s) | Status |
 | --- | --- | --- |
-| **1 Adapter** — one interface over heterogeneous harnesses (typed session/events, not screen-scraping) | `AgentRuntime` seam — `PiAgentRuntime` (in-process Pi SDK), `FakeAgentRuntime` | Built for **one** harness; a **2nd adapter is planned** (§28.3) |
+| **1 Adapter** — one interface over heterogeneous harnesses (typed session/events, not screen-scraping) | `AgentRuntime` seam — `PiAgentRuntime` (in-process Pi SDK), `FakeAgentRuntime`; **`ClaudeCodeAgentRuntime` (headless)** scheduled | Pi built; **Claude Code = roadmap K7** (§28.3) |
 | **2 Router** — pick the agent/harness by capability/cost/track-record (+ model routing) | `InvocationRouter` + `selectAgent` (capability/keyword); model routing via `model-gateway` (§7.19) | Agent routing built; cost/track-record + multi-harness later |
 | **3 Isolation & parallelism** | `DockerSandbox`/`DockerContainer` + `Workspace` (§12.6); durable queue (concurrent workers) | Isolation **strong**; spend-to-search / merge-queue later |
 | **4 Coordinator** — who does what, handoffs | **Folded into the loop** — the frontier orchestrator chooses sub-agents/tools (§28.2) | By design, part of the loop; explicit A2A later |
-| **5 Governor** — policy / approval / budget / audit, **enforced at the tool-call boundary** | `ToolGateway` (§7.8), destructive-only approval (§7.9), budgets (M8), append-only audit, tenant isolation, redaction | **Strong — the moat** |
+| **5 Governor** — capability / review / budget / audit, **enforced at the tool-call boundary** | `ToolGateway` as a deterministic safety perimeter (§7.8), **Proposed Effects** for high-risk (§7.9), credential scope + resource-native permissions, budgets (M8), append-only audit, tenant isolation, redaction | **Strong — the moat** |
 | **6 Work source** — intake + proof | Slack + GitHub surfaces & webhooks (§7.1, §7.17); proof = PRs + the task timeline (§16.3) | Built (mention/webhook); board-polling intake later |
 | **7 Loop** — plan → act → verify → repeat to done | **The orchestration loop (§28.2)** | **Designed here, built in M11** |
 | **State** (substrate, not a peer organ) | Durable task spine, per-step checkpoints, model/tool/audit logs, timeline (§11, §16) | **Strong** |
 
 Marathon is strongest exactly where the essay says the moat forms — the **governor** and
 **state** — and is a **single-harness, governed, durable** orchestrator (human *in* the loop for
-destructive actions, *on* the loop for safe ones).
+high-risk effects, *on* the loop for safe ones).
 
 ## 28.2 The orchestration loop
 
-On invocation Marathon does **not** run a single agent turn. It runs a **frontier-orchestrated
-loop**: a frontier "lead" model designs and validates the work; cheaper sub-agents execute it
-under isolation and governance. The **coordinator** organ is folded in here — choosing the
+On invocation Marathon runs a **frontier-orchestrated loop** *when the work supports one*: a
+frontier "lead" model designs and validates the work; cheaper sub-agents execute it under
+isolation and governance. The **coordinator** organ is folded in here — choosing the
 sub-agent(s) is the lead's job.
+
+**Loop only where a verifier exists.** The loop's value comes from objective verification —
+tests, type-checks, builds, checkable acceptance criteria. The plan step must produce a
+**goal + verifier where possible**; when no objective verifier exists (a summary, an
+investigation, a judgment call), the task is a **one-shot prompt** — a single agent turn, no
+iteration — because looping a frontier model on self-graded prose buys cost and latency, not
+quality. Code-shaped work loops; conversational work doesn't.
 
 **Workflow**
 
@@ -39,14 +46,19 @@ sub-agent(s) is the lead's job.
 2. **Understand** — assemble context (§7.18) and **recall memory** (§7.12) to establish the
    goal, constraints, and any prior corrections.
 3. **Plan** — the **frontier orchestrator** (reasoning tier, §7.19) reads goal + context +
-   memory and produces (a) a **plan/loop**: the **success criteria**, the iteration shape, and
-   which **sub-agent(s) and tools** to use; and (b) the **sub-agent prompt** handed to each
-   worker iteration. This is also the **trust-hierarchy sanitization point** (§12.2): the
-   frontier model converts untrusted surface/document content into a *clean* sub-agent prompt.
+   memory and produces (a) a **plan/loop**: the **success criteria + objective verifier**, the
+   iteration shape, and which **sub-agent(s) and tools** to use; and (b) the **sub-agent
+   prompt** handed to each worker iteration. **If no objective verifier can be stated, the
+   plan returns "one-shot"** and the task runs as a single turn. This is also the
+   **trust-hierarchy sanitization point** (§12.2): the frontier model converts untrusted
+   surface/document content into a *clean* sub-agent prompt — which, being **derived from
+   untrusted content by a model**, enters the sub-agent's prompt in the *untrusted context
+   layer* (§7.18), never the instructions layer; otherwise sanitization becomes an injection
+   amplifier.
 4. **Loop** — repeat until done or a cap is hit:
    - **Execute** — a **sub-agent** runs the harness (`AgentRuntime`, §7.5) with the sub-agent
-     prompt + context, in the **sandbox** (§12.6), using **governed tools** (§7.8); destructive
-     actions gate on **approval** (§7.9).
+     prompt + context, in the **sandbox** (§12.6), using **governed tools** (§7.8); high-risk
+     effects route through **Proposed Effects** (§7.9).
    - **Verify** — the **frontier orchestrator validates** the output against the success
      criteria, plus **objective checks where available** (tests / type-checks / build run as
      sandboxed tools — the tightest, cheapest signal). Verdict: **done**, **continue** (refine
@@ -65,7 +77,7 @@ cheaper sub-agent attempts and keeps what verifies — "many cheap tries beat on
 
 **Durability.** Each loop iteration is a checkpointed `TaskStep` (§11.2): the plan, success
 criteria, iteration index, and verifier verdicts live in the checkpoint, so a crashed worker
-**resumes mid-loop, exactly-once** (§11.3).
+**resumes mid-loop**, with effects applied **at most once** (idempotency keys — §11.3).
 
 **Escalation = durable human wait.** "Escalate to a human" is the block-persist-resume approval
 (§7.9, §11.6, M10): the loop blocks, persists, posts the ask in-thread, and resumes on the
@@ -79,8 +91,10 @@ report, with everything written to *state*.
 ## 28.3 Gaps & direction
 
 - **Loop (#7)** — specified here; built in **M11** (frontier plan/verify + sub-agents).
-- **Adapter breadth (#1)** — add a **second harness** behind `AgentRuntime` (e.g. Claude Code or
-  Codex) to prove "harnesses are replaceable." Tracked in the roadmap.
+- **Adapter breadth (#1)** — the second harness is now a **product requirement**, not just a
+  replaceability proof: **Claude Code (headless)** behind `AgentRuntime`, selectable
+  one-or-the-other per deployment (§7.5). Scheduled as roadmap **K7**; re-running the K1–K4
+  demos under `harness=claude-code` proves "harnesses are replaceable" for real.
 - **Coordinator (#4)** — folded into the loop for now (the frontier model chooses sub-agents);
   explicit agent-to-agent messaging (A2A) is a later, separate capability.
 - **Parallelism (#3)** — spend-to-search (N attempts → score → keep best) and an N-agent merge

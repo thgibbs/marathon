@@ -22,7 +22,7 @@ import { FakeMemoryStore } from "@marathon/memory";
 import { Queue } from "@marathon/queue";
 import { computeGithubSignature } from "@marathon/surface-github";
 import { ToolGateway, ToolRegistry, type ToolPolicy } from "@marathon/tools";
-import { InvocationRouter, Orchestrator } from "@marathon/worker";
+import { InvocationRouter, Orchestrator, Worker } from "@marathon/worker";
 
 const SECRET = "demo-webhook-secret";
 const REPO = "thgibbs/agentp-demo";
@@ -46,11 +46,13 @@ async function main(): Promise<void> {
   try {
     const boot = await bootstrapGithubApp(db, { owner: `demo-owner-${Date.now()}` });
     const gh = new FixturesGithubClient({ userPermissions: { [`${REPO}:stranger`]: "none" } });
+    const orchestrator = new Orchestrator(db, queue);
     const deps: GithubAppDeps = {
       db,
       client: gh,
       memory: new FakeMemoryStore(),
-      router: new InvocationRouter(db, new Orchestrator(db, queue)),
+      router: new InvocationRouter(db, orchestrator),
+      orchestrator,
       gateway: new ToolGateway({
         registry: new ToolRegistry(makeDocumentTools(() => gh)),
         policy: { grants: [{ tool: "document.create" }, { tool: "document.revise" }, { tool: "document.comment" }] } as ToolPolicy,
@@ -94,15 +96,43 @@ async function main(): Promise<void> {
     const bad = await handleWebhookRequest(deps, SECRET, { eventType: "issue_comment", deliveryId: "d-x", rawBody: "{}", signature: "sha256=bad" });
     assert(bad.status === 401, "bad signature should be 401");
 
-    // 4. merge PR #1 -> execute
+    // 4. merge PR #1 -> the doc task completes and a chained implementation task
+    //    spawns with plan_ref/base_sha + inherited delivery targets (K2, §29.1)
+    const mergeSha = `abc123-${u}`;
     await handleWebhookRequest(deps, SECRET, signed("pull_request", `d-merge-${u}`, {
       action: "closed",
       repository: { full_name: REPO },
-      pull_request: { number: 1, merged: true, merge_commit_sha: "abc123" },
+      pull_request: { number: 1, merged: true, merge_commit_sha: mergeSha },
     }));
     const artifact = await db.findDocumentArtifactByPr(boot.tenantId, REPO, 1);
-    assert((await db.getTask(artifact!.owningTaskId!))!.status === "completed", "merged task should complete");
-    console.log("[github-app demo] bad sig -> 401; merged PR -> executed");
+    const docTask = (await db.getTask(artifact!.owningTaskId!))!;
+    assert(docTask.status === "completed", "merged doc task should complete");
+    const implTask = await db.findTaskBySourceTask(docTask.id);
+    assert(implTask !== null, "merge should spawn an implementation task chained to the doc task");
+    const implRef = implTask!.sourceRef as { kind?: string; baseSha?: string; planRef?: { mergeCommitSha?: string; docPath?: string } };
+    assert(implRef.kind === "implementation" && implRef.baseSha === mergeSha, "implementation task pins base_sha to the merge commit");
+    assert(implRef.planRef?.mergeCommitSha === mergeSha, "implementation task carries the plan_ref");
+    const implTargets = implTask!.deliveryTargets ?? [];
+    assert(implTargets.some((t) => t.surfaceType === "github" && t.ref.number === 1), "implementation task inherits the doc PR delivery target");
+    assert(implTargets.some((t) => t.ref.number === 20), "implementation task inherits the originating thread target");
+    assert(implTask!.status === "queued", "implementation task is queued for the BUILD stage");
+
+    // 4b. re-delivered merge webhook -> no second implementation task (§29.7)
+    await handleWebhookRequest(deps, SECRET, signed("pull_request", `d-merge2-${u}`, {
+      action: "closed",
+      repository: { full_name: REPO },
+      pull_request: { number: 1, merged: true, merge_commit_sha: mergeSha },
+    }));
+    assert((await db.countTasksBySourceTask(docTask.id)) === 1, "webhook re-delivery must not spawn a second implementation task");
+    console.log("[github-app demo] bad sig -> 401; merged PR -> chained implementation task (idempotent)");
+
+    // The BUILD stage isn't wired to the worker yet (tracks 4-5): sweep the
+    // queued implementation job so other demos sharing this database see an
+    // idle queue.
+    const sweeper = new Worker(queue, db, {
+      stepRunner: async ({ checkpoint }) => ({ stepType: "noop", done: true, checkpoint }),
+    });
+    await sweeper.drain();
 
     // 5. mention from a user WITHOUT repo access -> denied (no PR/task)
     const prsBefore = count(gh, "createPullRequest");

@@ -1,5 +1,10 @@
 # 17. Evaluation design
 
+> **Status: intentionally TBD.** This section is directional. The real eval design — replay
+> fixtures against live tools/memory, grader rubrics, whether evals gate releases — will be
+> shaped **with users**, once there is a feedback corpus to build from ([[open-questions]]
+> OQ-8).
+
 ## 17.1 Sources of eval cases
 
 Eval cases can come from:
@@ -50,7 +55,7 @@ Good for:
 * Required tool usage
 * Disallowed tool usage
 * Output contains required fields
-* No write action without approval
+* No high-risk effect executed without an approved proposal; autonomous-safe actions never prompt (§7.8/§7.9)
 
 ### LLM-graded evals
 

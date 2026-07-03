@@ -15,11 +15,12 @@ Mitigation:
 
 Mitigation:
 
-* Least privilege
+* Least privilege (reads as well as writes — §12.2)
 * Permission filters
 * Redaction
 * No secrets in prompts
-* Harness tool-layer enforcement (embedded permissioning)
+* Gateway enforcement outside the model (deterministic safety perimeter — §7.8)
+* Audience-routed egress → Proposed Effects (§7.9)
 * Audit logs
 
 ---

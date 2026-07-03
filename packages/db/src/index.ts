@@ -9,12 +9,16 @@ import {
   type AuditEvent,
   type Agent,
   type AgentVersion,
+  type CodeChange,
+  type CodeChangeState,
+  type DeliveryTarget,
   type DocumentArtifact,
   type Id,
   type NewDocumentArtifact,
   type IdempotencyStore,
   type NewApprovalRequest,
   type NewAuditEvent,
+  type NewCodeChange,
   type NewModelInvocation,
   type Role,
   type SurfaceType,
@@ -22,6 +26,7 @@ import {
   type TaskStatus,
   type Tenant,
   type User,
+  type VerificationResult,
 } from "@marathon/core";
 
 export { migrate } from "./migrate";
@@ -150,25 +155,58 @@ export class Database implements AuditWriter, IdempotencyStore {
     agentId?: Id;
     agentVersionId?: Id;
     invokingUserId?: Id;
+    sourceTaskId?: Id;
     sourceType: SurfaceType;
     sourceRef?: Record<string, unknown>;
+    /** Where progress/results land (design §10.8); defaults to [the source]. */
+    deliveryTargets?: DeliveryTarget[];
     inputText?: string;
   }): Promise<Task> {
+    const sourceRef = input.sourceRef ?? {};
+    const deliveryTargets =
+      input.deliveryTargets ?? [{ surfaceType: input.sourceType, ref: sourceRef }];
     const { rows } = await this.pool.query(
-      `insert into task(tenant_id, agent_id, agent_version_id, invoking_user_id,
-                        source_type, source_ref, input_text)
-       values ($1, $2, $3, $4, $5, $6, $7) returning *`,
+      `insert into task(tenant_id, agent_id, agent_version_id, invoking_user_id, source_task_id,
+                        source_type, source_ref, delivery_targets, input_text)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning *`,
       [
         input.tenantId,
         input.agentId ?? null,
         input.agentVersionId ?? null,
         input.invokingUserId ?? null,
+        input.sourceTaskId ?? null,
         input.sourceType,
-        JSON.stringify(input.sourceRef ?? {}),
+        JSON.stringify(sourceRef),
+        JSON.stringify(deliveryTargets),
         input.inputText ?? null,
       ],
     );
     return rowToTask(rows[0]);
+  }
+
+  /** Replace a task's delivery targets (e.g. + the doc PR once it exists — K2). */
+  async updateTaskDeliveryTargets(id: Id, targets: DeliveryTarget[]): Promise<void> {
+    await this.pool.query(`update task set delivery_targets = $2 where id = $1`, [
+      id,
+      JSON.stringify(targets),
+    ]);
+  }
+
+  /** Latest task chained off a source task (K2: doc task → implementation task). */
+  async findTaskBySourceTask(sourceTaskId: Id): Promise<Task | null> {
+    const { rows } = await this.pool.query(
+      `select * from task where source_task_id = $1 order by created_at desc limit 1`,
+      [sourceTaskId],
+    );
+    return rows[0] ? rowToTask(rows[0]) : null;
+  }
+
+  async countTasksBySourceTask(sourceTaskId: Id): Promise<number> {
+    const { rows } = await this.pool.query(
+      `select count(*)::int as n from task where source_task_id = $1`,
+      [sourceTaskId],
+    );
+    return rows[0].n as number;
   }
 
   async getTask(id: Id): Promise<Task | null> {
@@ -561,6 +599,53 @@ export class Database implements AuditWriter, IdempotencyStore {
     return rows[0].n as number;
   }
 
+  // --- code changes (K1, design §10.19) ---
+
+  /** One CodeChange per implementation task; a re-create for the same task returns the existing row. */
+  async createCodeChange(input: NewCodeChange): Promise<CodeChange> {
+    const { rows } = await this.pool.query(
+      `insert into code_change(tenant_id, task_id, repo, plan_ref, base_sha, branch)
+       values ($1, $2, $3, $4, $5, $6)
+       on conflict (task_id) do update set updated_at = now()
+       returning *`,
+      [
+        input.tenantId,
+        input.taskId,
+        input.repo,
+        JSON.stringify(input.planRef),
+        input.baseSha,
+        input.branch,
+      ],
+    );
+    return rowToCodeChange(rows[0]);
+  }
+
+  async getCodeChangeByTask(taskId: Id): Promise<CodeChange | null> {
+    const { rows } = await this.pool.query(`select * from code_change where task_id = $1`, [taskId]);
+    return rows[0] ? rowToCodeChange(rows[0]) : null;
+  }
+
+  /** Record the outcome of a submit (§29.4 step 6-7): tree hash, PR, state, verification. */
+  async updateCodeChangeSubmission(
+    taskId: Id,
+    patch: {
+      treeHash: string;
+      prNumber: number;
+      prUrl: string;
+      state: CodeChangeState;
+      verification: VerificationResult[];
+    },
+  ): Promise<CodeChange> {
+    const { rows } = await this.pool.query(
+      `update code_change
+         set tree_hash = $2, pr_number = $3, pr_url = $4, state = $5, verification = $6, updated_at = now()
+       where task_id = $1 returning *`,
+      [taskId, patch.treeHash, patch.prNumber, patch.prUrl, patch.state, JSON.stringify(patch.verification)],
+    );
+    if (!rows[0]) throw new Error(`code_change not found for task: ${taskId}`);
+    return rowToCodeChange(rows[0]);
+  }
+
   async sumModelCostUsd(taskId: Id): Promise<number> {
     const { rows } = await this.pool.query(
       `select coalesce(sum(cost_usd), 0)::float8 as total from model_invocation where task_id = $1`,
@@ -760,9 +845,10 @@ function rowToTask(r: any): Task {
     agentId: r.agent_id,
     agentVersionId: r.agent_version_id,
     invokingUserId: r.invoking_user_id,
+    sourceTaskId: r.source_task_id ?? null,
     sourceType: r.source_type,
     sourceRef: r.source_ref,
-    deliveryTargets: r.delivery_targets,
+    deliveryTargets: r.delivery_targets ?? null,
     status: r.status,
     inputText: r.input_text,
     summary: r.summary,
@@ -787,6 +873,25 @@ function rowToDocumentArtifact(r: any): DocumentArtifact {
     owningTaskId: r.owning_task_id,
     owningAgentId: r.owning_agent_id,
     lastRevisionSeen: r.last_revision_seen,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+function rowToCodeChange(r: any): CodeChange {
+  return {
+    id: r.id,
+    tenantId: r.tenant_id,
+    taskId: r.task_id,
+    repo: r.repo,
+    planRef: r.plan_ref,
+    baseSha: r.base_sha,
+    branch: r.branch,
+    treeHash: r.tree_hash,
+    prNumber: r.pr_number,
+    prUrl: r.pr_url,
+    state: r.state,
+    verification: r.verification ?? [],
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };

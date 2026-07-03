@@ -249,8 +249,8 @@ double-execute.
 
 ## 5. Annotations and call-outs to include
 
-- Mark **MVP scope** vs **later** (grey out web/email/scheduler, extra doc providers,
-  multi-tenant/SSO).
+- Mark **kernel scope (design §0)** vs **later** (grey out web/email/scheduler, extra doc
+  providers, multi-tenant/SSO, in-app approvals).
 - Note **idempotency** on the write edges (e.g. `repo + path + base_sha` for doc edits;
   `surface_type + external_event_id` for incoming events).
 - Note **cost tracking** point at the Model Gateway — cost is **read from Pi** (model cost
