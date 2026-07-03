@@ -197,7 +197,13 @@ export interface GitExecOptions {
  * repo, run host-side in the task's workspace with the credential injected via
  * an in-process credential helper (env-fed; never in argv or on disk). Local
  * git (`status`/`diff`/`add`/`commit`/branching) belongs in the sandbox, not
- * here. Flags are refused wholesale, so a `--force` push is unrepresentable.
+ * here.
+ *
+ * Destructive pushes are unrepresentable (Tracks 6/9): flags are refused
+ * wholesale (no `--force`/`--delete`), a `+`-prefixed refspec (the refspec
+ * form of force) is rejected, and an empty-source refspec (`:refs/heads/x`,
+ * the refspec form of remote deletion) is rejected. Deleting a branch is a
+ * Proposed Effect, not a push.
  *
  *   git.exec({ argv: ["push", "owner/repo", "HEAD:refs/heads/marathon/my-branch"] })
  */
@@ -241,6 +247,15 @@ export function makeGitExecTool(opts: GitExecOptions): Tool {
       if (p.refspecs.length === 0) return `at least one refspec is required for git ${p.op}`;
       const flag = p.refspecs.find((r) => r.startsWith("-"));
       if (flag) return `flags are not allowed through the broker: ${flag}`;
+      if (p.op === "push") {
+        const forced = p.refspecs.find((r) => r.startsWith("+"));
+        if (forced) return `force push is not allowed through the broker: ${forced}`;
+        const deletion = p.refspecs.find((r) => r.startsWith(":"));
+        if (deletion)
+          return `deleting a remote ref is not allowed through the broker (${deletion}) — propose it as a destructive effect instead (§7.9)`;
+        const malformed = p.refspecs.find((r) => !r.includes(":") || r.endsWith(":"));
+        if (malformed) return `push refspecs must be explicit <src>:<dst>: ${malformed}`;
+      }
       return null;
     },
     async execute(input, ctx) {

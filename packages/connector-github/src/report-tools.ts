@@ -103,6 +103,17 @@ export function makeDeliveryReportTool(opts: DeliveryReportOptions): Tool {
         throw new Error(`delivery.report_pr: ${parsed.repo} has no PR #${parsed.number} — did the gh pr create succeed?`);
       }
 
+      // 2b. a task delivers ONE PR: retries with the same PR converge (fan-out
+      // dedupes per target); reporting a *different* PR is refused so the
+      // record can never silently diverge from what the surfaces heard.
+      const prior = await opts.store.getCodeChangeByTask(ctx.taskId);
+      if (prior?.prNumber != null && prior.prNumber !== pr.number) {
+        throw new Error(
+          `delivery.report_pr: task ${ctx.taskId} already reported PR #${prior.prNumber} (${prior.prUrl ?? ""}) — ` +
+            `update that PR instead of opening a new one`,
+        );
+      }
+
       // 3. record on the CodeChange (create-on-first-report: the agent-driven
       // path has no prior submit).
       const verification = inputVerification(input);

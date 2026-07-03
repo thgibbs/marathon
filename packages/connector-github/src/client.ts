@@ -25,7 +25,11 @@ export interface GithubClient {
   createIssue(repo: string, title: string, body?: string): Promise<{ number: number; url: string }>;
   commentIssue(repo: string, issueNumber: number, body: string): Promise<{ id: number }>;
   closeIssue(repo: string, issueNumber: number): Promise<void>;
-  mergePullRequest(repo: string, prNumber: number): Promise<{ merged: boolean; sha?: string }>;
+  mergePullRequest(
+    repo: string,
+    prNumber: number,
+    opts?: { method?: "merge" | "squash" | "rebase" },
+  ): Promise<{ merged: boolean; sha?: string }>;
   // document writes (branch + file + PR)
   getRef(repo: string, ref: string): Promise<{ sha: string }>;
   createBranch(repo: string, branch: string, fromSha: string): Promise<void>;
@@ -158,8 +162,15 @@ export class HttpGithubClient implements GithubClient {
     await this.api(`/repos/${repo}/issues/${issueNumber}`, { method: "PATCH", body: { state: "closed" } });
   }
 
-  async mergePullRequest(repo: string, prNumber: number): Promise<{ merged: boolean; sha?: string }> {
-    const j = await this.api(`/repos/${repo}/pulls/${prNumber}/merge`, { method: "PUT" });
+  async mergePullRequest(
+    repo: string,
+    prNumber: number,
+    opts?: { method?: "merge" | "squash" | "rebase" },
+  ): Promise<{ merged: boolean; sha?: string }> {
+    const j = await this.api(`/repos/${repo}/pulls/${prNumber}/merge`, {
+      method: "PUT",
+      body: opts?.method ? { merge_method: opts.method } : undefined,
+    });
     return { merged: Boolean(j.merged), sha: j.sha };
   }
 
@@ -394,8 +405,12 @@ export class FixturesGithubClient implements GithubClient {
     this.writes.push({ op: "closeIssue", args: { repo, issueNumber } });
   }
 
-  async mergePullRequest(repo: string, prNumber: number): Promise<{ merged: boolean; sha?: string }> {
-    this.writes.push({ op: "mergePullRequest", args: { repo, prNumber } });
+  async mergePullRequest(
+    repo: string,
+    prNumber: number,
+    opts?: { method?: "merge" | "squash" | "rebase" },
+  ): Promise<{ merged: boolean; sha?: string }> {
+    this.writes.push({ op: "mergePullRequest", args: { repo, prNumber, ...(opts?.method ? { method: opts.method } : {}) } });
     return { merged: true, sha: "deadbeef" };
   }
 

@@ -167,6 +167,16 @@ describe("git.exec (Track 6 broker)", () => {
       expect(invalid(["push", "acme/service", "--force", "HEAD:x"])).toMatch(/flags are not allowed/);
       expect(invalid(["push", "acme/service", "HEAD:x", "-f"])).toMatch(/flags are not allowed/);
     });
+
+    it("makes force and deletion pushes unrepresentable in refspec form too", () => {
+      expect(invalid(["push", "acme/service", "+HEAD:refs/heads/main"])).toMatch(/force push is not allowed/);
+      expect(invalid(["push", "acme/service", "HEAD:refs/heads/ok", "+dev:refs/heads/dev"])).toMatch(/force push/);
+      expect(invalid(["push", "acme/service", ":refs/heads/main"])).toMatch(/deleting a remote ref/);
+      expect(invalid(["push", "acme/service", "main"])).toMatch(/explicit <src>:<dst>/);
+      expect(invalid(["push", "acme/service", "main:"])).toMatch(/explicit <src>:<dst>/);
+      // fetch refspecs may use `+` (it only force-updates the local workspace).
+      expect(invalid(["fetch", "acme/service", "+refs/heads/main:refs/remotes/origin/main"])).toBeNull();
+    });
   });
 
   it("declares push as egress and fetch as a source read", () => {

@@ -102,6 +102,21 @@ describe("ExecFileCommandRunner", () => {
     expect(res.stdout.trim()).toBe("tok-123");
   });
 
+  it("does NOT inherit unrelated host env — only the base keys + injected entries", async () => {
+    process.env.BROKER_TEST_UNRELATED_SECRET = "xoxb-leaky";
+    try {
+      const res = await runner.run("sh", ["-c", 'echo "[${BROKER_TEST_UNRELATED_SECRET}]"; env'], {
+        env: { GH_TOKEN: "tok" },
+      });
+      expect(res.stdout).toContain("[]"); // the host secret is absent
+      expect(res.stdout).not.toContain("xoxb-leaky");
+      expect(res.stdout).toContain("GH_TOKEN=tok"); // injected credential is present
+      expect(res.stdout).toContain("PATH="); // base keys survive
+    } finally {
+      delete process.env.BROKER_TEST_UNRELATED_SECRET;
+    }
+  });
+
   it("rejects on spawn failure and on timeout", async () => {
     await expect(runner.run("definitely-not-a-binary-xyz", [])).rejects.toThrow();
     await expect(runner.run("sleep", ["5"], { timeoutMs: 100 })).rejects.toThrow(/timed out/);

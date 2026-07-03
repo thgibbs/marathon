@@ -19,11 +19,29 @@ export interface BrokeredCommandResult {
 export interface CommandRunOptions {
   /**
    * Extra env for the child ONLY (the credential injection point). The child
-   * also inherits the broker host's env; the sandbox never sees either.
+   * does NOT inherit the broker host's env — only {@link BASE_ENV_KEYS} plus
+   * these entries — so unrelated host secrets (Slack tokens, DB URLs, cloud
+   * creds) never reach a brokered command.
    */
   env?: Record<string, string>;
   cwd?: string;
   timeoutMs?: number;
+}
+
+/**
+ * The only host env vars a brokered child inherits: what `gh`/`git` need to
+ * find binaries, config, and locale — never secrets. Everything else must be
+ * injected explicitly via {@link CommandRunOptions.env}.
+ */
+export const BASE_ENV_KEYS = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"] as const;
+
+function baseEnv(source: NodeJS.ProcessEnv): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of BASE_ENV_KEYS) {
+    const value = source[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
 }
 
 /** Executes one brokered command. Swappable so tests/demos never need real binaries. */
@@ -36,8 +54,10 @@ const MAX_BUFFER = 4 * 1024 * 1024;
 
 /**
  * The real runner: `execFile` (argv array, no shell — no quoting/injection
- * surface). A non-zero exit resolves with the code; only spawn failures and
- * timeouts reject.
+ * surface). The child env is minimal by construction ({@link BASE_ENV_KEYS} +
+ * the injected entries), so host secrets never leak into brokered commands.
+ * A non-zero exit resolves with the code; only spawn failures and timeouts
+ * reject.
  */
 export class ExecFileCommandRunner implements CommandRunner {
   run(bin: string, argv: string[], opts: CommandRunOptions = {}): Promise<BrokeredCommandResult> {
@@ -46,7 +66,7 @@ export class ExecFileCommandRunner implements CommandRunner {
         bin,
         argv,
         {
-          env: { ...process.env, ...opts.env },
+          env: { ...baseEnv(process.env), ...opts.env },
           cwd: opts.cwd,
           timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           maxBuffer: MAX_BUFFER,

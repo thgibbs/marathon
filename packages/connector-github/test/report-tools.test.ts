@@ -120,6 +120,18 @@ describe("delivery.report_pr (Track 7)", () => {
     expect(again.details).toMatchObject({ delivered: 0 });
   });
 
+  it("refuses to report a DIFFERENT PR once one is recorded (no silent overwrite)", async () => {
+    const { client, store, tool } = setup();
+    const first = await client.createPullRequest(REPO, "T1", "b1", "main");
+    const second = await client.createPullRequest(REPO, "T2", "b2", "main");
+    await tool.execute({ pr_url: first.url, summary: "s", verification: green }, ctx);
+    await expect(tool.execute({ pr_url: second.url, summary: "s", verification: green }, ctx)).rejects.toThrow(
+      new RegExp(`already reported PR #${first.number}`),
+    );
+    // The record still points at the first PR — nothing diverged.
+    expect((await store.getCodeChangeByTask(TASK))?.prNumber).toBe(first.number);
+  });
+
   it("records draft/red runs as submitted_draft and flags missing verification", async () => {
     const { client, store, slack, tool } = setup();
     const draftPr = await client.createPullRequest(REPO, "T", "b-draft", "main", "", { draft: true });
