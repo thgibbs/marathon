@@ -1,3 +1,5 @@
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { SecretStore } from "@marathon/config";
 import {
   computeCostUsd,
@@ -8,15 +10,28 @@ import {
 import type { DockerContainer } from "@marathon/tools";
 import { governedOutcomeText, runGovernedTool } from "./governed";
 import { buildDockerSandboxTools } from "./sandbox-tools";
-import type { AgentRequest, AgentRuntime, AgentTurn, AgentTurnContext } from "./types";
+import type {
+  AgentRequest,
+  AgentRuntime,
+  AgentTurn,
+  AgentTurnContext,
+  AgentWorkspaceBinding,
+  ModelInvocationData,
+} from "./types";
 
 /**
  * Real Pi-harness adapter (@earendil-works/pi-coding-agent).
  *
- * Runtime-verified locally via `make smoke-pi` (a real model call through Pi);
- * not run in CI, which uses FakeAgentRuntime for determinism. Runs the whole
- * prompt as a single turn for M2 (done=true); turn-by-turn suspend/resume is the
- * §6.1 / M5 work.
+ * Runtime-verified locally via `make smoke-pi` / `make smoke-k4` (real model
+ * calls through Pi); not run in CI, which uses the fake/scripted runtimes for
+ * determinism.
+ *
+ * Durable multi-turn (K4, design §11.2): each task gets its own session JSONL
+ * under `sessionDir/<taskId>/`. After every completed Pi turn (`turn_end`) the
+ * live session file is snapshotted and reported through
+ * {@link AgentTurnContext.onTurnCheckpoint}; resuming from a snapshot discards
+ * any later, incomplete turn (turn atomicity — a crash mid-turn replays it).
+ * A call with `checkpoint.sessionRef` set re-opens that session and continues.
  *
  * Pi is loaded via a runtime (non-literal) dynamic import so the type checker
  * stays decoupled from Pi's internal types.
@@ -39,7 +54,11 @@ export interface GovernedToolsConfig {
 export interface PiAgentOptions {
   secrets: SecretStore;
   registry?: ModelRegistry;
-  /** Where Pi stores its per-task session JSONL (the durable trace/checkpoint). */
+  /**
+   * Where Pi stores its per-task session JSONL (the durable trace/checkpoint).
+   * Each task gets its own subdirectory; per-turn snapshots live next to the
+   * live session file. Unset → in-memory sessions (no durable resume).
+   */
   sessionDir?: string;
   /** Marathon-governed tools to expose to the agent (M6.1). */
   governed?: GovernedToolsConfig;
@@ -54,25 +73,53 @@ export interface PiAgentOptions {
    * (§12.6, Pattern 2). When set, those tools execute inside a fresh {@link DockerContainer}
    * (no network, no host credentials) against a bind-mounted workspace, while governed
    * tools stay host-side. `createContainer` returns a *not-yet-started* container bound to
-   * this task's workspace; the runtime owns `start()`/`stop()` for the turn.
+   * this task's workspace; the runtime owns `start()`/`stop()` for the call. Containers
+   * are never recovered across calls (§11.2) — every call gets a fresh one.
    */
   sandbox?: {
-    createContainer: (req: AgentRequest) => Promise<DockerContainer> | DockerContainer;
+    createContainer: (
+      req: AgentRequest,
+      workspace?: AgentWorkspaceBinding,
+    ) => Promise<DockerContainer> | DockerContainer;
     shellPath?: string;
   };
 }
 
 const PI_MODULE: string = "@earendil-works/pi-coding-agent";
 
+/** Cap for tool-event summaries surfaced to the task timeline. */
+const EVENT_SUMMARY_CAP = 400;
+
+/**
+ * Open the task's durable Pi session: resume from `sessionRef` when it points
+ * at an existing snapshot/file, otherwise create a fresh session under the
+ * per-task directory (in-memory when no directory is configured). Exported for
+ * tests — this is the resume decision the K4 contract hangs off.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function resolvePiSession(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pi: any,
+  opts: { cwd: string; taskSessionDir?: string; sessionRef?: string },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): { sessionManager: any; resumed: boolean } {
+  if (opts.sessionRef && existsSync(opts.sessionRef)) {
+    return {
+      sessionManager: pi.SessionManager.open(opts.sessionRef, opts.taskSessionDir, opts.cwd),
+      resumed: true,
+    };
+  }
+  if (opts.taskSessionDir) {
+    mkdirSync(opts.taskSessionDir, { recursive: true });
+    return { sessionManager: pi.SessionManager.create(opts.cwd, opts.taskSessionDir), resumed: false };
+  }
+  return { sessionManager: pi.SessionManager.inMemory(opts.cwd), resumed: false };
+}
+
 export class PiAgentRuntime implements AgentRuntime {
   constructor(private readonly opts: PiAgentOptions) {}
 
   async nextTurn(ctx: AgentTurnContext): Promise<AgentTurn> {
-    // already finished (single-turn for M2)
-    if (ctx.checkpoint.completedSteps.length > 0) {
-      return { text: "", done: true };
-    }
-
     const { provider, model } = parseModelRef(ctx.request.modelRef);
     const registry = this.opts.registry ?? new ModelRegistry();
     const spec = registry.get(ctx.request.modelRef);
@@ -94,9 +141,16 @@ export class PiAgentRuntime implements AgentRuntime {
     const cwd = process.cwd();
     const agentDir = typeof pi.getAgentDir === "function" ? pi.getAgentDir() : cwd;
 
-    const sessionManager = this.opts.sessionDir
-      ? pi.SessionManager.create(this.opts.sessionDir)
-      : pi.SessionManager.inMemory();
+    // Durable session per task (K4): resume from the checkpointed snapshot when
+    // present, else start fresh under sessionDir/<taskId>/.
+    const taskSessionDir = this.opts.sessionDir
+      ? join(this.opts.sessionDir, ctx.request.taskId)
+      : undefined;
+    const { sessionManager } = resolvePiSession(pi, {
+      cwd,
+      taskSessionDir,
+      sessionRef: ctx.checkpoint.sessionRef,
+    });
 
     const loader = new pi.DefaultResourceLoader({
       cwd,
@@ -149,7 +203,7 @@ export class PiAgentRuntime implements AgentRuntime {
     let container: DockerContainer | undefined;
     const sandboxNames: string[] = [];
     if (this.opts.sandbox) {
-      container = await this.opts.sandbox.createContainer(ctx.request);
+      container = await this.opts.sandbox.createContainer(ctx.request, ctx.workspace);
       await container.start();
       const { tools, names } = buildDockerSandboxTools(pi, container, { shellPath: this.opts.sandbox.shellPath });
       customTools.push(...tools);
@@ -157,73 +211,127 @@ export class PiAgentRuntime implements AgentRuntime {
     }
 
     try {
-    const { session } = await pi.createAgentSession({
-      cwd,
-      agentDir,
-      model: piModel,
-      authStorage,
-      modelRegistry,
-      resourceLoader: loader,
-      sessionManager,
-      customTools,
-      // Built-ins are OFF by default (they bypass the gateway, §2b #2); enable only
-      // inside a sandboxed workspace. Sandboxed + governed tools are exposed explicitly.
-      tools: [...(this.opts.builtinTools ?? []), ...sandboxNames, ...governedNames],
-    });
+      const { session } = await pi.createAgentSession({
+        cwd,
+        agentDir,
+        model: piModel,
+        authStorage,
+        modelRegistry,
+        resourceLoader: loader,
+        sessionManager,
+        customTools,
+        // Built-ins are OFF by default (they bypass the gateway, §2b #2); enable only
+        // inside a sandboxed workspace. Sandboxed + governed tools are exposed explicitly.
+        tools: [...(this.opts.builtinTools ?? []), ...sandboxNames, ...governedNames],
+      });
 
-    let streamed = "";
-    const eventTypes: string[] = [];
-    session.subscribe((event: any) => {
-      if (event?.type) eventTypes.push(event.type);
-      if (event?.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
-        streamed += event.assistantMessageEvent.delta;
+      let streamed = "";
+      const eventTypes: string[] = [];
+      // Per-turn checkpoints (K4, §11.2): the checkpoint unit is one completed Pi
+      // turn. `turnBase` continues the numbering across resumes.
+      const turnBase = (ctx.checkpoint.turnIndex ?? -1) + 1;
+      let turnsThisCall = 0;
+      let lastSessionRef: string | undefined = ctx.checkpoint.sessionRef;
+      // Listeners are synchronous; durable persistence is chained so each turn's
+      // checkpoint lands as soon as the turn completes, while the run continues.
+      let checkpointChain: Promise<void> = Promise.resolve();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      session.subscribe((event: any) => {
+        if (event?.type) eventTypes.push(event.type);
+        if (event?.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
+          streamed += event.assistantMessageEvent.delta;
+        }
+        if (event?.type === "tool_execution_start") {
+          ctx.onEvent?.({
+            type: "tool_start",
+            toolName: String(event.toolName ?? ""),
+            summary: cap(safeJson(event.args)),
+          });
+        }
+        if (event?.type === "tool_execution_end") {
+          ctx.onEvent?.({
+            type: "tool_end",
+            toolName: String(event.toolName ?? ""),
+            summary: cap(`${event.isError ? "error" : "ok"}: ${safeJson(event.result)}`),
+          });
+        }
+        if (event?.type === "turn_end") {
+          const turnIndex = turnBase + turnsThisCall;
+          turnsThisCall += 1;
+          // Snapshot the session file synchronously at the turn boundary: the
+          // snapshot IS the resume point; anything appended after it (a turn
+          // interrupted by a crash) is discarded on resume.
+          const live: string | undefined = sessionManager.getSessionFile?.();
+          let snapshot: string | undefined;
+          if (live && taskSessionDir) {
+            snapshot = join(taskSessionDir, `turn-${turnIndex}.jsonl`);
+            copyFileSync(live, snapshot);
+            lastSessionRef = snapshot;
+          }
+          ctx.onEvent?.({ type: "turn_end", summary: `turn ${turnIndex} complete` });
+          const modelInvocation = perTurnInvocation(event.message, provider, model);
+          if (ctx.onTurnCheckpoint) {
+            const sink = ctx.onTurnCheckpoint;
+            checkpointChain = checkpointChain.then(() =>
+              Promise.resolve(sink({ turnIndex, sessionRef: snapshot ?? live, modelInvocation })),
+            );
+          }
+        }
+      });
+
+      await session.prompt(ctx.request.input);
+      // A run whose checkpoints failed to persist must not report success.
+      await checkpointChain;
+
+      const latencyMs = Date.now() - start;
+      if (process.env.PI_DEBUG) {
+        console.error("[pi] events:", eventTypes.join(","));
+        console.error("[pi] session keys:", Object.keys(session));
+        try {
+          console.error("[pi] messages:", JSON.stringify(session.messages)?.slice(0, 1200));
+        } catch {
+          /* ignore */
+        }
       }
-    });
 
-    await session.prompt(ctx.request.input);
+      const last = lastAssistantMessage(session);
 
-    const latencyMs = Date.now() - start;
-    if (process.env.PI_DEBUG) {
-      console.error("[pi] events:", eventTypes.join(","));
-      console.error("[pi] session keys:", Object.keys(session));
-      try {
-        console.error("[pi] messages:", JSON.stringify(session.messages)?.slice(0, 1200));
-      } catch {
-        /* ignore */
+      // Surface real model errors (e.g. billing/rate-limit) instead of hiding them.
+      if (last?.errorMessage || last?.stopReason === "error") {
+        try {
+          session.dispose?.();
+        } catch {
+          /* ignore */
+        }
+        throw new Error(`model error: ${last?.errorMessage ?? "unknown error"}`);
       }
-    }
 
-    const last = lastAssistantMessage(session);
+      const text = streamed || textFromMessage(last);
+      const inputTokens = numberOrNull(last?.usage?.input);
+      const outputTokens = numberOrNull(last?.usage?.output);
+      // Prefer Pi's own computed cost; fall back to our model spec.
+      const piCost = numberOrNull(last?.usage?.cost?.total);
+      const costUsd =
+        piCost ?? (spec ? computeCostUsd(spec, { inputTokens: inputTokens ?? 0, outputTokens: outputTokens ?? 0 }) : null);
 
-    // Surface real model errors (e.g. billing/rate-limit) instead of hiding them.
-    if (last?.errorMessage || last?.stopReason === "error") {
       try {
         session.dispose?.();
       } catch {
         /* ignore */
       }
-      throw new Error(`model error: ${last?.errorMessage ?? "unknown error"}`);
-    }
 
-    const text = streamed || textFromMessage(last);
-    const inputTokens = numberOrNull(last?.usage?.input);
-    const outputTokens = numberOrNull(last?.usage?.output);
-    // Prefer Pi's own computed cost; fall back to our model spec.
-    const piCost = numberOrNull(last?.usage?.cost?.total);
-    const costUsd =
-      piCost ?? (spec ? computeCostUsd(spec, { inputTokens: inputTokens ?? 0, outputTokens: outputTokens ?? 0 }) : null);
-
-    try {
-      session.dispose?.();
-    } catch {
-      /* ignore */
-    }
-
-    return {
-      text,
-      done: true,
-      modelInvocation: { provider, model, inputTokens, outputTokens, costUsd, latencyMs, status: "ok" },
-    };
+      const finalSessionRef: string | undefined = sessionManager.getSessionFile?.() ?? lastSessionRef;
+      return {
+        text,
+        done: true,
+        sessionRef: finalSessionRef,
+        turnIndex: turnsThisCall > 0 ? turnBase + turnsThisCall - 1 : ctx.checkpoint.turnIndex,
+        // With a per-turn checkpoint sink, usage is accounted turn-by-turn there;
+        // reporting the last message again here would double-count it.
+        modelInvocation: ctx.onTurnCheckpoint
+          ? undefined
+          : { provider, model, inputTokens, outputTokens, costUsd, latencyMs, status: "ok" },
+      };
     } finally {
       if (container) await container.stop().catch(() => {});
     }
@@ -231,6 +339,33 @@ export class PiAgentRuntime implements AgentRuntime {
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+/** Per-turn usage from Pi's turn_end assistant message (best-effort). */
+function perTurnInvocation(message: any, provider: string, model: string): ModelInvocationData | undefined {
+  if (!message || message.role !== "assistant") return undefined;
+  const usage = message.usage;
+  if (!usage) return undefined;
+  return {
+    provider,
+    model,
+    inputTokens: numberOrNull(usage.input),
+    outputTokens: numberOrNull(usage.output),
+    costUsd: numberOrNull(usage.cost?.total),
+    status: "ok",
+  };
+}
+
+function safeJson(v: unknown): string {
+  try {
+    return typeof v === "string" ? v : JSON.stringify(v) ?? "";
+  } catch {
+    return String(v);
+  }
+}
+
+function cap(s: string): string {
+  return s.length > EVENT_SUMMARY_CAP ? `${s.slice(0, EVENT_SUMMARY_CAP)}…` : s;
+}
 
 function lastAssistantMessage(session: any): any | undefined {
   const messages: any[] = session?.messages ?? [];
