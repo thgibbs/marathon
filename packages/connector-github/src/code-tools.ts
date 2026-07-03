@@ -34,9 +34,9 @@ const UNVERIFIED_LABEL = "marathon:unverified";
 /**
  * The single BUILD handoff tool (design §29.4): `github.submit_code_changes`.
  * The model passes metadata only — no diff, no file list, no patches; the
- * gateway reads the truth from the workspace. Opening/updating the PR is
- * autonomous because merge is the native approval (§29.9), so the tool is
- * non-destructive under the current policy model.
+ * gateway reads the truth from the workspace. **Native review** (§7.8): the
+ * call runs autonomously and the PR it opens is the review surface — merge is
+ * the human approval (§29.9).
  */
 export function makeGithubCodeTools(opts: GithubCodeToolsOptions): Tool[] {
   const caps: DiffCaps = { ...DEFAULT_DIFF_CAPS, ...opts.caps };
@@ -49,8 +49,8 @@ export function makeGithubCodeTools(opts: GithubCodeToolsOptions): Tool[] {
       "End the BUILD stage: commit the workspace's changes to the task branch and open (or update) the code PR. " +
       "Pass title, summary, the plan_ref you are implementing, and the verification commands you ran — " +
       "the diff is read from the workspace, not from you.",
-    riskLevel: "medium",
-    destructive: false,
+    riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "tenant", costly: false },
+    defaultMode: "native_review",
     validate(input) {
       if (typeof input.title !== "string" || !input.title.trim()) return "title is required";
       if (typeof input.summary !== "string" || !input.summary.trim()) return "summary is required";

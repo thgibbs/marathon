@@ -3,8 +3,8 @@
  *
  * A scripted tool-using agent runs its tool calls through runGovernedTool (the
  * Tool Gateway = embedded permissioning). A read tool is allowed and audited; a
- * destructive tool surfaces approval_required, which drives the block-persist-
- * resume approval, and after approval executes EXACTLY once.
+ * high-risk (proposed_effect) tool surfaces requires_proposal, which drives the
+ * block-persist-resume review, and after approval executes EXACTLY once.
  *
  * The real Pi wiring (custom tools -> gateway) is verified by `make smoke-pi-tools`.
  * Requires Postgres at DATABASE_URL.
@@ -52,10 +52,10 @@ async function main(): Promise<void> {
     assert(read.status === "ok", `read should be ok, got ${read.status}`);
     console.log("[m6.1] governed github.read_file -> ok (policy + audit applied)");
 
-    // 2. agent proposes a destructive tool -> approval_required
+    // 2. agent calls a high-risk (proposed_effect) tool -> requires_proposal
     const merge = await runGovernedTool(gateway, "github.merge_pull_request", { repo: REPO, number: 7 }, ctx);
-    assert(merge.status === "approval_required", `merge should require approval, got ${merge.status}`);
-    console.log("[m6.1] governed github.merge_pull_request -> approval_required");
+    assert(merge.status === "requires_proposal", `merge should require a proposal, got ${merge.status}`);
+    console.log("[m6.1] governed github.merge_pull_request -> requires_proposal");
 
     // 3. drive the durable approval, then execute exactly once
     const proposal = await proposeToolCall(gateway, approvals, "github.merge_pull_request", { repo: REPO, number: 7 }, ctx, { actionSummary: "merge PR #7", riskAxes: { reversible: false, crossesTrustBoundary: false, audience: "team", costly: false } });

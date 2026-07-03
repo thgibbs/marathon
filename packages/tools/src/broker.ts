@@ -18,7 +18,7 @@ export interface ToolBrokerRequest {
 export type ToolBrokerResponse =
   | { status: "ok"; content: string }
   | { status: "denied"; reason: string }
-  | { status: "approval_required"; reason: string }
+  | { status: "requires_proposal"; reason: string }
   | { status: "error"; error: string };
 
 /** Run one brokered tool request through the gateway; never throws. */
@@ -33,8 +33,8 @@ export async function handleToolRequest(
     return { status: "ok", content: redactSecrets(res.content) };
   } catch (err) {
     if (err instanceof ToolBlockedError) {
-      return err.decision === "needs_approval"
-        ? { status: "approval_required", reason: err.reason }
+      return err.decision === "requires_proposal"
+        ? { status: "requires_proposal", reason: err.reason }
         : { status: "denied", reason: err.reason };
     }
     return { status: "error", error: String(err instanceof Error ? err.message : err) };

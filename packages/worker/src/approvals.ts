@@ -20,10 +20,12 @@ export interface ApprovalRequestInput {
 }
 
 /**
- * Durable approval orchestration (design.md §7.9, §11.6). A destructive tool
- * call pauses the task (waiting_for_approval) without holding a process; on
+ * Durable approval orchestration (design.md §7.9, §11.6): a pending review
+ * pauses the task (waiting_for_approval) without holding a process; on
  * approve, the action runs exactly once. Surface-agnostic — the surface only
- * renders the prompt and feeds back the decision.
+ * renders the prompt and feeds back the decision. The kernel itself needs no
+ * in-app approvals (native review — PR merge — covers it); this record-keeping
+ * survives as the durable substrate the M10 Proposed Effects workflow will use.
  */
 export class ApprovalService {
   constructor(private readonly db: Database) {}
@@ -107,8 +109,12 @@ export type ProposeResult =
   | { status: "denied"; reason: string };
 
 /**
- * Propose a tool call: allow -> execute now; destructive -> create an approval
- * and pause; deny -> blocked.
+ * Propose a tool call: allow -> execute now; requires_proposal -> create an
+ * approval and pause; deny -> blocked.
+ *
+ * @deprecated M5 scaffolding kept for the old milestone demos. M10 Proposed
+ * Effects are immutable artifacts executed by a non-model executor (§7.9) —
+ * do not build new review flows on this path.
  */
 export async function proposeToolCall(
   gateway: ToolGateway,
@@ -126,7 +132,7 @@ export async function proposeToolCall(
     const result = await gateway.run(toolName, input, ctx);
     return { status: "executed", result };
   }
-  // needs_approval
+  // requires_proposal
   const ar = await approvals.request({
     tenantId: ctx.tenantId,
     taskId: ctx.taskId,
@@ -142,6 +148,9 @@ export async function proposeToolCall(
 /**
  * Execute a previously-approved tool call exactly once (write-action
  * idempotency: a retry/duplicate never double-executes).
+ *
+ * @deprecated M5 scaffolding kept for the old milestone demos — see
+ * {@link proposeToolCall}. The M10 executor replaces this.
  */
 export async function executeApproved(
   gateway: ToolGateway,

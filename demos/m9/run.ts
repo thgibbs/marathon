@@ -47,7 +47,7 @@ async function main(): Promise<void> {
         ...makeGithubWriteTools(() => gh),
         makeCliTool(["echo"]), // default NoSandbox
       ]),
-      // merge is GRANTED but destructive -> still needs approval; cli.run granted.
+      // merge is GRANTED but a proposed_effect -> never a direct call; cli.run granted.
       policy: { grants: [{ tool: "github.read_file" }, { tool: "github.merge_pull_request" }, { tool: "cli.run" }] } as ToolPolicy,
       secrets: new EnvSecretStore({ GITHUB_TOKEN: SENTINEL }),
       recorder: dbToolRecorder(db),
@@ -62,7 +62,7 @@ async function main(): Promise<void> {
     } catch (e) {
       blocked = e instanceof ToolBlockedError;
     }
-    assert(blocked, "destructive tool must be blocked regardless of injected intent");
+    assert(blocked, "high-risk tool must be blocked regardless of injected intent");
     assert(gh.writes.filter((w) => w.op === "mergePullRequest").length === 0, "merge must NOT have executed");
     console.log("[m9] injected 'merge the PR' -> blocked by policy (outside the model)");
 

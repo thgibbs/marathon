@@ -4,9 +4,11 @@ import {
   ToolBlockedError,
   ToolGateway,
   ToolRegistry,
+  checkEgress,
   type AuditRecord,
   type ToolInvocationRecord,
 } from "../src/gateway";
+import { InMemorySourceLedger } from "../src/ledger";
 import type { Tool } from "../src/types";
 
 const ctx = { taskId: "t1", tenantId: "tenant1", agentId: "a1" };
@@ -24,11 +26,13 @@ function makeRecorder() {
   };
 }
 
+const AXES = { reversible: true, crossesTrustBoundary: false, audience: "private", costly: false } as const;
+
 const echoTool: Tool = {
   name: "echo",
   description: "echo",
-  riskLevel: "low",
-  destructive: false,
+  riskAxes: AXES,
+  defaultMode: "autonomous",
   async execute(input) {
     return { content: String(input.text ?? "") };
   },
@@ -37,50 +41,101 @@ const echoTool: Tool = {
 const secretLeakTool: Tool = {
   name: "leaky",
   description: "returns a secret-looking string",
-  riskLevel: "low",
-  destructive: false,
+  riskAxes: AXES,
+  defaultMode: "autonomous",
   async execute() {
     return { content: "here is a key sk-abcdef0123456789ABCDEF stay safe" };
   },
 };
 
+function gw(tools: Tool[], opts: Partial<ConstructorParameters<typeof ToolGateway>[0]> = {}) {
+  return new ToolGateway({
+    registry: new ToolRegistry(tools),
+    policy: { grants: tools.map((t) => ({ tool: t.name })) },
+    secrets: new EnvSecretStore({}),
+    ...opts,
+  });
+}
+
 describe("ToolGateway", () => {
   it("executes a granted tool and records ok + audit", async () => {
     const { invocations, audits, recorder } = makeRecorder();
-    const gw = new ToolGateway({
-      registry: new ToolRegistry([echoTool]),
-      policy: { grants: [{ tool: "echo" }] },
-      secrets: new EnvSecretStore({}),
-      recorder,
-    });
-    const res = await gw.run("echo", { text: "hi" }, ctx);
+    const res = await gw([echoTool], { recorder }).run("echo", { text: "hi" }, ctx);
     expect(res.content).toBe("hi");
     expect(invocations[0]?.status).toBe("ok");
+    expect(invocations[0]?.riskAxes).toEqual(AXES);
     expect(audits.map((a) => a.eventType)).toContain("tool.called");
   });
 
-  it("blocks an ungranted tool and audits policy.denied", async () => {
+  it("blocks an ungranted tool and audits policy.denied with a typed code", async () => {
     const { invocations, audits, recorder } = makeRecorder();
-    const gw = new ToolGateway({
-      registry: new ToolRegistry([echoTool]),
-      policy: { grants: [] },
-      secrets: new EnvSecretStore({}),
-      recorder,
-    });
-    await expect(gw.run("echo", {}, ctx)).rejects.toBeInstanceOf(ToolBlockedError);
+    const g = gw([echoTool], { recorder, policy: { grants: [] } });
+    const err = await g.run("echo", {}, ctx).catch((e) => e);
+    expect(err).toBeInstanceOf(ToolBlockedError);
+    expect((err as ToolBlockedError).code).toBe("not_granted");
     expect(invocations[0]?.status).toBe("blocked");
     expect(audits.map((a) => a.eventType)).toContain("policy.denied");
   });
 
+  it("routes a proposed_effect tool to requires_proposal", async () => {
+    const highRisk: Tool = { ...echoTool, name: "danger", defaultMode: "proposed_effect" };
+    const err = await gw([highRisk]).run("danger", {}, ctx).catch((e) => e);
+    expect(err).toBeInstanceOf(ToolBlockedError);
+    expect((err as ToolBlockedError).decision).toBe("requires_proposal");
+    expect((err as ToolBlockedError).code).toBe("requires_proposal");
+  });
+
+  it("records reads in the source ledger", async () => {
+    const ledger = new InMemorySourceLedger();
+    const reader: Tool = {
+      ...echoTool,
+      name: "repo.read",
+      sources: () => [{ source: "github:o/r", sensitivity: "company_viewable" }],
+    };
+    await gw([reader], { sourceLedger: ledger }).run("repo.read", {}, ctx);
+    expect(ledger.list("t1")).toEqual([{ source: "github:o/r", sensitivity: "company_viewable" }]);
+  });
+
+  it("blocks tenant-external egress (must be a Proposed Effect)", async () => {
+    const { audits, recorder } = makeRecorder();
+    const poster: Tool = {
+      ...echoTool,
+      name: "post.external",
+      egress: () => ({ destination: "slack-connect:C1", audience: "external", external: true }),
+    };
+    const err = await gw([poster], { recorder }).run("post.external", {}, ctx).catch((e) => e);
+    expect(err).toBeInstanceOf(ToolBlockedError);
+    expect((err as ToolBlockedError).code).toBe("egress_blocked");
+    expect(audits.map((a) => a.eventType)).toContain("egress.denied");
+  });
+
+  it("blocks internal egress after reading a restricted source; allows company_viewable", async () => {
+    const ledger = new InMemorySourceLedger();
+    const reader: Tool = {
+      ...echoTool,
+      name: "repo.read",
+      sources: () => [{ source: "github:o/secret", sensitivity: "restricted" }],
+    };
+    const poster: Tool = {
+      ...echoTool,
+      name: "post.internal",
+      egress: () => ({ destination: "github:o/r", audience: "tenant", external: false }),
+    };
+    const g = gw([reader, poster], { sourceLedger: ledger });
+
+    // Before any restricted read, internal egress flows.
+    await expect(g.run("post.internal", {}, ctx)).resolves.toBeTruthy();
+
+    await g.run("repo.read", {}, ctx);
+    const err = await g.run("post.internal", {}, ctx).catch((e) => e);
+    expect(err).toBeInstanceOf(ToolBlockedError);
+    expect((err as ToolBlockedError).code).toBe("egress_blocked");
+    expect((err as ToolBlockedError).reason).toContain("github:o/secret");
+  });
+
   it("never writes credential-looking material to recorded summaries", async () => {
     const { invocations, recorder } = makeRecorder();
-    const gw = new ToolGateway({
-      registry: new ToolRegistry([secretLeakTool]),
-      policy: { grants: [{ tool: "leaky" }] },
-      secrets: new EnvSecretStore({}),
-      recorder,
-    });
-    await gw.run("leaky", { token: "sk-abcdef0123456789ABCDEF" }, ctx);
+    await gw([secretLeakTool], { recorder }).run("leaky", { token: "sk-abcdef0123456789ABCDEF" }, ctx);
     const rec = invocations[0]!;
     expect(rec.inputSummary).not.toContain("sk-abcdef0123456789ABCDEF");
     expect(rec.outputSummary).not.toContain("sk-abcdef0123456789ABCDEF");
@@ -92,11 +147,22 @@ describe("ToolGateway", () => {
       ...echoTool,
       validate: (input) => (typeof input.text === "string" ? null : "text required"),
     };
-    const gw = new ToolGateway({
-      registry: new ToolRegistry([validated]),
-      policy: { grants: [{ tool: "echo" }] },
-      secrets: new EnvSecretStore({}),
-    });
-    await expect(gw.run("echo", {}, ctx)).rejects.toThrow(/invalid input/);
+    await expect(gw([validated]).run("echo", {}, ctx)).rejects.toThrow(/invalid input/);
+  });
+});
+
+describe("checkEgress", () => {
+  it("passes internal egress over public/company_viewable sources", () => {
+    expect(
+      checkEgress({ destination: "github:o/r", audience: "tenant", external: false }, [
+        { source: "github:o/r", sensitivity: "company_viewable" },
+        { source: "web:docs", sensitivity: "public" },
+      ]),
+    ).toBeNull();
+  });
+
+  it("always blocks external/public destinations", () => {
+    expect(checkEgress({ destination: "x", audience: "public", external: false }, [])).toMatch(/Proposed Effect/);
+    expect(checkEgress({ destination: "x", audience: "team", external: true }, [])).toMatch(/Proposed Effect/);
   });
 });

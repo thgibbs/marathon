@@ -6,8 +6,8 @@ import { runGovernedTool } from "../src/governed";
 const readTool: Tool = {
   name: "github.read_file",
   description: "",
-  riskLevel: "low",
-  destructive: false,
+  riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "private", costly: false },
+  defaultMode: "autonomous",
   async execute() {
     return { content: "file contents" };
   },
@@ -15,8 +15,8 @@ const readTool: Tool = {
 const mergeTool: Tool = {
   name: "github.merge_pull_request",
   description: "",
-  riskLevel: "high",
-  destructive: true,
+  riskAxes: { reversible: false, crossesTrustBoundary: false, audience: "tenant", costly: false },
+  defaultMode: "proposed_effect",
   async execute() {
     return { content: "merged" };
   },
@@ -36,9 +36,9 @@ describe("runGovernedTool", () => {
     expect(o).toEqual({ status: "ok", content: "file contents" });
   });
 
-  it("returns approval_required for a destructive tool", async () => {
+  it("returns requires_proposal for a proposed_effect tool", async () => {
     const o = await runGovernedTool(gateway, "github.merge_pull_request", { number: 1 }, ctx);
-    expect(o.status).toBe("approval_required");
+    expect(o.status).toBe("requires_proposal");
   });
 
   it("returns denied for an ungranted tool", async () => {

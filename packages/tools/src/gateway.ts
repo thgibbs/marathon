@@ -1,7 +1,8 @@
 import type { SecretStore } from "@marathon/config";
-import { redactSecrets, riskAxesFromLegacy, type RiskAxes } from "@marathon/core";
+import { redactSecrets, type RiskAxes } from "@marathon/core";
+import type { SourceLedger } from "./ledger";
 import { enforce, type PolicyDecision, type PolicyResult } from "./policy";
-import type { Tool, ToolInput, ToolPolicy, ToolResult } from "./types";
+import type { EgressTarget, SourceRead, Tool, ToolInput, ToolPolicy, ToolResult } from "./types";
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
@@ -16,21 +17,43 @@ export class ToolRegistry {
   }
 }
 
+/**
+ * Typed, agent-visible reasons a gateway call did not run. Stable codes so the
+ * agent loop (and the code-handoff path) can react to *which* check failed
+ * rather than parsing prose.
+ */
+export type GatewayErrorCode =
+  | "unknown_tool"
+  | "not_granted"
+  | "constraint_violation"
+  | "tool_disabled"
+  | "requires_proposal"
+  | "egress_blocked";
+
 export class ToolBlockedError extends Error {
   constructor(
     public readonly reason: string,
     public readonly decision: PolicyDecision,
+    public readonly code: GatewayErrorCode,
   ) {
     super(reason);
     this.name = "ToolBlockedError";
   }
 }
 
+/** Recorded axes for calls blocked before a tool was resolved. */
+const UNRESOLVED_RISK_AXES: RiskAxes = {
+  reversible: true,
+  crossesTrustBoundary: false,
+  audience: "private",
+  costly: false,
+};
+
 export interface ToolInvocationRecord {
   taskId: string;
   toolName: string;
   status: "ok" | "blocked" | "error";
-  /** Bridged from the tool's legacy riskLevel/destructive until tools declare axes (Track 5). */
+  /** The tool's declared §7.8 risk axes. */
   riskAxes: RiskAxes;
   inputSummary: string;
   outputSummary?: string;
@@ -65,21 +88,33 @@ export interface ToolGatewayOptions {
   policy: ToolPolicy;
   secrets: SecretStore;
   recorder?: ToolRecorder;
+  /**
+   * Per-task source-sensitivity ledger (§7.8, §12.2). When set, governed reads
+   * are recorded and egressing calls are routed against what the task has read.
+   */
+  sourceLedger?: SourceLedger;
   /** Redact secrets from recorded summaries (on by default). */
   redactTrace?: boolean;
 }
 
-/**
- * The single chokepoint for tool side effects (design.md §7.8): validate ->
- * enforce policy -> inject credentials -> execute -> redact -> record
- * (ToolInvocation + audit). Credentials are resolved inside the tool via
- * `ctx.secrets` and never written to the recorded summaries.
- */
 export interface RunOptions {
-  /** Bypass the destructive -> needs_approval gate (an approval was granted). */
+  /**
+   * @deprecated M5 scaffolding: lets a reviewed `requires_proposal` call
+   * execute. M10 Proposed Effects use a non-model executor over immutable
+   * artifacts (§7.9) — do not build new review flows on this flag.
+   */
   approved?: boolean;
 }
 
+/**
+ * The single chokepoint for tool side effects (design §7.8): validate ->
+ * enforce policy -> record reads in the source ledger -> route egress ->
+ * inject credentials -> execute -> redact -> record (ToolInvocation + audit).
+ * A deterministic safety perimeter, not a policy brain — what an agent may do
+ * is bounded by credential scope and the resource's own permissions.
+ * Credentials are resolved inside the tool via `ctx.secrets` and never written
+ * to the recorded summaries.
+ */
 export class ToolGateway {
   constructor(private readonly opts: ToolGatewayOptions) {}
 
@@ -101,35 +136,54 @@ export class ToolGateway {
     const tool = this.opts.registry.get(toolName);
 
     if (!tool) {
-      await this.record({ taskId: ctx.taskId, toolName, status: "blocked", riskAxes: riskAxesFromLegacy("low", false), inputSummary, error: "unknown tool" });
+      await this.record({ taskId: ctx.taskId, toolName, status: "blocked", riskAxes: UNRESOLVED_RISK_AXES, inputSummary, error: "unknown tool" });
       await this.audit(ctx, "policy.denied", `unknown tool: ${toolName}`);
-      throw new ToolBlockedError(`unknown tool: ${toolName}`, "deny");
+      throw new ToolBlockedError(`unknown tool: ${toolName}`, "deny", "unknown_tool");
     }
 
     const validationError = tool.validate?.(input) ?? null;
     if (validationError) {
-      await this.record({ taskId: ctx.taskId, toolName, status: "error", riskAxes: riskAxesFromLegacy(tool.riskLevel, tool.destructive), inputSummary, error: `invalid input: ${validationError}` });
+      await this.record({ taskId: ctx.taskId, toolName, status: "error", riskAxes: tool.riskAxes, inputSummary, error: `invalid input: ${validationError}` });
       throw new Error(`invalid input for ${toolName}: ${validationError}`);
     }
 
-
     const decision = enforce(this.opts.policy, tool, input);
-    // A granted approval lets a destructive call through; deny is always terminal.
-    const allowed = decision.decision === "allow" || (decision.decision === "needs_approval" && opts.approved === true);
+    // The deprecated approved flag lets a reviewed requires_proposal call run; deny is always terminal.
+    const allowed = decision.decision === "allow" || (decision.decision === "requires_proposal" && opts.approved === true);
     if (!allowed) {
-      await this.record({ taskId: ctx.taskId, toolName, status: "blocked", riskAxes: riskAxesFromLegacy(tool.riskLevel, tool.destructive), inputSummary, error: decision.reason });
+      await this.record({ taskId: ctx.taskId, toolName, status: "blocked", riskAxes: tool.riskAxes, inputSummary, error: decision.reason });
       await this.audit(ctx, "policy.denied", `${decision.decision}: ${toolName} (${decision.reason ?? ""})`);
-      throw new ToolBlockedError(decision.reason ?? "blocked", decision.decision);
+      throw new ToolBlockedError(decision.reason ?? "blocked", decision.decision, policyErrorCode(decision));
+    }
+
+    // Egress routing (§7.8): deterministic checks over the source ledger and the
+    // declared destination — never a content classifier.
+    const egressTarget = tool.egress?.(input) ?? null;
+    if (egressTarget) {
+      const sources = this.opts.sourceLedger ? await this.opts.sourceLedger.list(ctx.taskId) : [];
+      const violation = checkEgress(egressTarget, sources);
+      if (violation) {
+        await this.record({ taskId: ctx.taskId, toolName, status: "blocked", riskAxes: tool.riskAxes, inputSummary, error: violation });
+        await this.audit(ctx, "egress.denied", `${toolName} -> ${egressTarget.destination}: ${violation}`);
+        throw new ToolBlockedError(violation, "deny", "egress_blocked");
+      }
+    }
+
+    // Record reads before executing (§7.8: the ledger reflects everything handed
+    // to the model, even if a later step fails).
+    const sourcesRead = tool.sources?.(input) ?? [];
+    if (sourcesRead.length && this.opts.sourceLedger) {
+      await this.opts.sourceLedger.record(ctx.taskId, sourcesRead);
     }
 
     try {
       const result = await tool.execute(input, { ...ctx, secrets: this.opts.secrets });
       const outputSummary = redact(result.content).slice(0, 2000);
-      await this.record({ taskId: ctx.taskId, toolName, status: "ok", riskAxes: riskAxesFromLegacy(tool.riskLevel, tool.destructive), inputSummary, outputSummary });
+      await this.record({ taskId: ctx.taskId, toolName, status: "ok", riskAxes: tool.riskAxes, inputSummary, outputSummary });
       await this.audit(ctx, "tool.called", `${toolName} ok`);
       return result;
     } catch (err) {
-      await this.record({ taskId: ctx.taskId, toolName, status: "error", riskAxes: riskAxesFromLegacy(tool.riskLevel, tool.destructive), inputSummary, error: redact(String(err)) });
+      await this.record({ taskId: ctx.taskId, toolName, status: "error", riskAxes: tool.riskAxes, inputSummary, error: redact(String(err)) });
       throw err;
     }
   }
@@ -148,6 +202,33 @@ export class ToolGateway {
       actorAgentId: ctx.agentId,
     });
   }
+}
+
+/**
+ * Deterministic egress routing (§7.8), kernel calibration: egress that leaves
+ * the tenant boundary is always a Proposed Effect (none registered in the
+ * kernel, so direct calls are blocked); internal egress flows unless the task
+ * read a `restricted` source (kernel default: repo content is
+ * `company_viewable`, so nothing trips this until finer tiers are configured).
+ */
+export function checkEgress(target: EgressTarget, sources: SourceRead[]): string | null {
+  if (target.external || target.audience === "external" || target.audience === "public") {
+    return `tenant-external egress to ${target.destination} must go through a Proposed Effect (§7.9), not a direct tool call`;
+  }
+  const restricted = sources.filter((s) => s.sensitivity === "restricted");
+  if (restricted.length > 0) {
+    const names = restricted.map((s) => s.source).join(", ");
+    return `this task read restricted source(s) [${names}] — egress to ${target.destination} is denied (§7.8)`;
+  }
+  return null;
+}
+
+function policyErrorCode(result: PolicyResult): GatewayErrorCode {
+  if (result.decision === "requires_proposal") return "requires_proposal";
+  const reason = result.reason ?? "";
+  if (reason.startsWith("tool not granted")) return "not_granted";
+  if (reason.startsWith("tool is disabled")) return "tool_disabled";
+  return "constraint_violation";
 }
 
 function safeJson(value: unknown): string {

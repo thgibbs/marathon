@@ -1,6 +1,6 @@
 import { isDocTemplate, renderDocument } from "@marathon/surface";
 import type { Tool } from "@marathon/tools";
-import type { GithubClientFactory } from "./tools";
+import { repoEgress, repoSource, type GithubClientFactory } from "./tools";
 
 function lines(content: string, start?: number, end?: number): string {
   if (start === undefined && end === undefined) return content;
@@ -11,16 +11,18 @@ function lines(content: string, start?: number, end?: number): string {
 }
 
 /**
- * Document tools backed by GitHub markdown (design.md §7.17, §14.6). Producing a
- * document = opening a PR (non-destructive, autonomous). Updating re-validates
- * the file's git SHA (stale-SHA rejection).
+ * Document tools backed by GitHub markdown (design.md §7.17, §14.6). Producing
+ * or revising a document = working a PR, so create/update/revise are
+ * **native review** (§7.8): the call runs, and the human's merge is the
+ * approval. Updating re-validates the file's git SHA (stale-SHA rejection).
  */
 export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
   const readRegion: Tool = {
     name: "document.read_region",
     description: "Read a markdown file (optionally a line range) from a repo.",
-    riskLevel: "low",
-    destructive: false,
+    riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "private", costly: false },
+    defaultMode: "autonomous",
+    sources: repoSource,
     validate(input) {
       if (typeof input.repo !== "string") return "repo is required";
       if (typeof input.path !== "string") return "path is required";
@@ -39,8 +41,9 @@ export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
   const create: Tool = {
     name: "document.create",
     description: "Create a markdown document by opening a pull request.",
-    riskLevel: "medium",
-    destructive: false,
+    riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "tenant", costly: false },
+    defaultMode: "native_review",
+    egress: repoEgress,
     validate(input) {
       if (typeof input.repo !== "string") return "repo is required";
       if (typeof input.path !== "string") return "path is required";
@@ -69,8 +72,9 @@ export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
   const update: Tool = {
     name: "document.update",
     description: "Update a markdown document via a pull request (re-validates the file SHA).",
-    riskLevel: "medium",
-    destructive: false,
+    riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "tenant", costly: false },
+    defaultMode: "native_review",
+    egress: repoEgress,
     validate(input) {
       if (typeof input.repo !== "string") return "repo is required";
       if (typeof input.path !== "string") return "path is required";
@@ -95,8 +99,9 @@ export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
   const revise: Tool = {
     name: "document.revise",
     description: "Revise an existing document by committing to its PR branch (updates the open PR).",
-    riskLevel: "medium",
-    destructive: false,
+    riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "tenant", costly: false },
+    defaultMode: "native_review",
+    egress: repoEgress,
     validate(input) {
       if (typeof input.repo !== "string") return "repo is required";
       if (typeof input.path !== "string") return "path is required";
@@ -128,8 +133,9 @@ export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
   const comment: Tool = {
     name: "document.comment",
     description: "Comment on a PR or issue.",
-    riskLevel: "low",
-    destructive: false,
+    riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "tenant", costly: false },
+    defaultMode: "autonomous",
+    egress: repoEgress,
     validate(input) {
       if (typeof input.repo !== "string") return "repo is required";
       if (typeof input.number !== "number") return "number is required";
@@ -146,8 +152,9 @@ export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
   const replyToComment: Tool = {
     name: "document.reply_to_comment",
     description: "Reply to a pull-request review comment (threaded under it).",
-    riskLevel: "low",
-    destructive: false,
+    riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "tenant", costly: false },
+    defaultMode: "autonomous",
+    egress: repoEgress,
     validate(input) {
       if (typeof input.repo !== "string") return "repo is required";
       if (typeof input.number !== "number") return "number (PR number) is required";

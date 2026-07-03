@@ -5,13 +5,25 @@ import type { Tool, ToolPolicy } from "../src/types";
 const readTool: Tool = {
   name: "github.read_file",
   description: "",
-  riskLevel: "low",
-  destructive: false,
+  riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "private", costly: false },
+  defaultMode: "autonomous",
   async execute() {
     return { content: "" };
   },
 };
-const destructiveTool: Tool = { ...readTool, name: "deploy.rollback", riskLevel: "high", destructive: true };
+const nativeReviewTool: Tool = {
+  ...readTool,
+  name: "document.create",
+  riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "tenant", costly: false },
+  defaultMode: "native_review",
+};
+const highRiskTool: Tool = {
+  ...readTool,
+  name: "deploy.rollback",
+  riskAxes: { reversible: false, crossesTrustBoundary: false, audience: "tenant", costly: false },
+  defaultMode: "proposed_effect",
+};
+const disabledTool: Tool = { ...readTool, name: "email.send", defaultMode: "disabled" };
 
 describe("enforce", () => {
   it("denies ungranted tools", () => {
@@ -22,9 +34,14 @@ describe("enforce", () => {
     });
   });
 
-  it("allows a granted non-destructive tool", () => {
+  it("allows a granted autonomous tool", () => {
     const policy: ToolPolicy = { grants: [{ tool: "github.read_file" }] };
     expect(enforce(policy, readTool, {}).decision).toBe("allow");
+  });
+
+  it("allows a granted native-review tool (review happens in the artifact's surface)", () => {
+    const policy: ToolPolicy = { grants: [{ tool: "document.create" }] };
+    expect(enforce(policy, nativeReviewTool, {}).decision).toBe("allow");
   });
 
   it("enforces repo allowlist constraints", () => {
@@ -38,8 +55,16 @@ describe("enforce", () => {
     });
   });
 
-  it("requires approval for destructive tools (even when granted)", () => {
+  it("routes proposed_effect tools to requires_proposal (even when granted)", () => {
     const policy: ToolPolicy = { grants: [{ tool: "deploy.rollback" }] };
-    expect(enforce(policy, destructiveTool, {}).decision).toBe("needs_approval");
+    expect(enforce(policy, highRiskTool, {}).decision).toBe("requires_proposal");
+  });
+
+  it("denies disabled tools (even when granted)", () => {
+    const policy: ToolPolicy = { grants: [{ tool: "email.send" }] };
+    expect(enforce(policy, disabledTool, {})).toEqual({
+      decision: "deny",
+      reason: "tool is disabled: email.send",
+    });
   });
 });

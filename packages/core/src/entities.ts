@@ -12,13 +12,6 @@ export type FeedbackType = "thumbs_up" | "thumbs_down" | "free_text";
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "cancelled";
 
 /**
- * @deprecated The single-scale risk model is retired (design §7.8) — use
- * {@link RiskAxes}. Only the legacy `Tool` interface still carries this until
- * declared axes land on tools (migration Track 5).
- */
-export type RiskLevel = "low" | "medium" | "high" | "critical";
-
-/**
  * Risk classification axes (design §7.8) — retires the single
  * `riskLevel`/`destructive` model. An effect is classified on all four axes;
  * its default handling mode is a function of them plus the connector's
@@ -37,21 +30,6 @@ export interface RiskAxes {
 
 /** A tool's default handling mode (design §7.8, §10.6). */
 export type ToolDefaultMode = "autonomous" | "native_review" | "proposed_effect" | "disabled";
-
-/**
- * Bridge from the legacy `riskLevel`/`destructive` tool metadata to risk axes,
- * so storage stops encoding the old model before every tool declares its axes
- * (Track 5). Conservative: destructive maps to irreversible; high spend maps
- * to costly; the exfil and audience axes cannot be inferred and default safe.
- */
-export function riskAxesFromLegacy(riskLevel: RiskLevel, destructive: boolean): RiskAxes {
-  return {
-    reversible: !destructive,
-    crossesTrustBoundary: false,
-    audience: "team",
-    costly: riskLevel === "high" || riskLevel === "critical",
-  };
-}
 
 export interface Tenant {
   id: Id;

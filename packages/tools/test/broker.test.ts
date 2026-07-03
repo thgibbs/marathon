@@ -4,11 +4,13 @@ import { handleToolRequest } from "../src/broker";
 import { ToolGateway, ToolRegistry } from "../src/gateway";
 import type { Tool, ToolPolicy } from "../src/types";
 
+const AXES = { reversible: true, crossesTrustBoundary: false, audience: "private", costly: false } as const;
+
 const readTool: Tool = {
   name: "doc.read",
   description: "",
-  riskLevel: "low",
-  destructive: false,
+  riskAxes: AXES,
+  defaultMode: "autonomous",
   async execute() {
     return { content: "file contents (secret ghp_SENTINEL0000000000000000000000000000)" };
   },
@@ -16,8 +18,8 @@ const readTool: Tool = {
 const deleteTool: Tool = {
   name: "doc.delete",
   description: "",
-  riskLevel: "high",
-  destructive: true,
+  riskAxes: { ...AXES, reversible: false },
+  defaultMode: "proposed_effect",
   async execute() {
     return { content: "deleted" };
   },
@@ -25,8 +27,8 @@ const deleteTool: Tool = {
 const boomTool: Tool = {
   name: "boom",
   description: "",
-  riskLevel: "low",
-  destructive: false,
+  riskAxes: AXES,
+  defaultMode: "autonomous",
   async execute() {
     throw new Error("kaboom");
   },
@@ -47,9 +49,9 @@ describe("handleToolRequest (tool broker)", () => {
     if (r.status === "ok") expect(r.content).not.toContain("ghp_SENTINEL"); // gateway redacts
   });
 
-  it("returns approval_required for a destructive tool (no throw)", async () => {
+  it("returns requires_proposal for a proposed_effect tool (no throw)", async () => {
     const r = await handleToolRequest(gateway, ctx, { tool: "doc.delete", input: {} });
-    expect(r.status).toBe("approval_required");
+    expect(r.status).toBe("requires_proposal");
   });
 
   it("returns denied for an ungranted tool", async () => {

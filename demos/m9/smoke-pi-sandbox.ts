@@ -45,8 +45,8 @@ async function main(): Promise<void> {
   const hostHostnameTool: Tool = {
     name: "host_hostname",
     description: "Return the hostname of the host machine.",
-    riskLevel: "low",
-    destructive: false,
+    riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "private", costly: false },
+    defaultMode: "autonomous",
     async execute() {
       hostToolCalled = true;
       return { content: os.hostname() };

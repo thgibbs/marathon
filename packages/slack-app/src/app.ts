@@ -6,7 +6,7 @@ import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
 import { Queue } from "@marathon/queue";
 import { RealSlackClient, SlackDelivery, SocketModeClient } from "@marathon/surface-slack";
-import { ToolGateway, ToolRegistry } from "@marathon/tools";
+import { InMemorySourceLedger, ToolGateway, ToolRegistry } from "@marathon/tools";
 import { InvocationRouter, makeAgentTaskStepRunner, Orchestrator, Worker } from "@marathon/worker";
 
 const SLACK_AGENT_PERSONA =
@@ -44,13 +44,15 @@ export async function startSlackApp(): Promise<void> {
   const memory = new PgVectorMemoryStore(cfg.databaseUrl, new OpenAIEmbedder(secrets));
 
   // Governed GitHub read tools, exposed to the agent through the Tool Gateway
-  // (policy + credential injection + audit + redaction). Read-only for now — write
-  // tools need the in-thread approval flow (roadmap §2b #1).
+  // (policy + credential injection + source ledger + audit + redaction). Read-only
+  // for now; reads land in the per-task source ledger so egressing tools can be
+  // routed deterministically when they are added (§7.8).
   const toolGateway = new ToolGateway({
     registry: new ToolRegistry(makeGithubReadTools(httpGithubClientFactory())),
     policy: { grants: [{ tool: "github.read_file" }, { tool: "github.list_contents" }] },
     secrets,
     recorder: dbToolRecorder(db),
+    sourceLedger: new InMemorySourceLedger(),
   });
   const runtime = new PiAgentRuntime({
     secrets,
