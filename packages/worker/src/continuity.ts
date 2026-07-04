@@ -1,5 +1,6 @@
 import { parseCheckpoint, type Checkpoint, type DeliveryTarget, type Id, type Task } from "@marathon/core";
 import type { DeliveryFanout } from "@marathon/surface";
+import { jobKindForSourceRef } from "./build-step";
 
 /**
  * Iteration continuity (code-migration.md Track 12; design §7.18, §11.6):
@@ -16,7 +17,7 @@ export interface ContinuityDb {
 }
 
 export interface ContinuityQueue {
-  enqueue(input: { taskId: Id; idempotencyKey?: string }): Promise<{ deduped: boolean }>;
+  enqueue(input: { taskId: Id; kind?: string; idempotencyKey?: string }): Promise<{ deduped: boolean }>;
 }
 
 export type ResumeOutcome =
@@ -68,8 +69,13 @@ export async function resumeWithInput(
   }
 
   // The answer is staged and the task is running — the only remaining durable
-  // effect is the job, idempotent on the surface event.
-  const { deduped } = await queue.enqueue({ taskId, idempotencyKey: opts.idempotencyKey });
+  // effect is the job, idempotent on the surface event. The kind is re-derived
+  // from the task so the resume reaches the same worker partition (Track 15).
+  const { deduped } = await queue.enqueue({
+    taskId,
+    kind: jobKindForSourceRef(task.sourceRef),
+    idempotencyKey: opts.idempotencyKey,
+  });
   if (deduped) return { resumed: false, reason: "duplicate" };
   return { resumed: true, task };
 }

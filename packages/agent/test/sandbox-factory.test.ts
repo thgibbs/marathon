@@ -2,8 +2,10 @@ import { DockerContainer, dockerStartArgs } from "@marathon/tools";
 import { describe, expect, it } from "vitest";
 import {
   KERNEL_TOOLCHAIN_IMAGE,
+  resolveSandboxNetwork,
   workspaceContainerOptions,
   workspaceSandbox,
+  workspaceSandboxFromSpec,
 } from "../src/sandbox-factory";
 import type { AgentRequest } from "../src/types";
 
@@ -61,5 +63,36 @@ describe("workspaceSandbox (Track 11)", () => {
   it("passes the shell through for the toolchain image", () => {
     expect(workspaceSandbox({ shellPath: "/bin/bash" }, {}).shellPath).toBe("/bin/bash");
     expect(workspaceSandbox({}, {}).shellPath).toBeUndefined();
+  });
+});
+
+describe("per-agent sandbox network (Track 15)", () => {
+  it("takes the network from the agent YAML when the env is silent", () => {
+    expect(resolveSandboxNetwork({ network: "bridge" }, {}, {})).toBe("bridge");
+    expect(resolveSandboxNetwork({ network: "none" }, {}, {})).toBe("none");
+  });
+
+  it('strictness composes: "none" from ANY source wins', () => {
+    expect(resolveSandboxNetwork({ network: "bridge" }, {}, { MARATHON_SANDBOX_NETWORK: "none" })).toBe("none");
+    expect(resolveSandboxNetwork({ network: "none" }, {}, { MARATHON_SANDBOX_NETWORK: "bridge" })).toBe("none");
+    expect(resolveSandboxNetwork({ network: "bridge" }, { network: "none" }, {})).toBe("none");
+    expect(resolveSandboxNetwork({ network: "bridge" }, {}, { MARATHON_SANDBOX_NETWORK: "bridge" })).toBe("bridge");
+  });
+
+  it("no caller can RELAX a strict env or spec (BUILD wiring exposes options)", () => {
+    // An explicit bridge option must not loosen "none" from the YAML or env.
+    expect(resolveSandboxNetwork({ network: "none" }, { network: "bridge" }, {})).toBe("none");
+    expect(resolveSandboxNetwork({ network: "bridge" }, { network: "bridge" }, { MARATHON_SANDBOX_NETWORK: "none" })).toBe("none");
+  });
+
+  it("among non-strict values, options win over env over spec", () => {
+    expect(resolveSandboxNetwork({ network: "bridge" }, { network: "host-custom" }, { MARATHON_SANDBOX_NETWORK: "env-net" })).toBe("host-custom");
+    expect(resolveSandboxNetwork({ network: "bridge" }, {}, { MARATHON_SANDBOX_NETWORK: "env-net" })).toBe("env-net");
+  });
+
+  it("workspaceSandboxFromSpec builds spec-driven containers", () => {
+    const sandbox = workspaceSandboxFromSpec({ sandbox: { network: "none" } }, {}, {});
+    const container = sandbox.createContainer(req, ws);
+    expect(container).toBeInstanceOf(DockerContainer);
   });
 });

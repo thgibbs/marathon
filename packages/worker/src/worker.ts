@@ -10,6 +10,7 @@ import {
 } from "@marathon/core";
 import { Database } from "@marathon/db";
 import { backoffMs, classifyError, Queue } from "@marathon/queue";
+import { jobKindForSourceRef } from "./build-step";
 
 /** Thrown to simulate a hard crash mid-run: the lease is abandoned (no ack/nack). */
 export class SimulatedCrash extends Error {
@@ -22,6 +23,14 @@ export class SimulatedCrash extends Error {
 export interface WorkerOptions {
   stepRunner: StepRunner;
   visibilityMs?: number;
+  /**
+   * Job kinds this worker leases (Track 15). Workers on a shared queue
+   * partition BY KIND at dequeue time — a job is only ever leased by a worker
+   * that owns its kind, so distinct workers (the BUILD worker, the general
+   * agent worker) can never steal each other's work. Omit to lease every kind
+   * (single-worker deployments, demo sweepers).
+   */
+  kinds?: string[];
   /** Test hook: abandon the lease right after persisting this step index. */
   crashAfterStepIndex?: number;
   /** Heartbeat cadence is implicit (once per step) for M1. */
@@ -56,7 +65,7 @@ export class Worker {
   }
 
   async runOnce(): Promise<RunOutcome> {
-    const job = await this.queue.dequeue(this.visibilityMs);
+    const job = await this.queue.dequeue(this.visibilityMs, { kinds: this.opts.kinds });
     if (!job || !job.leaseToken) return "idle";
     const token = job.leaseToken;
 
@@ -265,6 +274,8 @@ export class Orchestrator {
     });
     const { deduped } = await this.queue.enqueue({
       taskId: task.id,
+      // Partition by kind (Track 15): BUILD-stage tasks reach the BUILD worker.
+      kind: jobKindForSourceRef(input.sourceRef),
       idempotencyKey: input.idempotencyKey,
     });
     await this.db.transitionTask(task.id, "queued");

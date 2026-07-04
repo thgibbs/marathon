@@ -4,6 +4,9 @@ export * from "./backoff";
 
 export type JobStatus = "ready" | "leased" | "done" | "dead";
 
+/** The kind jobs are enqueued with when none is given. */
+export const DEFAULT_JOB_KIND = "task";
+
 export interface Job {
   id: string;
   taskId: string | null;
@@ -56,7 +59,7 @@ export class Queue {
        values ($1, $2, $3, $4)
        on conflict (idempotency_key) do nothing
        returning *`,
-      [input.taskId ?? null, input.kind ?? "task", input.idempotencyKey ?? null, input.maxAttempts ?? 5],
+      [input.taskId ?? null, input.kind ?? DEFAULT_JOB_KIND, input.idempotencyKey ?? null, input.maxAttempts ?? 5],
     );
     if (rows[0]) return { job: rowToJob(rows[0]), deduped: false };
     if (input.idempotencyKey) {
@@ -79,8 +82,11 @@ export class Queue {
   /**
    * Atomically lease the next available job: either a ready job whose time has
    * come, or a leased job whose visibility deadline has passed (crash recovery).
+   * `kinds` partitions workers on a shared queue (Track 15): a filtered worker
+   * only ever leases jobs of its own kinds, so it can never consume — or
+   * dead-letter — work that belongs to another worker.
    */
-  async dequeue(visibilityMs: number): Promise<Job | null> {
+  async dequeue(visibilityMs: number, opts: { kinds?: string[] } = {}): Promise<Job | null> {
     const { rows } = await this.pool.query(
       `update job set
          status = 'leased',
@@ -90,14 +96,15 @@ export class Queue {
          updated_at = now()
        where id = (
          select id from job
-         where (status = 'ready' and available_at <= now())
-            or (status = 'leased' and leased_until < now())
+         where ((status = 'ready' and available_at <= now())
+            or (status = 'leased' and leased_until < now()))
+           and ($2::text[] is null or kind = any($2))
          order by available_at
          for update skip locked
          limit 1
        )
        returning *`,
-      [visibilityMs],
+      [visibilityMs, opts.kinds ?? null],
     );
     return rows[0] ? rowToJob(rows[0]) : null;
   }

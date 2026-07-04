@@ -1,3 +1,4 @@
+import type { AgentSandboxConfig } from "@marathon/config";
 import { DockerContainer, type DockerContainerOptions } from "@marathon/tools";
 import type { PiAgentOptions } from "./pi";
 import type { AgentWorkspaceBinding } from "./types";
@@ -56,6 +57,37 @@ export function workspaceContainerOptions(
     pidsLimit: opts.pidsLimit ?? DEFAULT_PIDS,
     dockerPath: opts.dockerPath,
   };
+}
+
+/**
+ * Resolve the sandbox network for an agent spec (Track 15 closes Track 14's
+ * "per-agent sandbox.network reaches BUILD wiring"). Strictness composes:
+ * `"none"` from ANY source — explicit options, the deployment env, or the
+ * agent YAML — wins, so no caller (including `makeBuildWiring`'s exposed
+ * sandbox options) can relax a strict deployment or a strict agent. Among
+ * non-strict values, precedence is options > env > spec.
+ */
+export function resolveSandboxNetwork(
+  sandbox: AgentSandboxConfig,
+  opts: WorkspaceSandboxOptions = {},
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const envNetwork = env.MARATHON_SANDBOX_NETWORK;
+  if (opts.network === "none" || envNetwork === "none" || sandbox.network === "none") return "none";
+  return opts.network ?? envNetwork ?? sandbox.network;
+}
+
+/**
+ * {@link workspaceSandbox}, with the network mode driven by the agent's YAML
+ * `sandbox:` config (§6.2) — how a spec-configured BUILD runner should wire
+ * its containers.
+ */
+export function workspaceSandboxFromSpec(
+  spec: { sandbox: AgentSandboxConfig },
+  opts: WorkspaceSandboxOptions = {},
+  env: NodeJS.ProcessEnv = process.env,
+): NonNullable<PiAgentOptions["sandbox"]> {
+  return workspaceSandbox({ ...opts, network: resolveSandboxNetwork(spec.sandbox, opts, env) }, env);
 }
 
 /**

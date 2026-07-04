@@ -5,7 +5,7 @@ MARATHON_DB_PORT ?= 5432
 DATABASE_URL ?= postgres://marathon:marathon@localhost:$(MARATHON_DB_PORT)/marathon
 export DATABASE_URL MARATHON_DB_PORT
 
-.PHONY: install hooks secret-scan sandbox-image db-up db-down migrate typecheck test demo demo-k1 demo-k1-brokered demo-k4 demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-github-app demo-slack-app slack-app github-app smoke-pi smoke-github smoke-github-write smoke-github-doc smoke-pi-tools smoke-mem0 smoke-sandbox smoke-broker smoke-container smoke-pi-sandbox smoke-k4 smoke-slack down
+.PHONY: install hooks secret-scan sandbox-image db-up db-down migrate typecheck test demo demo-kernel demo-k1 demo-k1-brokered demo-k1-network demo-k2 demo-k3 demo-k4 demo-k5 demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-github-app demo-slack-app slack-app github-app smoke-pi smoke-github smoke-github-write smoke-github-doc smoke-pi-tools smoke-mem0 smoke-sandbox smoke-broker smoke-container smoke-pi-sandbox smoke-k4 smoke-slack down
 
 install:
 	pnpm install
@@ -52,10 +52,35 @@ demo-k1:
 demo-k1-brokered:
 	pnpm --filter @marathon/demo-k1-brokered start
 
+# K1 network reality (Track 8/17): the sandbox fetches public docs/packages
+# over the open internet with NO company secrets inside; the strict opt-in
+# (network: none) blocks egress. Requires Docker; skips gracefully without it.
+demo-k1-network:
+	pnpm --filter @marathon/demo-k1-network start
+
+# K2: delivery targets fan out to the Slack thread AND the doc PR — idempotent
+# per (task, target, kind), cross-linked, with the silent cost footer (§13.3).
+demo-k2:
+	pnpm --filter @marathon/demo-k2 start
+
+# K3: comment/reply iteration continuity — a thread reply answers a durable
+# wait or chains a continuation; doc/code PR comments become revisions (§29.6).
+demo-k3: db-up migrate
+	pnpm --filter @marathon/demo-k3 start
+
 # K4: kill a multi-turn BUILD run mid-flight -> a fresh worker resumes from the
 # per-turn checkpoint (session + workspace diff) -> exactly one PR (design §11.2, §29).
 demo-k4: db-up migrate
 	pnpm --filter @marathon/demo-k4 start
+
+# K5: `@agent status` renders the §15.3 view (state, current step, PR link);
+# final results carry the silent cost footer.
+demo-k5: db-up migrate
+	pnpm --filter @marathon/demo-k5 start
+
+# The kernel umbrella (design §0.6, roadmap K6): the CI regression guard for
+# the whole loop, built from the K1-K5 demos.
+demo-kernel: demo-k1-brokered demo-k1-network demo-k2 demo-k3 demo-k4 demo-k5
 
 demo-m0: db-up migrate
 	pnpm --filter @marathon/demo-m0 start
@@ -143,7 +168,8 @@ smoke-k4: db-up migrate
 smoke-slack:
 	pnpm --filter @marathon/demo-m4 smoke
 
-# Runs the full demo chain (grows as milestones land).
-demo: demo-k1 demo-k1-brokered demo-k4 demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-github-app demo-slack-app
+# Runs the full demo chain — kernel demos first (they are the critical path),
+# then the milestone regressions.
+demo: demo-k1 demo-k1-brokered demo-k1-network demo-k2 demo-k3 demo-k4 demo-k5 demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-github-app demo-slack-app
 
 down: db-down

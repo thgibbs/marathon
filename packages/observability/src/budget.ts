@@ -39,3 +39,28 @@ export async function assertWithinBudget(db: Database, scope: BudgetScope, polic
   if (status.state === "exceeded") throw new BudgetExceededError(status);
   return status;
 }
+
+/**
+ * What per-task budget enforcement needs from the database (Track 15, §7.11).
+ * Structural so step runners with narrow db seams (BuildStepDb) qualify.
+ */
+export interface TaskSpendReader {
+  sumModelCostUsd(taskId: string): Promise<number>;
+}
+
+/** Evaluate one task's actual model spend against its hard cap (design §0.4: "a hard per-task cost cap"). */
+export async function checkTaskBudget(db: TaskSpendReader, taskId: string, policy: BudgetPolicy): Promise<BudgetStatus> {
+  const spent = await db.sumModelCostUsd(taskId);
+  return evaluateBudget(spent, policy);
+}
+
+/**
+ * Enforce the per-task cap before incurring more spend; throws if already
+ * exceeded. Checked at turn boundaries, so a runaway run stops at the first
+ * checkpoint past the limit (fail closed) rather than running to completion.
+ */
+export async function assertWithinTaskBudget(db: TaskSpendReader, taskId: string, policy: BudgetPolicy): Promise<BudgetStatus> {
+  const status = await checkTaskBudget(db, taskId, policy);
+  if (status.state === "exceeded") throw new BudgetExceededError(status);
+  return status;
+}

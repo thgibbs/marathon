@@ -123,7 +123,14 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
       checkpoint: emptyCheckpoint(),
     });
     await deps.gateway.run("document.revise", { repo, path: loc.path, content: turn.text, branch: loc.branch }, ctx);
-    await deps.delivery.deliverResult({ repo, number }, { summary: `Revised the document on PR #${number} per your comments.` });
+    await deps.delivery.deliverResult(
+      { repo, number },
+      {
+        summary: `Revised the document on PR #${number} per your comments.`,
+        // Silent cost footer (Track 16, §13.3) — consistent with Slack delivery.
+        costUsd: await deps.db.sumModelCostUsd(task.id),
+      },
+    );
     return;
   }
 
@@ -158,7 +165,13 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
     addTargets(task.deliveryTargets, { surfaceType: "github", ref: { repo, number: prNumber, kind: "pr" } }),
   );
 
-  await deps.delivery.deliverResult({ repo, number }, { summary: `Drafted design doc: PR #${prNumber} — comment to revise, merge to execute.` });
+  await deps.delivery.deliverResult(
+    { repo, number },
+    {
+      summary: `Drafted design doc: PR #${prNumber} — comment to revise, merge to execute.`,
+      costUsd: await deps.db.sumModelCostUsd(task.id),
+    },
+  );
   await deps.db.transitionTask(task.id, "running");
   await deps.db.transitionTask(task.id, "waiting_for_approval");
 }

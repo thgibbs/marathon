@@ -4,7 +4,7 @@ import { httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from 
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
-import { Queue } from "@marathon/queue";
+import { DEFAULT_JOB_KIND, Queue } from "@marathon/queue";
 import { DeliveryFanout } from "@marathon/surface";
 import { RealSlackClient, SlackDelivery, SocketModeClient } from "@marathon/surface-slack";
 import { InMemorySourceLedger, ToolGateway, ToolRegistry, toolPolicyFromSpec } from "@marathon/tools";
@@ -149,11 +149,17 @@ export async function startSlackApp(): Promise<void> {
       instructions: flagship.instructions,
       // Hard per-agent spend cap from the YAML (fails closed when exceeded).
       budget: flagship.budget ? { policy: flagship.budget } : undefined,
+      // The same limit as a hard per-task cap (Track 15, §0.4): one runaway
+      // task cannot spend the whole agent budget.
+      taskBudget: flagship.budget,
       // Track 12: thread history rides into the prompt, fenced as untrusted.
       loadContext: (task) => delivery.loadContext(task.sourceRef, { limit: 30 }),
     }),
     // Track 12: clarifying questions publish durably BEFORE the task parks.
     onWaiting: makeWaitingNotifier(db, fanout),
+    // Partitioned dequeue (Track 15): this worker owns general agent jobs;
+    // BUILD-kind jobs belong to the github-app's BUILD worker.
+    kinds: [DEFAULT_JOB_KIND],
     visibilityMs: 120_000,
   });
   const orchestrator = new Orchestrator(db, queue);

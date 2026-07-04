@@ -1,5 +1,6 @@
 import { parseCheckpoint, surfaceEventKey, type DeliveryTarget } from "@marathon/core";
 import { Database } from "@marathon/db";
+import { getTaskStatus, renderStatusText } from "@marathon/observability";
 import { Queue } from "@marathon/queue";
 import {
   DeliveryFanout,
@@ -87,6 +88,33 @@ async function runAndReport(deps: AppDeps, taskId: string, fallbackRef: Record<s
   await fanout.deliverResult(taskId, targets, result);
 }
 
+/** Is this mention a status ask (Track 16, §15.3) rather than new work? */
+export function isStatusAsk(text: string): boolean {
+  return text.trim().toLowerCase() === "status";
+}
+
+/**
+ * `@agent status` in a task's thread (Track 16, §15.3): reply with what the
+ * task is doing, what it finished, what it waits on, and cost so far. Read-only
+ * — never routes a task.
+ */
+export async function handleStatusAsk(
+  deps: AppDeps,
+  event: SlackAppMentionEvent,
+  sourceRef: Record<string, unknown>,
+): Promise<void> {
+  // The mention's thread anchors the lookup: asked inside a task's thread,
+  // thread_ts is the original ask's ts — the key tasks are stored under.
+  const threadTs = event.thread_ts ?? event.ts;
+  const task = await deps.db.findLatestTaskByThread(deps.tenantId, event.channel, threadTs);
+  if (!task) {
+    await deps.delivery.postProgress(sourceRef, "I don't see a task in this thread — ask me for status in the thread where you asked for the work.");
+    return;
+  }
+  const view = await getTaskStatus(deps.db, deps.tenantId, task.id);
+  await deps.delivery.postProgress(sourceRef, view ? renderStatusText(view) : "I couldn't load that task's status.");
+}
+
 export async function handleMention(
   deps: AppDeps,
   event: SlackAppMentionEvent,
@@ -102,6 +130,12 @@ export async function handleMention(
     knownAgents: deps.agents.map((a) => a.name),
     eventId,
   });
+
+  // Status ask (Track 16): answer from the task records, don't start work.
+  if (isStatusAsk(invocation.text)) {
+    await handleStatusAsk(deps, event, invocation.sourceRef);
+    return;
+  }
 
   await deps.delivery.acknowledge(invocation.sourceRef);
 
