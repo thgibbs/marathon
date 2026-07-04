@@ -16,7 +16,14 @@ import { Database, migrate } from "@marathon/db";
 import { Queue } from "@marathon/queue";
 import { bootstrapSlackApp, dispatchEnvelope, type AppDeps } from "@marathon/slack-app";
 import { FakeSlackClient, SlackDelivery, type SocketEnvelope } from "@marathon/surface-slack";
-import { InvocationRouter, makeAgentTaskStepRunner, Orchestrator, Worker } from "@marathon/worker";
+import { DeliveryFanout } from "@marathon/surface";
+import {
+  InvocationRouter,
+  makeAgentTaskStepRunner,
+  makeWaitingNotifier,
+  Orchestrator,
+  Worker,
+} from "@marathon/worker";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -102,6 +109,8 @@ async function main(): Promise<void> {
           }),
           { modelRef: "openai:gpt-4o-mini" },
         ),
+        // Track 12: the question publishes durably BEFORE the task parks.
+        onWaiting: makeWaitingNotifier(db, new DeliveryFanout({ slack: deps.delivery }, db)),
         visibilityMs: 10_000,
       }),
     };

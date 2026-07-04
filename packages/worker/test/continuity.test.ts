@@ -1,6 +1,7 @@
 import { FakeAgentRuntime, type AgentRequest } from "@marathon/agent";
 import {
   emptyCheckpoint,
+  InMemoryIdempotencyStore,
   parseCheckpoint,
   type Checkpoint,
   type Task,
@@ -8,9 +9,10 @@ import {
 } from "@marathon/core";
 import type { Database } from "@marathon/db";
 import type { Queue } from "@marathon/queue";
+import { DeliveryFanout, type SurfaceAdapter } from "@marathon/surface";
 import { describe, expect, it } from "vitest";
 import { makeAgentStepRunner } from "../src/agent-step";
-import { resumeWithInput } from "../src/continuity";
+import { makeWaitingNotifier, renderQuestion, resumeWithInput } from "../src/continuity";
 import { Worker } from "../src/worker";
 
 const request: AgentRequest = {
@@ -60,43 +62,87 @@ function makeHarness() {
   const jobs: Array<{ id: string; taskId: string; attempts: number; leaseToken: string }> = [];
   let seq = 1;
   const enqueued: string[] = [];
+  const failures: string[] = [];
   const queue = {
     enqueue: async (input: { taskId: string; idempotencyKey?: string }) => {
       if (input.idempotencyKey && enqueued.includes(input.idempotencyKey)) return { deduped: true };
       if (input.idempotencyKey) enqueued.push(input.idempotencyKey);
-      jobs.push({ id: `j${seq++}`, taskId: input.taskId, attempts: 0, leaseToken: `lease${seq}` });
+      jobs.push({ id: `j${seq++}`, taskId: input.taskId, attempts: 1, leaseToken: `lease${seq}` });
       return { deduped: false };
     },
     dequeue: async () => jobs.shift() ?? null,
     ack: async () => {},
     heartbeat: async () => {},
-    fail: async () => "retry" as const,
+    // A failed job is redelivered (attempts bumped), like the real queue.
+    fail: async (id: string, _token: string, error: string) => {
+      failures.push(error);
+      jobs.push({ id, taskId: "t1", attempts: (failures.length ?? 0) + 1, leaseToken: `lease${seq++}` });
+      return "retry" as const;
+    },
     kill: async () => {},
   };
   // Stubs are `as never` at the test boundary (see AGENTS.md rule 1).
-  return { db: db as never as Database, queue: queue as never as Queue, rawDb: db, steps, statuses, current: () => task };
+  return {
+    db: db as never as Database,
+    queue: queue as never as Queue,
+    rawDb: db,
+    steps,
+    statuses,
+    failures,
+    current: () => task,
+  };
 }
 
 describe("durable clarifying questions (Track 12, §11.6)", () => {
-  it("parks the task waiting_for_input, persists the question, and fires onWaiting", async () => {
+  it("publishes the question BEFORE parking, then parks waiting_for_input", async () => {
     const h = makeHarness();
     await (h.queue as unknown as { enqueue: (i: { taskId: string }) => Promise<unknown> }).enqueue({ taskId: "t1" });
     const runtime = new FakeAgentRuntime({
       turns: [{ text: "Need a detail.", ask: "prod or staging?" }, { text: "final answer" }],
     });
-    const asked: string[] = [];
+    const asked: Array<{ question: string; statusAtPublish: string }> = [];
     const worker = new Worker(h.queue, h.db, {
       stepRunner: makeAgentStepRunner(runtime, request),
-      onWaiting: (_taskId, w) => void asked.push(w.question),
+      onWaiting: (_taskId, w) =>
+        void asked.push({ question: w.question, statusAtPublish: h.current().status }),
     });
 
     const outcome = await worker.runOnce();
     expect(outcome).toBe("waiting");
     expect(h.current().status).toBe("waiting_for_input");
-    expect(asked).toEqual(["prod or staging?"]);
+    // The wait is only "real" once the question was heard: publish came first.
+    expect(asked).toEqual([{ question: "prod or staging?", statusAtPublish: "running" }]);
     const cp = parseCheckpoint(h.current().checkpoint);
     expect(cp.pendingQuestion).toBe("prod or staging?");
     expect(cp.completedSteps).toEqual(["turn:0"]); // the asking turn WAS completed
+  });
+
+  it("a failed question publish retries the JOB — never parks silently, never fails the task", async () => {
+    const h = makeHarness();
+    await (h.queue as unknown as { enqueue: (i: { taskId: string }) => Promise<unknown> }).enqueue({ taskId: "t1" });
+    const runtime = new FakeAgentRuntime({
+      turns: [{ text: "Need a detail.", ask: "prod or staging?" }, { text: "final answer" }],
+    });
+    let publishAttempts = 0;
+    const worker = new Worker(h.queue, h.db, {
+      stepRunner: makeAgentStepRunner(runtime, request),
+      onWaiting: () => {
+        publishAttempts++;
+        if (publishAttempts === 1) throw new Error("slack is down"); // NOT a "transient"-classified message
+      },
+    });
+
+    // Attempt 1: the ask turn persists, the publish fails, the job retries.
+    expect(await worker.runOnce()).toBe("retry");
+    expect(h.current().status).toBe("running"); // not parked, not failed
+    expect(h.failures[0]).toContain("question publish failed");
+
+    // Redelivery: the recovery gate re-publishes from the checkpointed
+    // question WITHOUT re-running any turn, then parks.
+    expect(await worker.runOnce()).toBe("waiting");
+    expect(publishAttempts).toBe(2);
+    expect(h.current().status).toBe("waiting_for_input");
+    expect(parseCheckpoint(h.current().checkpoint).completedSteps).toEqual(["turn:0"]); // no extra turns
   });
 
   it("resume stages the answer as a durable user:answer step and re-enqueues", async () => {
@@ -133,6 +179,43 @@ describe("durable clarifying questions (Track 12, §11.6)", () => {
     expect(replay).toEqual({ resumed: false, reason: "duplicate" });
   });
 
+  it("a crashed half-resume (answer staged, no job) is REPAIRED by the redelivered event", async () => {
+    const h = makeHarness();
+    // Simulate the crash window: transition landed, answer staged, but the
+    // enqueue never happened (task running + pendingUserInput, empty queue).
+    await h.rawDb.transitionTask("t1", "running");
+    await h.rawDb.completeStep("t1", "user:answer", {
+      completedSteps: ["turn:0"],
+      findings: ["Need a detail."],
+      pendingUserInput: "staging",
+    });
+
+    const repaired = await resumeWithInput(h.db, h.queue, "t1", "staging", { idempotencyKey: "ev-1" });
+    expect(repaired.resumed).toBe(true); // the repair path enqueued the missing job
+    // And it converges: a further replay of the same event dedupes.
+    const replay = await resumeWithInput(h.db, h.queue, "t1", "staging", { idempotencyKey: "ev-1" });
+    expect(replay).toEqual({ resumed: false, reason: "duplicate" });
+  });
+
+  it("tolerates losing the transition race to a concurrent resume", async () => {
+    const h = makeHarness();
+    await h.rawDb.transitionTask("t1", "running");
+    await h.rawDb.transitionTask("t1", "waiting_for_input");
+    // The rival resume transitions the task between our getTask and transition.
+    const db = {
+      ...h.rawDb,
+      transitionTask: async (id: string, to: string) => {
+        await h.rawDb.transitionTask(id, "running"); // rival wins first
+        if (to === "running") throw new Error("invalid task transition: running -> running");
+        return h.current();
+      },
+    };
+    const outcome = await resumeWithInput(db as never as Database, h.queue, "t1", "staging", {
+      idempotencyKey: "ev-1",
+    });
+    expect(outcome.resumed).toBe(true); // converged on the enqueue anyway
+  });
+
   it("ask -> park -> resume -> complete: the full loop, exactly once per turn", async () => {
     const h = makeHarness();
     await (h.queue as unknown as { enqueue: (i: { taskId: string }) => Promise<unknown> }).enqueue({ taskId: "t1" });
@@ -162,6 +245,50 @@ describe("durable clarifying questions (Track 12, §11.6)", () => {
     // Turn 1's input was the fenced ANSWER, not the original ask.
     expect(seen[1]).toContain("staging");
     expect(seen[1]).toMatch(/<<<UNTRUSTED user answer>>>/);
+  });
+});
+
+describe("makeWaitingNotifier (durable question publication)", () => {
+  function makeAdapter() {
+    const posted: string[] = [];
+    const adapter: SurfaceAdapter = {
+      acknowledge: async () => {},
+      postProgress: async (_ref, message) => void posted.push(message),
+      deliverResult: async () => {},
+    };
+    return { adapter, posted };
+  }
+
+  const waitingTask = (overrides: Partial<Task> = {}): Task =>
+    ({
+      id: "t1",
+      tenantId: "tn1",
+      sourceType: "slack",
+      sourceRef: { channel: "C1", thread_ts: "1.1" },
+      deliveryTargets: null,
+      status: "waiting_for_input",
+      checkpoint: { completedSteps: ["turn:0"], findings: [], pendingQuestion: "prod or staging?" },
+      ...overrides,
+    }) as never as Task;
+
+  it("fans the question out (source thread fallback) and dedupes per ask", async () => {
+    const { adapter, posted } = makeAdapter();
+    const fanout = new DeliveryFanout({ slack: adapter }, new InMemoryIdempotencyStore());
+    const notify = makeWaitingNotifier({ getTask: async () => waitingTask() }, fanout);
+
+    await notify("t1", { kind: "input", question: "prod or staging?" });
+    await notify("t1", { kind: "input", question: "prod or staging?" }); // worker retry
+    expect(posted).toEqual([renderQuestion("prod or staging?")]); // deduped per ask
+    expect(posted[0]).toContain("❓ prod or staging?");
+  });
+
+  it("throws when nobody could hear the question (missing task / no adapters)", async () => {
+    const fanout = new DeliveryFanout({}, new InMemoryIdempotencyStore());
+    const notify = makeWaitingNotifier({ getTask: async () => waitingTask() }, fanout);
+    await expect(notify("t1", { kind: "input", question: "q" })).rejects.toThrow(/no surface heard/);
+
+    const missing = makeWaitingNotifier({ getTask: async () => null }, fanout);
+    await expect(missing("t1", { kind: "input", question: "q" })).rejects.toThrow(/not found/);
   });
 });
 

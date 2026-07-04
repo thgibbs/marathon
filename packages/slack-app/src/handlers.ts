@@ -68,23 +68,16 @@ async function runAndReport(deps: AppDeps, taskId: string, fallbackRef: Record<s
   await deps.worker.drain();
 
   const finalTask = await deps.db.getTask(taskId);
+
+  // Durable wait (Track 12, §11.6): nothing to report here — the worker
+  // published the question BEFORE parking (onWaiting/makeWaitingNotifier), so
+  // the wait only exists once the question was durably heard.
+  if (finalTask?.status === "waiting_for_input") return;
+
   const cp = parseCheckpoint(finalTask?.checkpoint);
   const targets: DeliveryTarget[] =
     finalTask?.deliveryTargets ?? [{ surfaceType: "slack", ref: fallbackRef }];
   const fanout = deps.fanout ?? new DeliveryFanout({ slack: deps.delivery }, deps.db);
-
-  // Durable wait (Track 12, §11.6): the question goes to every surface; the
-  // task resumes when a thread reply answers it.
-  if (finalTask?.status === "waiting_for_input") {
-    await fanout.postProgress(
-      taskId,
-      targets,
-      `❓ ${cp.pendingQuestion ?? "The agent needs more input to continue."}\n_Reply in this thread to continue._`,
-      `question:${cp.completedSteps.length}`,
-    );
-    return;
-  }
-
   const cost = await deps.db.sumModelCostUsd(taskId);
   const result: StructuredResult = {
     summary: cp.findings.at(-1) ?? "(no response)",
@@ -137,11 +130,11 @@ export async function handleThreadReply(
   event: SlackMessageEvent,
   eventId?: string,
 ): Promise<void> {
-  if (eventId) {
-    const fresh = await deps.db.claim(`slack:event:${eventId}`);
-    if (!fresh) return;
-  }
-
+  // Deliberately NO upfront event claim: Slack's redelivery is the retry
+  // mechanism for a crashed half-resume. Both branches below are idempotent on
+  // the surface event (resume's convergent enqueue / the orchestrator's submit
+  // key), so duplicates cannot double-run — but a lost partial attempt is
+  // repaired by the next delivery instead of being swallowed by a stale claim.
   const invocation = parseThreadReply(event, { eventId });
   const threadTs = String(invocation.sourceRef.thread_ts);
   const task = await deps.db.findLatestTaskByThread(deps.tenantId, event.channel, threadTs);
