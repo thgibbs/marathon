@@ -130,6 +130,19 @@ describe("feedback → memory (OQ-3)", () => {
     expect(promoted.provenance?.promotedFrom).toBe(item.id);
     expect(await store.list({ tenantId: T, userId: "u1" })).toHaveLength(0); // original replaced
   });
+  it("rolls back the broad copy when deleting the original fails", async () => {
+    const store = new FakeMemoryStore();
+    const item = (await rememberCorrection(store, { tenantId: T, userId: "u1", projectId: "o/repo" }, "Check PR 4812 first."))!;
+    const failingForget = store.forget.bind(store);
+    store.forget = async (filter) => {
+      if (filter.id === item.id) throw new Error("backend down");
+      return failingForget(filter);
+    };
+    await expect(promoteMemory(store, item, "project")).rejects.toThrow("backend down");
+    const remaining = await store.list({ tenantId: T });
+    expect(remaining).toHaveLength(1); // only the narrow original — no broad duplicate
+    expect(remaining[0]!.level).toBe("user");
+  });
   it("promotion to tenant scope requires confirmation", async () => {
     const store = new FakeMemoryStore();
     const item = (await rememberCorrection(store, { tenantId: T, userId: "u1" }, "Check PR 4812 first."))!;

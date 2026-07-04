@@ -1,4 +1,5 @@
 import { itemRecallable, validateWrite } from "./audience";
+import { capResults } from "./score";
 import type { MemoryItem, MemoryLevel, MemoryScope, MemoryStore, NewMemoryItem, RecallQuery } from "./types";
 
 /**
@@ -34,14 +35,17 @@ export class Mem0MemoryStore implements MemoryStore {
       user_id: input.scope.tenantId,
       agent_id: input.agentId,
       run_id: input.scope.threadId,
+      // Store-owned audience fields come LAST: recall reconstructs the item's
+      // scope from this metadata, so caller metadata must never be able to
+      // spoof level/projectId/userId/threadId into a broader audience.
       metadata: {
+        ...input.metadata,
         level: input.level,
         term: input.term,
         kind: input.kind,
         projectId: input.scope.projectId,
         userId: input.scope.userId,
         threadId: input.scope.threadId,
-        ...input.metadata,
       },
     })) as { id?: string; results?: Array<{ id: string }> };
     const id = j.id ?? j.results?.[0]?.id ?? `mem0-${Date.now()}`;
@@ -62,17 +66,20 @@ export class Mem0MemoryStore implements MemoryStore {
 
   async recall(q: RecallQuery): Promise<MemoryItem[]> {
     if (q.audience.external) return [];
+    const limit = q.limit ?? 8;
     // Search the whole tenant namespace (a run_id filter would exclude
-    // long-term items); the audience gate below does the scoping.
+    // long-term items); the audience gate below does the scoping. Over-fetch
+    // like the pgvector store so gated-out top hits don't starve the result,
+    // then cap by limit + token budget AFTER gating.
     const j = (await this.api("/memories/search/", {
       query: q.query,
       user_id: q.scope.tenantId,
-      limit: q.limit ?? 8,
+      limit: Math.max(limit * 3, limit),
     })) as { results?: Array<{ id: string; memory?: string; text?: string; score?: number; agent_id?: string; metadata?: Record<string, unknown> }> };
-    return (j.results ?? [])
+    const recallable = (j.results ?? [])
       .map((r) => itemFromResult(r, q.scope.tenantId))
-      .filter((it) => itemRecallable(it, q.scope, q.audience))
-      .slice(0, q.limit ?? 8);
+      .filter((it) => itemRecallable(it, q.scope, q.audience));
+    return capResults(recallable, limit, q.tokenBudget);
   }
 
   async forget(filter: { id?: string }): Promise<number> {

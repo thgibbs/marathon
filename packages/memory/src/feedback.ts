@@ -59,6 +59,15 @@ export async function promoteMemory(
     metadata: item.metadata,
     provenance: { ...item.provenance, promotedFrom: item.id, confirmedBy: opts.confirmedBy },
   });
-  await store.forget({ id: item.id });
+  try {
+    await store.forget({ id: item.id });
+  } catch (err) {
+    // Write-then-delete isn't atomic across MemoryStore backends, so roll
+    // back the broad copy rather than leave BOTH audiences recallable. The
+    // error always surfaces either way: the caller knows the promotion did
+    // not complete and can retry against the narrow item.
+    await store.forget({ id: promoted.id }).catch(() => {});
+    throw err;
+  }
   return promoted;
 }
