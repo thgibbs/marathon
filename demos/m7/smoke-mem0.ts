@@ -13,15 +13,15 @@ async function main(): Promise<void> {
     return;
   }
   const store = new Mem0MemoryStore(key, process.env.MEM0_BASE_URL ?? undefined);
-  const scope = { tenantId: `marathon-smoke-${Date.now()}`, agentId: "bruce" };
+  const scope = { tenantId: `marathon-smoke-${Date.now()}`, userId: "tanton" };
   const marker = `checkout errors trace to PR-${Date.now()}`;
 
   console.log("[smoke-mem0] remember ...");
-  const item = await store.remember({ scope, level: "agent", term: "long", kind: "correction", text: marker });
+  const item = await store.remember({ scope, level: "user", term: "long", kind: "correction", text: marker, agentId: "bruce" });
   console.log(`  stored id=${item.id}`);
 
   console.log("[smoke-mem0] recall ...");
-  const hits = await store.recall({ query: "why did checkout errors happen", scope, limit: 5 });
+  const hits = await store.recall({ query: "why did checkout errors happen", scope, audience: { level: "user", userId: "tanton" }, limit: 5 });
   console.log(`  recalled ${hits.length} item(s)`);
   if (!hits.some((h) => h.text.includes("checkout"))) throw new Error("expected to recall the stored memory");
 

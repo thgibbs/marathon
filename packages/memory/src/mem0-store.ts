@@ -1,13 +1,15 @@
+import { itemRecallable, validateWrite } from "./audience";
 import type { MemoryItem, MemoryLevel, MemoryScope, MemoryStore, NewMemoryItem, RecallQuery } from "./types";
 
 /**
  * Mem0 adapter (first external backend). Maps Marathon's scope to Mem0's keys:
- *   tenant -> user_id (namespace) · agent -> agent_id · thread -> run_id
- *   project/level/term/kind -> metadata (and metadata filters on search).
+ *   tenant -> user_id (the namespace) · agent tag -> agent_id · thread -> run_id
+ *   project/user/level/term/kind -> metadata (recall re-applies the §7.12
+ *   audience gate client-side from that metadata).
  *
  * Talks to a Mem0 service over HTTP (hosted api.mem0.ai or self-hosted) — the Python
  * library is not embedded in-process. Best-effort / smoke-validated; extraction &
- * consolidation are Mem0-side and out of scope for M7's store-and-retrieve cut.
+ * consolidation are Mem0-side and out of scope for the store-and-retrieve cut.
  */
 export class Mem0MemoryStore implements MemoryStore {
   constructor(
@@ -26,37 +28,51 @@ export class Mem0MemoryStore implements MemoryStore {
   }
 
   async remember(input: NewMemoryItem): Promise<MemoryItem> {
+    validateWrite(input);
     const j = (await this.api("/memories/", {
       messages: [{ role: "user", content: input.text }],
       user_id: input.scope.tenantId,
-      agent_id: input.scope.agentId,
+      agent_id: input.agentId,
       run_id: input.scope.threadId,
-      metadata: { level: input.level, term: input.term, kind: input.kind, projectId: input.scope.projectId, ...input.metadata },
+      metadata: {
+        level: input.level,
+        term: input.term,
+        kind: input.kind,
+        projectId: input.scope.projectId,
+        userId: input.scope.userId,
+        threadId: input.scope.threadId,
+        ...input.metadata,
+      },
     })) as { id?: string; results?: Array<{ id: string }> };
     const id = j.id ?? j.results?.[0]?.id ?? `mem0-${Date.now()}`;
-    return { id, scope: input.scope, level: input.level, term: input.term, kind: input.kind, text: input.text, metadata: input.metadata, source: input.source, createdAt: new Date(), expiresAt: null };
+    return {
+      id,
+      scope: input.scope,
+      level: input.level,
+      term: input.term,
+      kind: input.kind,
+      agentId: input.agentId,
+      text: input.text,
+      metadata: input.metadata,
+      provenance: input.provenance,
+      createdAt: new Date(),
+      expiresAt: null,
+    };
   }
 
   async recall(q: RecallQuery): Promise<MemoryItem[]> {
+    if (q.audience.external) return [];
+    // Search the whole tenant namespace (a run_id filter would exclude
+    // long-term items); the audience gate below does the scoping.
     const j = (await this.api("/memories/search/", {
       query: q.query,
       user_id: q.scope.tenantId,
-      agent_id: q.scope.agentId,
-      run_id: q.scope.threadId,
       limit: q.limit ?? 8,
-    })) as { results?: Array<{ id: string; memory?: string; text?: string; score?: number; metadata?: Record<string, unknown> }> };
-    return (j.results ?? []).map((r) => ({
-      id: r.id,
-      scope: q.scope,
-      level: (r.metadata?.level as MemoryLevel) ?? "agent",
-      term: (r.metadata?.term as "short" | "long") ?? "long",
-      kind: (r.metadata?.kind as string) ?? "fact",
-      text: r.memory ?? r.text ?? "",
-      metadata: r.metadata,
-      createdAt: new Date(),
-      expiresAt: null,
-      score: r.score,
-    }));
+    })) as { results?: Array<{ id: string; memory?: string; text?: string; score?: number; agent_id?: string; metadata?: Record<string, unknown> }> };
+    return (j.results ?? [])
+      .map((r) => itemFromResult(r, q.scope.tenantId))
+      .filter((it) => itemRecallable(it, q.scope, q.audience))
+      .slice(0, q.limit ?? 8);
   }
 
   async forget(filter: { id?: string }): Promise<number> {
@@ -68,20 +84,38 @@ export class Mem0MemoryStore implements MemoryStore {
   async list(scope: Partial<MemoryScope>): Promise<MemoryItem[]> {
     const params = new URLSearchParams();
     if (scope.tenantId) params.set("user_id", scope.tenantId);
-    if (scope.agentId) params.set("agent_id", scope.agentId);
     const j = (await this.api(`/memories/?${params.toString()}`, null, "GET")) as {
-      results?: Array<{ id: string; memory?: string; metadata?: Record<string, unknown> }>;
+      results?: Array<{ id: string; memory?: string; agent_id?: string; metadata?: Record<string, unknown> }>;
     };
-    return (j.results ?? []).map((r) => ({
-      id: r.id,
-      scope: scope as MemoryScope,
-      level: (r.metadata?.level as MemoryLevel) ?? "agent",
-      term: (r.metadata?.term as "short" | "long") ?? "long",
-      kind: (r.metadata?.kind as string) ?? "fact",
-      text: r.memory ?? "",
-      metadata: r.metadata,
-      createdAt: new Date(),
-      expiresAt: null,
-    }));
+    return (j.results ?? [])
+      .map((r) => itemFromResult(r, scope.tenantId ?? ""))
+      .filter((it) => (scope.projectId === undefined || it.scope.projectId === scope.projectId) && (scope.userId === undefined || it.scope.userId === scope.userId));
   }
+}
+
+function itemFromResult(
+  r: { id: string; memory?: string; text?: string; score?: number; agent_id?: string; metadata?: Record<string, unknown> },
+  tenantId: string,
+): MemoryItem {
+  const md = r.metadata ?? {};
+  return {
+    id: r.id,
+    scope: {
+      tenantId,
+      projectId: (md.projectId as string) ?? undefined,
+      userId: (md.userId as string) ?? undefined,
+      threadId: (md.threadId as string) ?? undefined,
+    },
+    // Items written before the audience migration (or by other clients) may
+    // lack a level; treat them as tenant-wide, the old union behavior.
+    level: (md.level as MemoryLevel) ?? "tenant",
+    term: (md.term as "short" | "long") ?? "long",
+    kind: (md.kind as string) ?? "fact",
+    agentId: r.agent_id ?? undefined,
+    text: r.memory ?? r.text ?? "",
+    metadata: r.metadata,
+    createdAt: new Date(),
+    expiresAt: null,
+    score: r.score,
+  };
 }

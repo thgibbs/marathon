@@ -1,8 +1,7 @@
+import { itemRecallable, validateWrite } from "./audience";
 import { FakeEmbedder } from "./embedder";
-import { blendedScore, cosine, isExpired, recencyWeight, scopeMatches } from "./score";
-import type { Embedder, MemoryItem, MemoryLevel, MemoryScope, MemoryStore, NewMemoryItem, RecallQuery } from "./types";
-
-const LEVELS: MemoryLevel[] = ["tenant", "project", "agent", "thread"];
+import { blendedScore, capResults, cosine, isExpired, recencyWeight } from "./score";
+import type { Embedder, MemoryItem, MemoryScope, MemoryStore, NewMemoryItem, RecallQuery } from "./types";
 
 /** In-memory MemoryStore for unit tests/CI — same semantics as the pgvector store. */
 export class FakeMemoryStore implements MemoryStore {
@@ -19,6 +18,7 @@ export class FakeMemoryStore implements MemoryStore {
   }
 
   async remember(input: NewMemoryItem): Promise<MemoryItem> {
+    validateWrite(input);
     const id = `mem-${++this.seq}`;
     const createdAt = new Date(this.now());
     const item: MemoryItem = {
@@ -27,9 +27,10 @@ export class FakeMemoryStore implements MemoryStore {
       level: input.level,
       term: input.term,
       kind: input.kind,
+      agentId: input.agentId,
       text: input.text,
       metadata: input.metadata,
-      source: input.source,
+      provenance: input.provenance,
       createdAt,
       expiresAt: input.ttlMs != null ? new Date(this.now() + input.ttlMs) : null,
     };
@@ -40,17 +41,16 @@ export class FakeMemoryStore implements MemoryStore {
 
   async recall(q: RecallQuery): Promise<MemoryItem[]> {
     const now = this.now();
-    const levels = q.levels ?? LEVELS;
     const qvec = await this.embedder.embed(q.query);
     const scored = this.items
-      .filter((it) => levels.includes(it.level) && scopeMatches(it.scope, it.level, q.scope) && !isExpired(it, now))
+      .filter((it) => itemRecallable(it, q.scope, q.audience) && !isExpired(it, now))
       .map((it) => {
         const sim = cosine(qvec, this.vectors.get(it.id) ?? []);
-        const score = blendedScore(sim, recencyWeight(it.createdAt, now));
+        const score = blendedScore(sim, recencyWeight(it.createdAt, now), !!q.agentId && it.agentId === q.agentId);
         return { ...it, score };
       })
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-    return scored.slice(0, q.limit ?? 8);
+    return capResults(scored, q.limit ?? 8, q.tokenBudget);
   }
 
   async forget(filter: { id?: string; scope?: Partial<MemoryScope>; before?: Date }): Promise<number> {
