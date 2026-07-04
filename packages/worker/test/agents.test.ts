@@ -1,0 +1,83 @@
+import type { Agent, AgentVersion } from "@marathon/core";
+import { describe, expect, it } from "vitest";
+import { ensureAgentFromSpec, type AgentSeedDb } from "../src/agents";
+
+function makeDb() {
+  const agents = new Map<string, Agent>();
+  const versions: AgentVersion[] = [];
+  let seq = 1;
+  const db: AgentSeedDb = {
+    async findOrCreateAgent(tenantId, name) {
+      const key = `${tenantId}:${name}`;
+      const existing = agents.get(key);
+      if (existing) return existing;
+      const agent: Agent = {
+        id: `a${seq++}`,
+        tenantId,
+        name,
+        displayName: null,
+        description: null,
+        ownerUserId: null,
+        status: "active",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      agents.set(key, agent);
+      return agent;
+    },
+    async getLatestAgentVersion(agentId) {
+      const mine = versions.filter((v) => v.agentId === agentId);
+      return mine.sort((a, b) => b.versionNumber - a.versionNumber)[0] ?? null;
+    },
+    async createAgentVersion(input) {
+      const v: AgentVersion = {
+        id: `av${seq++}`,
+        agentId: input.agentId,
+        versionNumber: input.versionNumber,
+        status: "published",
+        instructions: input.instructions ?? null,
+        modelPolicy: null,
+        toolPolicy: null,
+        memoryPolicy: null,
+        approvalPolicy: null,
+        createdBy: null,
+        createdAt: new Date(),
+        publishedAt: new Date(),
+      };
+      versions.push(v);
+      return v;
+    },
+  };
+  return { db, versions };
+}
+
+const SPEC = { name: "forge", instructions: "You are Forge. Build from merged plans." };
+
+describe("ensureAgentFromSpec (Track 12: YAML instructions → AgentVersion)", () => {
+  it("first seed publishes version 1 with the spec's instructions", async () => {
+    const { db } = makeDb();
+    const res = await ensureAgentFromSpec(db, "tn1", SPEC);
+    expect(res.published).toBe(true);
+    expect(res.agent.name).toBe("forge");
+    expect(res.version.versionNumber).toBe(1);
+    expect(res.version.instructions).toBe(SPEC.instructions);
+  });
+
+  it("re-seeding with unchanged instructions is a no-op reusing the latest version", async () => {
+    const { db, versions } = makeDb();
+    const first = await ensureAgentFromSpec(db, "tn1", SPEC);
+    const again = await ensureAgentFromSpec(db, "tn1", SPEC);
+    expect(again.published).toBe(false);
+    expect(again.version.id).toBe(first.version.id);
+    expect(versions).toHaveLength(1);
+  });
+
+  it("changed instructions publish the next version number", async () => {
+    const { db, versions } = makeDb();
+    await ensureAgentFromSpec(db, "tn1", SPEC);
+    const updated = await ensureAgentFromSpec(db, "tn1", { ...SPEC, instructions: "v2 instructions" });
+    expect(updated.published).toBe(true);
+    expect(updated.version.versionNumber).toBe(2);
+    expect(versions).toHaveLength(2);
+  });
+});

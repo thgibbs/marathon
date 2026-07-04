@@ -5,9 +5,16 @@ import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
 import { Queue } from "@marathon/queue";
+import { DeliveryFanout } from "@marathon/surface";
 import { RealSlackClient, SlackDelivery, SocketModeClient } from "@marathon/surface-slack";
 import { InMemorySourceLedger, ToolGateway, ToolRegistry } from "@marathon/tools";
-import { InvocationRouter, makeAgentTaskStepRunner, Orchestrator, Worker } from "@marathon/worker";
+import {
+  InvocationRouter,
+  makeAgentTaskStepRunner,
+  makeWaitingNotifier,
+  Orchestrator,
+  Worker,
+} from "@marathon/worker";
 
 const SLACK_AGENT_PERSONA =
   "You are Marathon, a concise engineering assistant in Slack. You can read GitHub " +
@@ -56,6 +63,8 @@ export async function startSlackApp(): Promise<void> {
   });
   const runtime = new PiAgentRuntime({
     secrets,
+    // Track 12: the agent may ask ONE clarifying question and park the task.
+    clarification: true,
     governed: {
       gateway: toolGateway,
       tools: [
@@ -64,17 +73,29 @@ export async function startSlackApp(): Promise<void> {
       ],
     },
   });
+  const delivery = new SlackDelivery(new RealSlackClient(botToken));
+  const fanout = new DeliveryFanout({ slack: delivery }, db);
   const worker = new Worker(queue, db, {
-    stepRunner: makeAgentTaskStepRunner(db, runtime, { modelRef, memory, instructions: SLACK_AGENT_PERSONA }),
+    stepRunner: makeAgentTaskStepRunner(db, runtime, {
+      modelRef,
+      memory,
+      instructions: SLACK_AGENT_PERSONA,
+      // Track 12: thread history rides into the prompt, fenced as untrusted.
+      loadContext: (task) => delivery.loadContext(task.sourceRef, { limit: 30 }),
+    }),
+    // Track 12: clarifying questions publish durably BEFORE the task parks.
+    onWaiting: makeWaitingNotifier(db, fanout),
     visibilityMs: 120_000,
   });
-  const router = new InvocationRouter(db, new Orchestrator(db, queue));
-  const delivery = new SlackDelivery(new RealSlackClient(botToken));
+  const orchestrator = new Orchestrator(db, queue);
+  const router = new InvocationRouter(db, orchestrator);
 
   const deps: AppDeps = {
     db,
     router,
     worker,
+    queue,
+    orchestrator,
     delivery,
     tenantId: boot.tenantId,
     agents: boot.agents,

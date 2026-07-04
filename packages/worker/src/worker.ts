@@ -1,6 +1,7 @@
 import {
   isTerminal,
   parseCheckpoint,
+  type Checkpoint,
   type DeliveryTarget,
   type Id,
   type StepRunner,
@@ -24,9 +25,18 @@ export interface WorkerOptions {
   /** Test hook: abandon the lease right after persisting this step index. */
   crashAfterStepIndex?: number;
   /** Heartbeat cadence is implicit (once per step) for M1. */
+  /**
+   * Publishes the clarifying question to the task's surfaces (Track 12,
+   * §11.6) — see `makeWaitingNotifier`. The worker calls this BEFORE parking
+   * the task: a failed publish keeps the job alive (retry with backoff), and a
+   * redelivered job re-publishes from the checkpointed `pendingQuestion`
+   * without re-running the asking turn — the wait is never "published" until
+   * someone actually heard the question.
+   */
+  onWaiting?: (taskId: Id, waiting: { kind: "input"; question: string }) => Promise<void> | void;
 }
 
-export type RunOutcome = "idle" | "completed" | "crashed" | "retry" | "dead";
+export type RunOutcome = "idle" | "completed" | "waiting" | "crashed" | "retry" | "dead";
 
 /**
  * Leases one job at a time, advances its task step-by-step, checkpointing after
@@ -69,6 +79,11 @@ export class Worker {
       task = await this.ensureRunning(task);
       let checkpoint = parseCheckpoint(task.checkpoint);
 
+      // Recovery gate (Track 12): a redelivered job whose checkpoint carries an
+      // unanswered question re-publishes and re-parks — never runs more turns.
+      const recovered = await this.tryPark(job.id, token, job.taskId, job.attempts, checkpoint);
+      if (recovered) return recovered;
+
       // advance steps until done
       // eslint-disable-next-line no-constant-condition
       while (true) {
@@ -91,6 +106,21 @@ export class Worker {
 
         if (this.opts.crashAfterStepIndex === stepIndex) {
           throw new SimulatedCrash(stepIndex);
+        }
+
+        // Durable human wait (Track 12, §11.6): publish the question, THEN
+        // park. The asking turn's checkpoint already landed, so a publish
+        // failure retries this job into the recovery gate above — the wait is
+        // not "real" until the question was heard.
+        if (res.waiting) {
+          // The in-memory copy always carries the question, even if a custom
+          // runner forgot to stage it in the checkpoint.
+          const withQuestion: Checkpoint =
+            checkpoint.pendingQuestion !== undefined
+              ? checkpoint
+              : { ...checkpoint, pendingQuestion: res.waiting.question };
+          const parked = await this.tryPark(job.id, token, job.taskId, job.attempts, withQuestion);
+          if (parked) return parked;
         }
         if (res.done) break;
       }
@@ -137,6 +167,47 @@ export class Worker {
     if (t.status === "created") t = await this.db.transitionTask(t.id, "queued");
     if (t.status === "queued") t = await this.db.transitionTask(t.id, "running");
     return t;
+  }
+
+  /**
+   * Publish an unanswered staged question and park the task (Track 12, §11.6).
+   * Returns null when the checkpoint carries no unanswered question. Ordering
+   * is the durability contract:
+   *   1. publish via onWaiting — a failure keeps the JOB alive (retry with
+   *      backoff; never fails the task), and the redelivery re-enters here;
+   *   2. transition to waiting_for_input (tolerating a prior attempt that
+   *      crashed after transitioning);
+   *   3. ack the job — resumeWithInput enqueues a fresh one with the answer.
+   */
+  private async tryPark(
+    jobId: string,
+    token: string,
+    taskId: Id,
+    attempts: number,
+    checkpoint: Checkpoint,
+  ): Promise<RunOutcome | null> {
+    const question = checkpoint.pendingQuestion;
+    if (question === undefined || checkpoint.pendingUserInput !== undefined) return null;
+
+    try {
+      await this.opts.onWaiting?.(taskId, { kind: "input", question });
+    } catch (err) {
+      // Publish failures retry regardless of classifyError: losing the
+      // question would strand the task, and the task itself did nothing wrong.
+      const outcome = await this.queue.fail(
+        jobId,
+        token,
+        `question publish failed: ${String(err)}`,
+        backoffMs(attempts, { baseMs: 200, maxMs: 5_000 }),
+      );
+      return outcome === "dead" ? "dead" : "retry";
+    }
+    const current = await this.db.getTask(taskId);
+    if (current && current.status !== "waiting_for_input") {
+      await this.db.transitionTask(taskId, "waiting_for_input");
+    }
+    await this.queue.ack(jobId, token);
+    return "waiting";
   }
 
   private async safeFailTask(taskId: Id, _error: string): Promise<void> {

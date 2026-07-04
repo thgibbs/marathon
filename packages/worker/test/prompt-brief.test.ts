@@ -1,6 +1,8 @@
-import type { PlanRef } from "@marathon/core";
+import type { PlanRef, Task } from "@marathon/core";
+import type { Database } from "@marathon/db";
 import { describe, expect, it } from "vitest";
 import {
+  buildAgentPrompt,
   renderImplementationBrief,
   renderRevisionBrief,
   suggestedImplementationBranch,
@@ -61,6 +63,48 @@ describe("renderImplementationBrief (Track 10)", () => {
   it("omits the target section when there are none", () => {
     const bare = renderImplementationBrief({ planRef: PLAN });
     expect(bare).not.toContain("delivered to:");
+  });
+});
+
+describe("buildAgentPrompt surface context (Track 12, §7.18)", () => {
+  const task: Task = {
+    id: "t1",
+    tenantId: "tn1",
+    agentId: null, // no persona lookup -> the fake db is never touched
+    agentVersionId: null,
+    invokingUserId: null,
+    sourceTaskId: null,
+    sourceType: "slack",
+    sourceRef: { channel: "C1", thread_ts: "1.1" },
+    deliveryTargets: null,
+    status: "running",
+    inputText: "and what about staging?",
+    summary: null,
+    checkpoint: null,
+    costUsd: 0,
+    createdAt: new Date(),
+    startedAt: null,
+    completedAt: null,
+    failedAt: null,
+    cancelledAt: null,
+  };
+
+  it("fences thread context as untrusted, between memory and the request", async () => {
+    const { input } = await buildAgentPrompt({ db: {} as never as Database }, task, {
+      context: [
+        { author: "U1", text: "why did checkout break?", ts: "1.1" },
+        { text: "_on it…_", ts: "1.2" },
+      ],
+    });
+    expect(input).toContain("<<<UNTRUSTED thread context>>>");
+    expect(input).toContain("@U1: why did checkout break?");
+    expect(input).toContain("_on it…_");
+    expect(input.indexOf("thread context")).toBeLessThan(input.indexOf("<<<UNTRUSTED request>>>"));
+  });
+
+  it("omits the block when there is no context", async () => {
+    const { input } = await buildAgentPrompt({ db: {} as never as Database }, task, { context: [] });
+    expect(input).not.toContain("thread context");
   });
 });
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FakeSlackClient } from "../src/client";
 import { SlackDelivery } from "../src/delivery";
-import { parseAppMention, parseReactionFeedback } from "../src/parse";
+import { isThreadReply, parseAppMention, parseReactionFeedback, parseThreadReply } from "../src/parse";
 import { computeSlackSignature, verifySlackSignature } from "../src/signature";
 
 const SECRET = "test-signing-secret";
@@ -54,6 +54,35 @@ describe("parseReactionFeedback", () => {
   });
 });
 
+describe("thread replies (Track 12)", () => {
+  const reply = {
+    type: "message" as const,
+    user: "U1",
+    channel: "C1",
+    ts: "111.2",
+    thread_ts: "111.1",
+    text: "staging please",
+    team: "T1",
+  };
+
+  it("isThreadReply accepts only plain human in-thread messages", () => {
+    expect(isThreadReply(reply)).toBe(true);
+    expect(isThreadReply({ ...reply, bot_id: "B1" })).toBe(false);
+    expect(isThreadReply({ ...reply, subtype: "message_changed" })).toBe(false);
+    expect(isThreadReply({ ...reply, thread_ts: undefined })).toBe(false);
+    expect(isThreadReply({ ...reply, ts: "111.1" })).toBe(false); // the opener
+    expect(isThreadReply({ ...reply, text: "<@U0BOT> more" })).toBe(false); // arrives as app_mention
+    expect(isThreadReply({ ...reply, user: undefined })).toBe(false);
+  });
+
+  it("parseThreadReply anchors the invocation to its thread", () => {
+    const inv = parseThreadReply(reply, { eventId: "Ev9" });
+    expect(inv.sourceRef).toMatchObject({ channel: "C1", thread_ts: "111.1", event_id: "Ev9" });
+    expect(inv.text).toBe("staging please");
+    expect(inv.agentName).toBeNull();
+  });
+});
+
 describe("SlackDelivery", () => {
   it("posts a threaded result via the client", async () => {
     const client = new FakeSlackClient();
@@ -63,5 +92,19 @@ describe("SlackDelivery", () => {
     expect(client.messages[0]?.channel).toBe("C1");
     expect(client.messages[0]?.threadTs).toBe("111.1");
     expect(client.messages[0]?.text).toContain("done");
+  });
+
+  it("loads fenced-ready thread context via fetchReplies (Track 12)", async () => {
+    const client = new FakeSlackClient();
+    client.threads.set("C1:111.1", [{ user: "U1", text: "why did checkout break?", ts: "111.1" }]);
+    await client.postMessage("C1", "_on it…_", "111.1");
+    const delivery = new SlackDelivery(client);
+
+    const context = await delivery.loadContext({ channel: "C1", thread_ts: "111.1" });
+    expect(context).toHaveLength(2);
+    expect(context[0]).toMatchObject({ author: "U1", text: "why did checkout break?" });
+    expect(context[1]?.text).toBe("_on it…_");
+    // No thread anchor -> nothing to load.
+    expect(await delivery.loadContext({ channel: "C1" })).toEqual([]);
   });
 });

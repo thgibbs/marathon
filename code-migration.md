@@ -18,6 +18,26 @@ features.
 Progress against the tracks below, most recent first. The "Current mismatch" lists in each
 track describe the codebase *before* its work landed; completed tracks carry a status note.
 
+- **Track 12: prompt, context, and iteration continuity — done (2026-07-03, K3).**
+  Clarifying questions are a first-class durable wait: the runtime seam is
+  `AgentTurn.waiting` (Pi exposes an `ask_user` tool when `clarification: true`; the Fake
+  runtime scripts `ask:`), the step runners fold it into the checkpoint
+  (`pendingQuestion`/`pendingUserInput`, both surviving `parseCheckpoint`), and the worker
+  parks the task (`waiting_for_input`, new `"waiting"` outcome + `onWaiting` hook) instead of
+  completing or requeueing. `resumeWithInput` (worker/continuity.ts) stages the answer as a
+  durable `user:answer` step and re-enqueues; the next turn re-opens the session and consumes
+  the fenced answer. Slack replies route as continuations (`isThreadReply`/`parseThreadReply`
+  + `db.findLatestTaskByThread`): an answer resumes the wait, a reply to a finished loop
+  spawns a chained continuation task, chatter while running is left alone — with the
+  clarifying question fanned out in-thread (`❓ … reply in this thread`). Context loading is a
+  `SurfaceAdapter.loadContext` duty (Slack `conversations.replies`, GitHub issue comments),
+  fenced as `<<<UNTRUSTED thread context>>>` by `buildAgentPrompt` and wired into the Slack
+  step runner and both GitHub mention paths. Forge's instructions live in `agents/forge.yaml`
+  (`loadAgentSpec`/`parseAgentSpec` in @marathon/config) and publish through an
+  `AgentVersion` via `ensureAgentFromSpec` — the same path prompt assembly already reads.
+  `make demo-slack-app` now proves ask → durable wait → thread reply → resume → answer.
+  Memory recall semantics in the prompt builder stay pre-Track-13 (noted inline).
+
 - **Tracks 10–11: document workflow + sandbox/workspace reality — done (2026-07-03).**
   - **Track 10 (GitHub document workflow):** document branches are deterministic
     (`marathon/doc-<task>-<slug(path)>`; `document.create`/`update` converge on the existing
@@ -132,9 +152,9 @@ track describe the codebase *before* its work landed; completed tracks carry a s
   to the merge commit and inherited delivery targets; `packages/surface/src/fanout.ts`
   delivers to every target idempotently. `make demo-k1` proves the path.
 
-Not started: remaining Tracks 12–17 (prompt/context continuity beyond the BUILD
-briefs, memory migration, Forge YAML config/quickstart, model routing,
-status/cost UX, kernel demos beyond K1/K4/K1-brokered).
+Not started: remaining Tracks 13–17 (memory migration, Forge YAML *full* config
++ quickstart, model routing, status/cost UX, kernel demos beyond
+K1/K4/K1-brokered and the K3 slack-app round-trip).
 
 New design correction after Tracks 1–5: the original `github.submit_code_changes`
 contract is probably too heavy. Marathon should not replace normal `git` and `gh`
@@ -847,6 +867,12 @@ Required changes:
   - diff snapshot/replay.
 
 ## Track 12: Prompt, Context, and Iteration Continuity
+
+> **Status (2026-07-03): implemented** — see "Completed Work" above. Durable clarifying
+> questions (ask → park → thread-reply resume), Slack continuation routing, adapter-loaded
+> fenced context, and Forge instructions from YAML through AgentVersion. BUILD prompt items
+> landed earlier with Tracks 7/10; memory-recall semantics move with Track 13; full YAML
+> agent config (harness/tool grants/budgets) is Track 14.
 
 Design target:
 

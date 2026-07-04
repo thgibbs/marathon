@@ -40,6 +40,53 @@ export function parseAppMention(event: SlackAppMentionEvent, opts: ParseOptions 
   };
 }
 
+/** A plain `message` event — the shape thread replies arrive as (Track 12). */
+export interface SlackMessageEvent {
+  type: "message";
+  user?: string;
+  text?: string;
+  channel: string;
+  ts: string;
+  thread_ts?: string;
+  team?: string;
+  /** Set for bot posts (including our own) — never route those as replies. */
+  bot_id?: string;
+  /** Set for edits/joins/etc. — only plain user messages are replies. */
+  subtype?: string;
+}
+
+/**
+ * Classify a `message` event as a thread reply worth routing (Track 12): a
+ * plain human message inside a thread. Mentions are excluded — they arrive
+ * separately as `app_mention` and would double-handle.
+ */
+export function isThreadReply(event: SlackMessageEvent): boolean {
+  return (
+    event.type === "message" &&
+    event.subtype === undefined &&
+    event.bot_id === undefined &&
+    typeof event.thread_ts === "string" &&
+    event.thread_ts !== event.ts && // the thread opener is not a reply
+    typeof event.user === "string" &&
+    typeof event.text === "string" &&
+    event.text.trim() !== "" &&
+    !/<@[^>]+>/.test(event.text)
+  );
+}
+
+/** Parse a thread reply into a NormalizedInvocation anchored to its thread. */
+export function parseThreadReply(event: SlackMessageEvent, opts: ParseOptions = {}): NormalizedInvocation {
+  return {
+    surfaceType: "slack",
+    sourceRef: { channel: event.channel, thread_ts: event.thread_ts ?? event.ts, event_id: opts.eventId },
+    userExternalId: event.user ?? "unknown",
+    teamExternalId: event.team,
+    agentName: null,
+    text: (event.text ?? "").trim(),
+    eventId: opts.eventId,
+  };
+}
+
 export interface SlackReactionEvent {
   type: "reaction_added";
   user: string;

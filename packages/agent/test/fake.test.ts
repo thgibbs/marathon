@@ -43,4 +43,20 @@ describe("FakeAgentRuntime", () => {
     expect(after.done).toBe(true);
     expect(after.text).toBe("");
   });
+
+  it("an ask turn ends in a durable wait, never done (Track 12)", async () => {
+    const rt = new FakeAgentRuntime({
+      turns: [{ text: "one question", ask: "prod or staging?" }, { text: "answered" }],
+    });
+    const asked = await rt.nextTurn({ request, checkpoint: emptyCheckpoint() });
+    expect(asked.done).toBe(false);
+    expect(asked.waiting).toEqual({ question: "prod or staging?" });
+
+    const resumed = await rt.nextTurn({
+      request,
+      checkpoint: { completedSteps: ["turn:0"], findings: ["one question"] },
+    });
+    expect(resumed.waiting).toBeUndefined();
+    expect(resumed.done).toBe(true);
+  });
 });

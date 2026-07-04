@@ -3,6 +3,8 @@ import type { AgentRuntime, AgentTurn, AgentTurnContext } from "./types";
 
 export interface FakeTurnSpec {
   text: string;
+  /** Ask the user this clarifying question: the turn ends in a durable wait (Track 12). */
+  ask?: string;
   inputTokens?: number;
   outputTokens?: number;
 }
@@ -40,7 +42,9 @@ export class FakeAgentRuntime implements AgentRuntime {
     const { provider, model } = parseModelRef(ctx.request.modelRef || "fake:echo");
     return {
       text: turn.text,
-      done: i >= this.turns.length - 1,
+      // A clarifying question ends the turn in a durable wait, never `done`.
+      done: turn.ask ? false : i >= this.turns.length - 1,
+      waiting: turn.ask ? { question: turn.ask } : undefined,
       modelInvocation: {
         provider,
         model,
