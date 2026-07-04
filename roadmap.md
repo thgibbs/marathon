@@ -482,6 +482,9 @@ a corrected mistake isn't repeated — behind a **swappable memory store** (desi
 > commits to the draft PR's branch on a follow-up comment) and **watched documents** (#8 — a
 > `push` to a watched path bumps `last_revision_seen` and spawns a review task). Deferred as
 > planned: LLM fact-extraction/consolidation, Zep adapter.
+> **Superseded (2026-07-03):** the scope model below (agent as a scope, agent-scoped
+> corrections) was replaced by the audience model — see §2b #9; migration Track 13
+> implemented it (audience-gated recall, user-scoped corrections, migration 0009).
 
 Human prerequisites:
 - Ensure the **embeddings key** is in the secret store (OpenAI `text-embedding-3-small`;
@@ -815,7 +818,9 @@ fold into M7–M9 sequencing as capacity allows.
    (design §7.5). Built as **K7** (§2c); the router (organ #2) choosing a harness per task
    remains future.
 9. **Memory access model redesigned** *(security; supersedes the M7 as-built model — design
-   §7.12, decided 2026-07-01).* Scopes are audiences (**tenant / project / user / thread**);
+   §7.12, decided 2026-07-01; **implemented 2026-07-03**, migration Track 13 — pulled ahead
+   of the post-kernel queue so no new kernel behavior builds on agent-scoped memory; the
+   egress-source tie-in still queues with M10).* Scopes are audiences (**tenant / project / user / thread**);
    **agent scope retired** as an access boundary (now relevance metadata). Recall is
    **audience-gated** (task audience ⊆ scope audience; computed deterministically — repo
    audience natively on GitHub, Slack via an admin-declared channel↔project mapping +

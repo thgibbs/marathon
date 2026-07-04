@@ -1,10 +1,10 @@
 import pg from "pg";
+import { recallableLevels, validateWrite } from "./audience";
 import { FakeEmbedder } from "./embedder";
-import { blendedScore, isExpired, recencyWeight } from "./score";
-import type { Embedder, MemoryItem, MemoryLevel, MemoryScope, MemoryStore, NewMemoryItem, RecallQuery } from "./types";
+import { blendedScore, capResults, isExpired, recencyWeight } from "./score";
+import type { Embedder, MemoryItem, MemoryLevel, MemoryProvenance, MemoryScope, MemoryStore, NewMemoryItem, RecallQuery } from "./types";
 
 const { Pool } = pg;
-const LEVELS: MemoryLevel[] = ["tenant", "project", "agent", "thread"];
 
 function vecLiteral(v: number[]): string {
   return `[${v.join(",")}]`;
@@ -21,22 +21,24 @@ export class PgVectorMemoryStore implements MemoryStore {
   }
 
   async remember(input: NewMemoryItem): Promise<MemoryItem> {
+    validateWrite(input);
     const embedding = vecLiteral(await this.embedder.embed(input.text));
     const expiresAt = input.ttlMs != null ? new Date(Date.now() + input.ttlMs) : null;
     const { rows } = await this.pool.query(
-      `insert into memory_item(tenant_id, project_id, agent_id, thread_id, level, term, kind, text, metadata, source, embedding, expires_at)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::vector,$12) returning *`,
+      `insert into memory_item(tenant_id, project_id, user_id, thread_id, agent_id, level, term, kind, text, metadata, provenance, embedding, expires_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::vector,$13) returning *`,
       [
         input.scope.tenantId,
         input.scope.projectId ?? null,
-        input.scope.agentId ?? null,
+        input.scope.userId ?? null,
         input.scope.threadId ?? null,
+        input.agentId ?? null,
         input.level,
         input.term,
         input.kind,
         input.text,
         JSON.stringify(input.metadata ?? {}),
-        JSON.stringify(input.source ?? {}),
+        JSON.stringify(input.provenance ?? {}),
         embedding,
         expiresAt,
       ],
@@ -45,10 +47,10 @@ export class PgVectorMemoryStore implements MemoryStore {
   }
 
   async recall(q: RecallQuery): Promise<MemoryItem[]> {
-    const levels = q.levels ?? LEVELS;
-    const qvec = vecLiteral(await this.embedder.embed(q.query));
-
-    // union of applicable scopes: tenant always; others must match a provided key
+    // Audience gating (§7.12): only levels whose audience contains the
+    // task's audience enter the search; within a level the query's scope
+    // key must match. The user-`preference` exception rides as its own clause.
+    const levels = recallableLevels(q.audience);
     const scopeClauses: string[] = [];
     const params: unknown[] = [q.scope.tenantId];
     if (levels.includes("tenant")) scopeClauses.push(`level = 'tenant'`);
@@ -56,9 +58,12 @@ export class PgVectorMemoryStore implements MemoryStore {
       params.push(q.scope.projectId);
       scopeClauses.push(`(level = 'project' and project_id = $${params.length})`);
     }
-    if (levels.includes("agent") && q.scope.agentId) {
-      params.push(q.scope.agentId);
-      scopeClauses.push(`(level = 'agent' and agent_id = $${params.length})`);
+    if (levels.includes("user") && q.scope.userId) {
+      params.push(q.scope.userId);
+      scopeClauses.push(`(level = 'user' and user_id = $${params.length})`);
+    } else if (!q.audience.external && q.audience.userId) {
+      params.push(q.audience.userId);
+      scopeClauses.push(`(level = 'user' and user_id = $${params.length} and kind = 'preference')`);
     }
     if (levels.includes("thread") && q.scope.threadId) {
       params.push(q.scope.threadId);
@@ -66,6 +71,7 @@ export class PgVectorMemoryStore implements MemoryStore {
     }
     if (scopeClauses.length === 0) return [];
 
+    const qvec = vecLiteral(await this.embedder.embed(q.query));
     params.push(qvec);
     const qIdx = params.length;
     const limit = q.limit ?? 8;
@@ -81,16 +87,16 @@ export class PgVectorMemoryStore implements MemoryStore {
     );
 
     const now = Date.now();
-    return rows
+    const ranked = rows
       .map((r: Record<string, unknown>) => {
         const item = rowToItem(r);
         const similarity = 1 - Number(r.distance ?? 1); // cosine distance -> similarity
-        item.score = blendedScore(similarity, recencyWeight(item.createdAt, now));
+        item.score = blendedScore(similarity, recencyWeight(item.createdAt, now), !!q.agentId && item.agentId === q.agentId);
         return item;
       })
       .filter((it) => !isExpired(it, now))
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-      .slice(0, limit);
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    return capResults(ranked, limit, q.tokenBudget);
   }
 
   async forget(filter: { id?: string; scope?: Partial<MemoryScope>; before?: Date }): Promise<number> {
@@ -104,7 +110,7 @@ export class PgVectorMemoryStore implements MemoryStore {
       params.push(filter.before);
       where.push(`created_at < $${params.length}`);
     }
-    for (const [k, col] of [["tenantId", "tenant_id"], ["projectId", "project_id"], ["agentId", "agent_id"], ["threadId", "thread_id"]] as const) {
+    for (const [k, col] of SCOPE_COLUMNS) {
       const v = filter.scope?.[k];
       if (v !== undefined) {
         params.push(v);
@@ -119,7 +125,7 @@ export class PgVectorMemoryStore implements MemoryStore {
   async list(scope: Partial<MemoryScope>): Promise<MemoryItem[]> {
     const where: string[] = [];
     const params: unknown[] = [];
-    for (const [k, col] of [["tenantId", "tenant_id"], ["projectId", "project_id"], ["agentId", "agent_id"], ["threadId", "thread_id"]] as const) {
+    for (const [k, col] of SCOPE_COLUMNS) {
       const v = scope[k];
       if (v !== undefined) {
         params.push(v);
@@ -136,21 +142,29 @@ export class PgVectorMemoryStore implements MemoryStore {
   }
 }
 
+const SCOPE_COLUMNS = [
+  ["tenantId", "tenant_id"],
+  ["projectId", "project_id"],
+  ["userId", "user_id"],
+  ["threadId", "thread_id"],
+] as const;
+
 function rowToItem(r: Record<string, unknown>): MemoryItem {
   return {
     id: r.id as string,
     scope: {
       tenantId: r.tenant_id as string,
       projectId: (r.project_id as string) ?? undefined,
-      agentId: (r.agent_id as string) ?? undefined,
+      userId: (r.user_id as string) ?? undefined,
       threadId: (r.thread_id as string) ?? undefined,
     },
     level: r.level as MemoryLevel,
     term: r.term as "short" | "long",
     kind: r.kind as string,
+    agentId: (r.agent_id as string) ?? undefined,
     text: r.text as string,
     metadata: (r.metadata as Record<string, unknown>) ?? {},
-    source: (r.source as { taskId?: string }) ?? {},
+    provenance: (r.provenance as MemoryProvenance) ?? {},
     createdAt: r.created_at as Date,
     expiresAt: (r.expires_at as Date) ?? null,
   };

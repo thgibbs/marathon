@@ -18,6 +18,26 @@ features.
 Progress against the tracks below, most recent first. The "Current mismatch" lists in each
 track describe the codebase *before* its work landed; completed tracks carry a status note.
 
+- **Track 13: memory migration — done (2026-07-03, §7.12 / OQ-3).** Memory scopes are now
+  audiences: `MemoryLevel` is `tenant | project | user | thread` (`agent` retired — migration
+  0009 drops the un-gateable agent-level rows, adds `user_id`, renames `source` →
+  `provenance`); `agentId` moved off `MemoryScope` onto the item as relevance metadata that
+  boosts ranking (`blendedScore` agent-match bonus) and never filters access. Recall is
+  **audience-gated**: `RecallQuery` takes a `TaskAudience` computed deterministically at
+  prompt-build (`audienceForTask` — GitHub repo → project; Slack DM (`D…`) → user; Slack
+  channel → its own pseudo-project until the admin channel↔project mapping exists; unknown →
+  tenant; `external` → nothing), `recallableLevels`/`itemRecallable` (audience.ts) enforce
+  containment in both stores, with the §7.12 user-`preference` exception. Writes go to the
+  narrowest scope (`validateWrite`: each level requires its scope key) and tenant writes fail
+  without `provenance.confirmedBy`; `rememberCorrection` is **user-scoped** (requestor
+  required) and `promoteMemory` gates promotion (project: light; tenant: confirmation) while
+  recording `promotedFrom`. Prompt-builder recall passes scope + audience + agent tag and is
+  **best-effort** (a store failure never blocks the loop); `scopeForTask` also learned Slack's
+  `thread_ts` and the task's `invokingUserId`. Mem0 adapter re-applies the gate client-side
+  from metadata. `demo-m7` now proves write gates, DM-vs-project-vs-external recall,
+  promotion, and gated prompt assembly against real pgvector. Egress-ledger integration
+  (recalled scopes as sources) stays with the M10 lattice work, per the kernel note.
+
 - **Track 14: agent configuration and quickstart — done (2026-07-03, K6 config surface).**
   `AgentSpec` (@marathon/config) is now the full §6.2/§21.0 shape: `harness` (pi |
   claude-code — the latter validated but refused until K7), the ONE configured `repo`,
@@ -177,9 +197,8 @@ track describe the codebase *before* its work landed; completed tracks carry a s
   to the merge commit and inherited delivery targets; `packages/surface/src/fanout.ts`
   delivers to every target idempotently. `make demo-k1` proves the path.
 
-Not started: remaining Tracks 13 and 15–17 (memory migration, model routing,
-status/cost UX, kernel demos beyond K1/K4/K1-brokered and the K3 slack-app
-round-trip).
+Not started: remaining Tracks 15–17 (model routing, status/cost UX, kernel
+demos beyond K1/K4/K1-brokered and the K3 slack-app round-trip).
 
 New design correction after Tracks 1–5: the original `github.submit_code_changes`
 contract is probably too heavy. Marathon should not replace normal `git` and `gh`
@@ -210,7 +229,9 @@ Not aligned with the current design:
   GitHub rulesets, branch protection, CODEOWNERS, secret scanning, gitleaks, and CI.
 - The sandbox design is still too network-restrictive for the kernel. The revised direction is
   internet access by default, with no company secrets in the sandbox.
-- Memory still has `agent` as an access scope and feedback corrections are agent-scoped.
+- ~~Memory still has `agent` as an access scope and feedback corrections are
+  agent-scoped.~~ Resolved by Track 13: audience scopes (tenant|project|user|thread),
+  audience-gated recall, user-scoped corrections with gated promotion.
 - ~~Agents are hardcoded in app bootstraps; there is no YAML-defined `forge` flagship
   agent.~~ Resolved by Track 14: bootstraps read configured agents (YAML specs or
   explicit descriptors); `agents/forge.yaml` is the full-config flagship.
@@ -953,6 +974,11 @@ Required changes:
 - Keep all surface/document/tool content fenced as untrusted.
 
 ## Track 13: Memory Migration
+
+> **Status (2026-07-03): implemented** — see "Completed Work" above. Audience scopes +
+> gated recall/writes in both stores (migration 0009); corrections user-scoped with
+> promotion gates; recall best-effort in prompt assembly. The egress-ledger tie-in
+> (recalled scopes as sources) stays with M10, per the kernel note below.
 
 Design target:
 

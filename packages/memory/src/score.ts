@@ -1,4 +1,4 @@
-import type { MemoryItem, MemoryScope, MemoryLevel } from "./types";
+import type { MemoryItem } from "./types";
 
 export function cosine(a: number[], b: number[]): number {
   let dot = 0;
@@ -16,27 +16,33 @@ export function recencyWeight(createdAt: Date, now: number): number {
 /**
  * Rank by relevance, with recency as a mild tiebreaker, so both terms can be
  * searched together: a relevant long-term correction isn't buried by recent
- * thread chatter, but among similar items the fresher one wins.
+ * thread chatter, but among similar items the fresher one wins. An item
+ * tagged with the invoking agent gets a small boost (§7.12: agent tags are
+ * relevance metadata — they raise ranking, never gate access).
  */
-export function blendedScore(similarity: number, recency: number): number {
-  return 0.8 * similarity + 0.2 * recency;
-}
-
-/** Does an item at its level apply to a query scope? (tenant always; others must match.) */
-export function scopeMatches(itemScope: MemoryScope, level: MemoryLevel, query: MemoryScope): boolean {
-  if (itemScope.tenantId !== query.tenantId) return false;
-  switch (level) {
-    case "tenant":
-      return true;
-    case "project":
-      return !!query.projectId && itemScope.projectId === query.projectId;
-    case "agent":
-      return !!query.agentId && itemScope.agentId === query.agentId;
-    case "thread":
-      return !!query.threadId && itemScope.threadId === query.threadId;
-  }
+export function blendedScore(similarity: number, recency: number, agentMatch = false): number {
+  return 0.8 * similarity + 0.2 * recency + (agentMatch ? 0.1 : 0);
 }
 
 export function isExpired(item: Pick<MemoryItem, "expiresAt">, now: number): boolean {
   return item.expiresAt != null && item.expiresAt.getTime() <= now;
+}
+
+/** Crude token estimate (~4 chars/token) for the recall token budget. */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/** Take ranked items up to `limit` and (when set) an approximate token budget. */
+export function capResults(items: MemoryItem[], limit: number, tokenBudget?: number): MemoryItem[] {
+  const capped = items.slice(0, limit);
+  if (tokenBudget == null) return capped;
+  const out: MemoryItem[] = [];
+  let spent = 0;
+  for (const it of capped) {
+    spent += estimateTokens(it.text);
+    if (out.length > 0 && spent > tokenBudget) break;
+    out.push(it);
+  }
+  return out;
 }

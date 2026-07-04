@@ -73,15 +73,17 @@ document review wait (§6.8), and the M11 loop's *escalate* verdict.
 
 ## OQ-3 — Feedback→memory write gating
 
-> **Resolved 2026-07-01 (design; implementation pending).** Memory scopes are audiences —
+> **Resolved 2026-07-01; implemented 2026-07-03 (migration Track 13).** Memory scopes are audiences —
 > tenant / project / user / thread — with **agent retired as an access scope** (relevance
 > metadata only). Recall is **audience-gated** (task audience ⊆ scope audience); writes go to
 > the narrowest scope with gating by breadth (user: none; project: light; tenant: confirmed),
 > which also bounds poisoning blast radius; recalled scopes count as egress sources (§7.8).
 > Adopted defaults, revisitable: user `preference` items recallable wherever the user is the
 > requestor; tenant-scope recall allowed for proposal-gated external drafts. Encoded in §7.6,
-> §7.8, §7.12, §9.2, §10.18, §12.2. **The shipped M7 code implements the old model** —
-> refactor tracked in roadmap §2b #9.
+> §7.8, §7.12, §9.2, §10.18, §12.2. **The stores now enforce this model** (audience-gated
+> recall, user-scoped corrections with gated promotion, migration 0009 retiring the agent
+> scope); the egress-source tie-in and Slack channel↔project mapping remain open (M10 /
+> roadmap §2b #9 remainder).
 
 **Question.** Who may write long-term memory? Should a 👎-plus-text correction require
 confirmation (agent owner / invoking user) before promotion to long-term? Should recall filter

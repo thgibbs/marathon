@@ -1,4 +1,5 @@
 export * from "./types";
+export * from "./audience";
 export * from "./embedder";
 export * from "./score";
 export * from "./fake-store";
