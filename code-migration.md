@@ -1023,6 +1023,12 @@ Kernel note:
 
 ## Track 14: Agent Configuration and Quickstart
 
+> **Status (2026-07-03): implemented** — see "Completed Work" above. Full `AgentSpec`
+> YAML surface (harness, one repo, tool grants/families, sandbox network, models,
+> budget), `agents/forge.yaml` flagship, spec-driven bootstraps, quickstart docs.
+> Still open for K6 proper: `make demo-kernel` and the timed stranger test (Track 17);
+> per-agent `sandbox.network` BUILD wiring lands with Track 15.
+
 Design target:
 
 - `design/21-example-agents.md` Forge
