@@ -18,7 +18,7 @@ import { Database, migrate } from "@marathon/db";
 import { bootstrapGithubApp, handleWebhookRequest, type GithubAppDeps } from "@marathon/github-app";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { Queue } from "@marathon/queue";
-import { ToolGateway, ToolRegistry } from "@marathon/tools";
+import { ToolGateway, toolPolicyFromSpec, ToolRegistry } from "@marathon/tools";
 import { InvocationRouter, Orchestrator } from "@marathon/worker";
 
 async function main(): Promise<void> {
@@ -37,7 +37,10 @@ async function main(): Promise<void> {
   if (!token) throw new Error("GITHUB_TOKEN is required");
 
   // Configured agents (Track 14): YAML specs; the first file is the default.
+  // Its grants (with the ONE configured repo as every grant's allowlist)
+  // become the gateway policy below — editing the YAML narrows the surface.
   const specs = await loadAgentSpecs(cfg.agentsDir);
+  const flagship = specs[0]!;
   const boot = await bootstrapGithubApp(db, { owner, specs });
   const client = new HttpGithubClient(token);
   const orchestrator = new Orchestrator(db, queue);
@@ -49,7 +52,7 @@ async function main(): Promise<void> {
     orchestrator,
     gateway: new ToolGateway({
       registry: new ToolRegistry(makeDocumentTools(httpGithubClientFactory())),
-      policy: { grants: [{ tool: "document.create" }, { tool: "document.update" }, { tool: "document.revise" }, { tool: "document.comment" }, { tool: "document.read_region" }] },
+      policy: toolPolicyFromSpec(flagship),
       secrets,
     }),
     delivery: new GithubDelivery(client),

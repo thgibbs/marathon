@@ -49,6 +49,10 @@ needs — your target repo:
 repo: your-org/your-repo
 ```
 
+This is required, not optional: the live apps refuse to boot while GitHub or
+document tools are granted without a `repo`, because every grant is scoped to
+the ONE configured repo by construction.
+
 The full config shape (design §6.2 / §21.0):
 
 | Field | What it does |

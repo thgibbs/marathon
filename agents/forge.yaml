@@ -13,8 +13,10 @@ description: >-
 
 harness: pi # deployment default; claude-code once K7 lands
 
-# The ONE configured target repo (§0.4). Set this to your repo — it scopes
-# every GitHub grant below (reads, brokered writes, delivery).
+# The ONE configured target repo (§0.4). REQUIRED before the live apps will
+# boot: it becomes the repo allowlist on every GitHub/document grant below —
+# without it an unconstrained grant would drop the one-repo boundary, so
+# wiring fails instead (toolPolicyFromSpec).
 # repo: your-org/your-repo
 
 tools:

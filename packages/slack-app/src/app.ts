@@ -1,6 +1,6 @@
 import { EnvSecretStore, loadAgentSpecs, loadConfig, type AgentSpec } from "@marathon/config";
 import { PiAgentRuntime } from "@marathon/agent";
-import { httpGithubClientFactory, makeGithubReadTools } from "@marathon/connector-github";
+import { httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
@@ -24,6 +24,63 @@ function assertSupportedHarness(spec: AgentSpec): void {
     throw new Error(`agent '${spec.name}': harness '${spec.harness}' is not available yet (K7) — use 'pi'`);
   }
 }
+
+const repoProp = { repo: { type: "string", description: 'Repository as "owner/name".' } };
+
+/**
+ * Pi definitions for the tools this app can register. The list actually
+ * exposed to the model is `spec.tools ∩ this catalog` — the YAML grants drive
+ * the surface, and a granted tool this surface cannot serve (e.g. the BUILD
+ * broker) is simply not exposed here.
+ */
+const GOVERNED_TOOL_DEFS: Record<string, { name: string; description: string; parameters: Record<string, unknown> }> = {
+  "github.read_file": {
+    name: "github.read_file",
+    description: "Read a file from a GitHub repository.",
+    parameters: { type: "object", properties: { ...repoProp, path: { type: "string" } }, required: ["repo", "path"] },
+  },
+  "github.list_contents": {
+    name: "github.list_contents",
+    description: "List files/directories at a path in a GitHub repository.",
+    parameters: { type: "object", properties: { ...repoProp, path: { type: "string" } }, required: ["repo"] },
+  },
+  "document.read_region": {
+    name: "document.read_region",
+    description: "Read a markdown file (optionally a line range) from the repo.",
+    parameters: {
+      type: "object",
+      properties: { ...repoProp, path: { type: "string" }, ref: { type: "string" }, startLine: { type: "number" }, endLine: { type: "number" } },
+      required: ["repo", "path"],
+    },
+  },
+  "document.create": {
+    name: "document.create",
+    description: "Create a markdown design document by opening a pull request (a human merging it is the approval).",
+    parameters: {
+      type: "object",
+      properties: { ...repoProp, path: { type: "string" }, content: { type: "string" }, title: { type: "string" }, base: { type: "string" } },
+      required: ["repo", "path", "content"],
+    },
+  },
+  "document.update": {
+    name: "document.update",
+    description: "Update a markdown document via a pull request (pass the file's current git sha).",
+    parameters: {
+      type: "object",
+      properties: { ...repoProp, path: { type: "string" }, content: { type: "string" }, sha: { type: "string" }, base: { type: "string" } },
+      required: ["repo", "path", "content", "sha"],
+    },
+  },
+  "document.revise": {
+    name: "document.revise",
+    description: "Revise an existing document by committing to its open PR branch.",
+    parameters: {
+      type: "object",
+      properties: { ...repoProp, path: { type: "string" }, content: { type: "string" }, branch: { type: "string" } },
+      required: ["repo", "path", "content", "branch"],
+    },
+  },
+};
 
 /** Start the live Marathon Slack app (Socket Mode). Long-running. */
 export async function startSlackApp(): Promise<void> {
@@ -58,29 +115,28 @@ export async function startSlackApp(): Promise<void> {
   const modelRef = resolveModelRef(flagship.models ?? DEFAULT_MODEL_POLICY);
   const memory = new PgVectorMemoryStore(cfg.databaseUrl, new OpenAIEmbedder(secrets));
 
-  // Governed GitHub read tools, exposed to the agent through the Tool Gateway
-  // (policy + credential injection + source ledger + audit + redaction). Read-only
-  // for now; reads land in the per-task source ledger so egressing tools can be
-  // routed deterministically when they are added (§7.8). The grants (and the
-  // one-repo constraint, when `repo:` is set) come from the agent's YAML.
+  // Governed tools, exposed to the agent through the Tool Gateway (policy +
+  // credential injection + source ledger + audit + redaction). GitHub reads
+  // ground answers; document tools make the kernel's first step — a design-doc
+  // PR from a Slack ask — actually possible from this surface. The grants (and
+  // the one-repo constraint from `repo:`) come from the agent's YAML, and the
+  // Pi-visible tool list is derived from those same grants.
+  const clientFactory = httpGithubClientFactory();
   const toolGateway = new ToolGateway({
-    registry: new ToolRegistry(makeGithubReadTools(httpGithubClientFactory())),
+    registry: new ToolRegistry([...makeGithubReadTools(clientFactory), ...makeDocumentTools(clientFactory)]),
     policy: toolPolicyFromSpec(flagship),
     secrets,
     recorder: dbToolRecorder(db),
     sourceLedger: new InMemorySourceLedger(),
   });
+  const governedTools = flagship.tools
+    .map((t) => GOVERNED_TOOL_DEFS[t.tool])
+    .filter((d): d is NonNullable<typeof d> => d !== undefined);
   const runtime = new PiAgentRuntime({
     secrets,
     // Track 12: the agent may ask ONE clarifying question and park the task.
     clarification: true,
-    governed: {
-      gateway: toolGateway,
-      tools: [
-        { name: "github.read_file", description: "Read a file from a GitHub repository.", parameters: { type: "object", properties: { repo: { type: "string" }, path: { type: "string" } }, required: ["repo", "path"] } },
-        { name: "github.list_contents", description: "List files/directories at a path in a GitHub repository.", parameters: { type: "object", properties: { repo: { type: "string" }, path: { type: "string" } }, required: ["repo"] } },
-      ],
-    },
+    governed: { gateway: toolGateway, tools: governedTools },
   });
   const delivery = new SlackDelivery(new RealSlackClient(botToken));
   const fanout = new DeliveryFanout({ slack: delivery }, db);
