@@ -49,7 +49,13 @@ async function main(): Promise<void> {
   const db = new Database(url);
   const queue = new Queue(url);
   try {
-    const boot = await bootstrapSlackApp(db, { teamId: `T_DEMO_${Date.now()}`, teamName: "Demo" });
+    // Explicit agent descriptors: this demo scripts its own persona via the
+    // Fake runtime (the live app loads YAML specs — Track 14).
+    const boot = await bootstrapSlackApp(db, {
+      teamId: `T_DEMO_${Date.now()}`,
+      teamName: "Demo",
+      agents: [{ name: "bruce", keywords: ["error", "deploy", "incident", "checkout", "bug"] }],
+    });
 
     const runtime = new FakeAgentRuntime({ turns: [{ text: "Likely cause: PR #4812 (payment retry null path)" }] });
     const worker = new Worker(queue, db, {

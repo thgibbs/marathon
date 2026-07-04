@@ -23,12 +23,15 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { CodeTaskRegistry, CodeWorkspace, InMemoryCodeChangeStore } from "@marathon/code-handoff";
+import { grantFamilies, loadAgentSpec } from "@marathon/config";
 import {
   FixturesGithubClient,
   GITHUB_MERGE_EFFECT,
+  ghFamiliesForNames,
   makeDeliveryReportTool,
   makeGithubExecTool,
   makeGithubMergeExecutor,
@@ -43,6 +46,7 @@ import {
   FakeCommandRunner,
   ToolBlockedError,
   ToolGateway,
+  toolPolicyFromSpec,
   ToolRegistry,
   type AuditRecord,
   type ToolInvocationRecord,
@@ -68,6 +72,14 @@ const REPO = "acme/service";
 const TASK = "k1b-task";
 const TOKEN = "ghp_" + "s".repeat(36); // host-side only; must never reach trace/results
 const secrets = { get: async () => TOKEN };
+
+// Track 14: the tool surface comes from the flagship agent's YAML — grants and
+// brokered gh command families — with the demo's fixture repo as the ONE
+// configured repo. A family absent from the YAML (e.g. `pr merge`) is refused
+// below, which proves the config actually narrows the broker.
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const forge = { ...(await loadAgentSpec(join(repoRoot, "agents", "forge.yaml"))), repo: REPO };
+const ghFamilies = ghFamiliesForNames(grantFamilies(forge, "github.exec") ?? []);
 
 // --- 1. Fixture origin (the plan's merge commit) + a bare repo standing in for GitHub. ---
 const origin = await mkdtemp(join(tmpdir(), "marathon-k1b-origin-"));
@@ -134,7 +146,7 @@ const invocations: ToolInvocationRecord[] = [];
 const audits: AuditRecord[] = [];
 const gateway = new ToolGateway({
   registry: new ToolRegistry([
-    makeGithubExecTool({ allowedRepos: [REPO], runner: ghRunner }),
+    makeGithubExecTool({ allowedRepos: [REPO], families: ghFamilies, runner: ghRunner }),
     makeGitExecTool({
       allowedRepos: [REPO],
       resolveWorkspaceDir: (taskId) => registry.get(taskId)?.workspace.dir,
@@ -150,12 +162,13 @@ const gateway = new ToolGateway({
     }),
     ...makeGithubWriteTools(() => fixtures), // includes github.merge_pull_request (proposed_effect)
   ]),
+  // Grants (with the one-repo constraint) come from the YAML config; the
+  // merge tool is granted on top so the demo can prove a direct call routes
+  // to a Proposed Effect — Forge itself deliberately does not grant it.
   policy: {
     grants: [
-      { tool: "github.exec" },
-      { tool: "git.exec" },
-      { tool: "delivery.report_pr" },
-      { tool: "github.merge_pull_request" },
+      ...toolPolicyFromSpec(forge).grants,
+      { tool: "github.merge_pull_request", constraints: { allowedRepos: [REPO] } },
     ],
   },
   secrets: secrets as never,

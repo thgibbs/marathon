@@ -1,0 +1,6 @@
+# Marathon target-repo config (design §29.3; Track 14).
+# When a Marathon agent implements a plan in this repo, these are the
+# verification commands it must run green (or deliver a draft PR honestly).
+verify:
+  - pnpm typecheck
+  - pnpm test

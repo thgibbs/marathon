@@ -1,11 +1,26 @@
 import type { SecretStore } from "@marathon/config";
 import { FakeCommandRunner, ToolGateway, ToolRegistry, type ToolContext } from "@marathon/tools";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_GH_FAMILIES, makeGithubExecTool, makeGitExecTool } from "../src/exec-tools";
+import { DEFAULT_GH_FAMILIES, ghFamiliesForNames, makeGithubExecTool, makeGitExecTool } from "../src/exec-tools";
 
 const TOKEN = "ghp_" + "x".repeat(36);
 const secrets: SecretStore = { get: async (ref) => (ref === "secret/github" ? TOKEN : undefined) };
 const ctx: ToolContext = { taskId: "task-1", tenantId: "tenant-1", secrets };
+
+describe("ghFamiliesForNames (Track 14: YAML-granted families)", () => {
+  it("resolves names against the known families, preserving order", () => {
+    const fams = ghFamiliesForNames(["pr create", "pr view"]);
+    expect(fams.map((f) => f.prefix)).toEqual([
+      ["pr", "create"],
+      ["pr", "view"],
+    ]);
+    expect(fams[1]).toBe(DEFAULT_GH_FAMILIES[0]);
+  });
+
+  it("throws at wiring time on an unknown family name", () => {
+    expect(() => ghFamiliesForNames(["pr merge"])).toThrow(/unknown gh command family "pr merge"/);
+  });
+});
 
 describe("github.exec (Track 6 broker)", () => {
   const make = (runner: FakeCommandRunner) =>

@@ -6,6 +6,7 @@
   "exports": { ".": "./src/index.ts" },
   "dependencies": {
     "@marathon/agent": "workspace:*",
+    "@marathon/config": "workspace:*",
     "@marathon/connector-github": "workspace:*",
     "@marathon/core": "workspace:*",
     "@marathon/db": "workspace:*",

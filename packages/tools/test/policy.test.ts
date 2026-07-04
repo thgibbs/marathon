@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { enforce } from "../src/policy";
+import { enforce, toolPolicyFromSpec } from "../src/policy";
 import type { Tool, ToolPolicy } from "../src/types";
 
 const readTool: Tool = {
@@ -66,5 +66,30 @@ describe("enforce", () => {
       decision: "deny",
       reason: "tool is disabled: email.send",
     });
+  });
+});
+
+describe("toolPolicyFromSpec (Track 14: grants from the agent YAML)", () => {
+  it("applies the ONE configured repo as every grant's allowlist", () => {
+    const policy = toolPolicyFromSpec({
+      name: "forge",
+      repo: "acme/service",
+      tools: [{ tool: "github.read_file" }, { tool: "document.create" }],
+    });
+    expect(policy.grants).toEqual([
+      { tool: "github.read_file", constraints: { allowedRepos: ["acme/service"] } },
+      { tool: "document.create", constraints: { allowedRepos: ["acme/service"] } },
+    ]);
+  });
+
+  it("fails the boot when repo-scoped tools are granted without a repo", () => {
+    expect(() =>
+      toolPolicyFromSpec({ name: "forge", tools: [{ tool: "github.read_file" }, { tool: "git.exec" }] }),
+    ).toThrow(/repo-scoped tools granted without a configured repo \(github\.read_file, git\.exec\)/);
+  });
+
+  it("allows non-repo tools without a repo", () => {
+    const policy = toolPolicyFromSpec({ name: "grace", tools: [{ tool: "sql.query" }] });
+    expect(policy.grants).toEqual([{ tool: "sql.query" }]);
   });
 });

@@ -1,5 +1,6 @@
 import type { AgentSpec } from "@marathon/config";
 import type { Agent, AgentVersion, Id } from "@marathon/core";
+import type { AgentDescriptor } from "@marathon/surface";
 
 /**
  * Seed an agent from a YAML spec (Track 12; design §21 Forge): the spec's
@@ -42,4 +43,49 @@ export async function ensureAgentFromSpec(
     instructions: spec.instructions,
   });
   return { agent, version, published: true };
+}
+
+export interface SeededAgents {
+  agents: AgentDescriptor[];
+  agentIdByName: Record<string, string>;
+  /** The first configured agent — the deployment default (§7.3). */
+  defaultAgent: string;
+}
+
+export interface SeedAgentsDb extends AgentSeedDb {
+  findOrCreateAgent(tenantId: Id, name: string): Promise<Agent>;
+}
+
+/**
+ * Seed a tenant's configured agents (Track 14): `specs` are YAML agent
+ * definitions (e.g. `loadAgentSpecs(cfg.agentsDir)`) whose instructions
+ * publish through an AgentVersion; bare `agents` descriptors are for
+ * tests/demos that manage personas themselves. No hardcoded defaults — at
+ * least one agent must be configured.
+ */
+export async function seedConfiguredAgents(
+  db: SeedAgentsDb,
+  tenantId: Id,
+  opts: { specs?: AgentSpec[]; agents?: AgentDescriptor[] },
+): Promise<SeededAgents> {
+  const agentIdByName: Record<string, string> = {};
+  const agents: AgentDescriptor[] = [];
+  for (const spec of opts.specs ?? []) {
+    const { agent } = await ensureAgentFromSpec(db, tenantId, spec);
+    agentIdByName[spec.name] = agent.id;
+    agents.push({ name: spec.name, description: spec.description, keywords: spec.keywords });
+  }
+  for (const a of opts.agents ?? []) {
+    if (agentIdByName[a.name]) continue;
+    const agent = await db.findOrCreateAgent(tenantId, a.name);
+    agentIdByName[a.name] = agent.id;
+    agents.push(a);
+  }
+  const defaultAgent = agents[0]?.name;
+  if (!defaultAgent) {
+    throw new Error(
+      "no agents configured — pass YAML agent specs (see agents/forge.yaml and MARATHON_AGENTS_DIR) or explicit agent descriptors",
+    );
+  }
+  return { agents, agentIdByName, defaultAgent };
 }

@@ -44,7 +44,12 @@ async function main(): Promise<void> {
   const db = new Database(url);
   const queue = new Queue(url);
   try {
-    const boot = await bootstrapGithubApp(db, { owner: `demo-owner-${Date.now()}` });
+    // Explicit agent descriptors: this demo scripts its own turns via the
+    // Fake runtime (the live app loads YAML specs — Track 14).
+    const boot = await bootstrapGithubApp(db, {
+      owner: `demo-owner-${Date.now()}`,
+      agents: [{ name: "quill", keywords: ["doc", "design", "plan", "draft", "spec"] }],
+    });
     const gh = new FixturesGithubClient({ userPermissions: { [`${REPO}:stranger`]: "none" } });
     const orchestrator = new Orchestrator(db, queue);
     const deps: GithubAppDeps = {

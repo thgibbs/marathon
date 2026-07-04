@@ -83,6 +83,9 @@ importers:
       '@marathon/code-handoff':
         specifier: workspace:*
         version: link:../../packages/code-handoff
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@marathon/connector-github':
         specifier: workspace:*
         version: link:../../packages/connector-github
@@ -473,6 +476,9 @@ importers:
       '@marathon/agent':
         specifier: workspace:*
         version: link:../agent
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../config
       '@marathon/connector-github':
         specifier: workspace:*
         version: link:../connector-github

@@ -1,14 +1,20 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadAgentSpec, parseAgentSpec } from "../src/index";
+import { grantFamilies, loadAgentSpec, loadAgentSpecs, parseAgentSpec } from "../src/index";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
-describe("parseAgentSpec (Track 12)", () => {
-  it("accepts a minimal spec and trims instructions", () => {
+describe("parseAgentSpec (Tracks 12 + 14)", () => {
+  it("accepts a minimal spec, trims instructions, and applies kernel defaults", () => {
     const spec = parseAgentSpec({ name: "forge", instructions: "  Build things.  \n" });
-    expect(spec).toEqual({ name: "forge", instructions: "Build things." });
+    expect(spec).toEqual({
+      name: "forge",
+      instructions: "Build things.",
+      harness: "pi",
+      tools: [],
+      sandbox: { network: "bridge" },
+    });
   });
 
   it("carries display_name and description through", () => {
@@ -29,16 +35,72 @@ describe("parseAgentSpec (Track 12)", () => {
     expect(() => parseAgentSpec("nope")).toThrow(/YAML mapping/);
     expect(() => parseAgentSpec(null)).toThrow(/YAML mapping/);
   });
+
+  it("parses the full Track 14 config", () => {
+    const spec = parseAgentSpec({
+      name: "forge",
+      instructions: "x",
+      harness: "pi",
+      repo: "acme/widgets",
+      tools: [
+        "delivery.report_pr",
+        { tool: "github.exec", families: ["pr view", "pr create"] },
+        { name: "git.exec", families: ["push"] },
+      ],
+      sandbox: { network: "none" },
+      models: { default: "openai:gpt-4o-mini", reasoning: "openai:gpt-4o" },
+      budget: { limit_usd: 5, warn_ratio: 0.8 },
+      keywords: ["code", "implement"],
+    });
+    expect(spec.repo).toBe("acme/widgets");
+    expect(spec.tools).toEqual([
+      { tool: "delivery.report_pr" },
+      { tool: "github.exec", families: ["pr view", "pr create"] },
+      { tool: "git.exec", families: ["push"] },
+    ]);
+    expect(spec.sandbox.network).toBe("none");
+    expect(spec.models).toEqual({ default: "openai:gpt-4o-mini", reasoning: "openai:gpt-4o" });
+    expect(spec.budget).toEqual({ limitUsd: 5, warnRatio: 0.8 });
+    expect(spec.keywords).toEqual(["code", "implement"]);
+    expect(grantFamilies(spec, "github.exec")).toEqual(["pr view", "pr create"]);
+    expect(grantFamilies(spec, "delivery.report_pr")).toBeUndefined();
+  });
+
+  it("rejects invalid harness, repo, sandbox, models, and budget values", () => {
+    const base = { name: "forge", instructions: "x" };
+    expect(() => parseAgentSpec({ ...base, harness: "gpt" })).toThrow(/'harness'/);
+    expect(() => parseAgentSpec({ ...base, repo: "not-a-repo" })).toThrow(/'repo'/);
+    expect(() => parseAgentSpec({ ...base, tools: [{ families: ["x"] }] })).toThrow(/tools\[0\]/);
+    expect(() => parseAgentSpec({ ...base, sandbox: { network: "host" } })).toThrow(/'sandbox.network'/);
+    expect(() => parseAgentSpec({ ...base, models: { reasoning: "openai:gpt-4o" } })).toThrow(/'models.default'/);
+    expect(() => parseAgentSpec({ ...base, models: { default: "gpt-4o" } })).toThrow(/'models.default'/);
+    expect(() => parseAgentSpec({ ...base, budget: { limit_usd: 0 } })).toThrow(/'budget.limit_usd'/);
+    expect(() => parseAgentSpec({ ...base, budget: { limit_usd: 1, warn_ratio: 2 } })).toThrow(/'budget.warn_ratio'/);
+  });
 });
 
-describe("agents/forge.yaml (design §21)", () => {
-  it("loads as a valid spec whose instructions teach the corrected loop", async () => {
+describe("agents/forge.yaml (design §21.0)", () => {
+  it("loads as a full-config spec whose instructions teach the corrected loop", async () => {
     const spec = await loadAgentSpec(join(repoRoot, "agents", "forge.yaml"));
     expect(spec.name).toBe("forge");
     expect(spec.displayName).toBe("Forge");
+    expect(spec.harness).toBe("pi");
+    expect(spec.sandbox.network).toBe("bridge");
+    expect(spec.tools.map((t) => t.tool)).toEqual(
+      expect.arrayContaining(["github.exec", "git.exec", "delivery.report_pr"]),
+    );
+    expect(grantFamilies(spec, "git.exec")).toEqual(expect.arrayContaining(["push"]));
+    expect(spec.models?.default).toMatch(/:/);
+    expect(spec.budget?.limitUsd).toBeGreaterThan(0);
     expect(spec.instructions).toContain("delivery.report_pr");
     expect(spec.instructions).toContain("git.exec");
     expect(spec.instructions).toContain("ask_user");
     expect(spec.instructions).toContain("<<<UNTRUSTED");
+  });
+
+  it("loadAgentSpecs reads the agents directory (first file = default agent)", async () => {
+    const specs = await loadAgentSpecs(join(repoRoot, "agents"));
+    expect(specs.length).toBeGreaterThan(0);
+    expect(specs.map((s) => s.name)).toContain("forge");
   });
 });

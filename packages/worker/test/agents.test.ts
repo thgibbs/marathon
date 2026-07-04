@@ -1,6 +1,7 @@
+import { parseAgentSpec } from "@marathon/config";
 import type { Agent, AgentVersion } from "@marathon/core";
 import { describe, expect, it } from "vitest";
-import { ensureAgentFromSpec, type AgentSeedDb } from "../src/agents";
+import { ensureAgentFromSpec, seedConfiguredAgents, type AgentSeedDb } from "../src/agents";
 
 function makeDb() {
   const agents = new Map<string, Agent>();
@@ -51,7 +52,7 @@ function makeDb() {
   return { db, versions };
 }
 
-const SPEC = { name: "forge", instructions: "You are Forge. Build from merged plans." };
+const SPEC = parseAgentSpec({ name: "forge", instructions: "You are Forge. Build from merged plans." });
 
 describe("ensureAgentFromSpec (Track 12: YAML instructions → AgentVersion)", () => {
   it("first seed publishes version 1 with the spec's instructions", async () => {
@@ -79,5 +80,35 @@ describe("ensureAgentFromSpec (Track 12: YAML instructions → AgentVersion)", (
     expect(updated.published).toBe(true);
     expect(updated.version.versionNumber).toBe(2);
     expect(versions).toHaveLength(2);
+  });
+});
+
+describe("seedConfiguredAgents (Track 14: configured agents, no hardcoded defaults)", () => {
+  it("seeds YAML specs (first = default) and publishes their instructions", async () => {
+    const { db, versions } = makeDb();
+    const other = parseAgentSpec({
+      name: "quill",
+      description: "doc agent",
+      keywords: ["doc"],
+      instructions: "Draft documents.",
+    });
+    const seeded = await seedConfiguredAgents(db, "tn1", { specs: [SPEC, other] });
+    expect(seeded.defaultAgent).toBe("forge");
+    expect(seeded.agents.map((a) => a.name)).toEqual(["forge", "quill"]);
+    expect(seeded.agents[1]).toEqual({ name: "quill", description: "doc agent", keywords: ["doc"] });
+    expect(Object.keys(seeded.agentIdByName)).toEqual(["forge", "quill"]);
+    expect(versions).toHaveLength(2);
+  });
+
+  it("accepts bare descriptors (demo path) without publishing versions", async () => {
+    const { db, versions } = makeDb();
+    const seeded = await seedConfiguredAgents(db, "tn1", { agents: [{ name: "bruce" }] });
+    expect(seeded.defaultAgent).toBe("bruce");
+    expect(versions).toHaveLength(0);
+  });
+
+  it("throws when no agents are configured", async () => {
+    const { db } = makeDb();
+    await expect(seedConfiguredAgents(db, "tn1", {})).rejects.toThrow(/no agents configured/);
   });
 });

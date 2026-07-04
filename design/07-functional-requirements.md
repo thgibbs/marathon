@@ -804,10 +804,14 @@ consolidation yet (added later, largely "for free" once Mem0 is wired):
 * Configurable **retention**; short-term **TTL**; **redaction** of sensitive content (§12.2).
 * **Optional by default** — an agent uses memory only if configured to.
 
-> **Status.** Build status lives in the roadmap. M7 shipped the *earlier* model (agent-scoped
-> corrections, un-gated recall across scopes); this section is the target. The deltas —
-> audience-gated recall, user scope replacing agent scope, write gating, audience computation
-> — are tracked in roadmap §2b #9.
+> **Status.** Build status lives in the roadmap. **As-built (2026-07-03, migration Track
+> 13 / roadmap §2b #9):** the store enforces this model — audience-gated recall
+> (`TaskAudience` computed deterministically at prompt-build; user-`preference` exception
+> included), user scope replacing agent scope (agent tag = ranking boost only), narrowest-
+> scope writes with the tenant confirmation gate, and user-scoped corrections with gated
+> promotion. Still open: the admin-declared Slack channel↔project mapping (each channel is
+> its own pseudo-project for now), external/guest detection on Slack, and reporting recalled
+> scopes to the egress ledger (lands with the M10 lattice).
 
 ---
 
