@@ -72,14 +72,22 @@ describe("per-agent sandbox network (Track 15)", () => {
     expect(resolveSandboxNetwork({ network: "none" }, {}, {})).toBe("none");
   });
 
-  it('strictness composes: "none" from EITHER the env or the spec wins', () => {
+  it('strictness composes: "none" from ANY source wins', () => {
     expect(resolveSandboxNetwork({ network: "bridge" }, {}, { MARATHON_SANDBOX_NETWORK: "none" })).toBe("none");
     expect(resolveSandboxNetwork({ network: "none" }, {}, { MARATHON_SANDBOX_NETWORK: "bridge" })).toBe("none");
+    expect(resolveSandboxNetwork({ network: "bridge" }, { network: "none" }, {})).toBe("none");
     expect(resolveSandboxNetwork({ network: "bridge" }, {}, { MARATHON_SANDBOX_NETWORK: "bridge" })).toBe("bridge");
   });
 
-  it("an explicit option wins over both", () => {
-    expect(resolveSandboxNetwork({ network: "none" }, { network: "bridge" }, { MARATHON_SANDBOX_NETWORK: "none" })).toBe("bridge");
+  it("no caller can RELAX a strict env or spec (BUILD wiring exposes options)", () => {
+    // An explicit bridge option must not loosen "none" from the YAML or env.
+    expect(resolveSandboxNetwork({ network: "none" }, { network: "bridge" }, {})).toBe("none");
+    expect(resolveSandboxNetwork({ network: "bridge" }, { network: "bridge" }, { MARATHON_SANDBOX_NETWORK: "none" })).toBe("none");
+  });
+
+  it("among non-strict values, options win over env over spec", () => {
+    expect(resolveSandboxNetwork({ network: "bridge" }, { network: "host-custom" }, { MARATHON_SANDBOX_NETWORK: "env-net" })).toBe("host-custom");
+    expect(resolveSandboxNetwork({ network: "bridge" }, {}, { MARATHON_SANDBOX_NETWORK: "env-net" })).toBe("env-net");
   });
 
   it("workspaceSandboxFromSpec builds spec-driven containers", () => {

@@ -18,17 +18,19 @@
  */
 import { FakeAgentRuntime } from "@marathon/agent";
 import { EnvSecretStore } from "@marathon/config";
+import type { StepRunner } from "@marathon/core";
 import { FixturesGithubClient, GithubDelivery, makeDocumentTools } from "@marathon/connector-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { bootstrapGithubApp, handleWebhookRequest, type GithubAppDeps } from "@marathon/github-app";
 import { FakeMemoryStore } from "@marathon/memory";
-import { Queue } from "@marathon/queue";
+import { DEFAULT_JOB_KIND, Queue } from "@marathon/queue";
 import { bootstrapSlackApp, dispatchEnvelope, type AppDeps } from "@marathon/slack-app";
 import { DeliveryFanout } from "@marathon/surface";
 import { computeGithubSignature } from "@marathon/surface-github";
 import { FakeSlackClient, SlackDelivery, type SocketEnvelope } from "@marathon/surface-slack";
 import { ToolGateway, ToolRegistry, type ToolPolicy } from "@marathon/tools";
 import {
+  BUILD_JOB_KIND,
   InvocationRouter,
   makeAgentTaskStepRunner,
   makeWaitingNotifier,
@@ -208,12 +210,18 @@ async function main(): Promise<void> {
     );
     console.log("[k3] code PR comment -> revision task pinned to the branch tip ✓");
 
-    // Leave the queue idle for demos sharing this database: the BUILD-stage
-    // jobs spawned above are consumed by the BUILD worker in a live deployment.
-    const sweeper = new Worker(queue, db, {
-      stepRunner: async ({ checkpoint }) => ({ stepType: "noop", done: true, checkpoint }),
-    });
-    await sweeper.drain();
+    // 5. worker partitioning (Track 15): the revision task queued above is a
+    // BUILD-kind job (its source ref carries the plan binding). A general
+    // agent worker must never lease it — only the BUILD worker consumes it.
+    const noop: StepRunner = async ({ checkpoint }) => ({ stepType: "noop", done: true, checkpoint });
+    const agentSweeper = new Worker(queue, db, { kinds: [DEFAULT_JOB_KIND], stepRunner: noop });
+    await agentSweeper.drain();
+    const untouched = await db.getTask(revision!.id);
+    assert(untouched!.status === "queued", `a default-kind worker must not lease the BUILD job (got ${untouched!.status})`);
+    const buildSweeper = new Worker(queue, db, { kinds: [BUILD_JOB_KIND], stepRunner: noop });
+    await buildSweeper.drain();
+    assert((await db.getTask(revision!.id))!.status === "completed", "the BUILD worker consumes BUILD-kind jobs");
+    console.log("[k3] queue partition: BUILD jobs only reach the BUILD worker ✓");
 
     console.log("demo-k3 OK");
   } finally {

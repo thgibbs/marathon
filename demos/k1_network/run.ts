@@ -25,6 +25,17 @@ function assert(cond: boolean, msg: string): void {
 
 const IMAGE = process.env.MARATHON_SANDBOX_IMAGE ?? "alpine:3.20";
 
+/**
+ * Public endpoints to prove outbound access with. Any ONE succeeding proves
+ * the point; multiple candidates keep CI runners with flaky routes to a
+ * particular host (or broken IPv6) from failing the demo.
+ */
+const PROBE_URLS = [
+  "https://example.com",
+  "https://dl-cdn.alpinelinux.org/alpine/MIRRORS.txt",
+  "http://example.com",
+];
+
 async function main(): Promise<void> {
   // Plant fake "company secrets" in the demo's own env: if any container can
   // see these, the credential-freedom boundary is broken.
@@ -41,11 +52,25 @@ async function main(): Promise<void> {
   const container = (await sandbox.createContainer(request, binding)) as DockerContainer;
   await container.start();
   try {
-    // 1. public docs/package fetch works by default (exec throws on failure).
-    await container.exec("wget", ["-q", "-T", "10", "-O", "/workspace/example.html", "https://example.com"], {
-      timeoutMs: 60_000,
-    });
-    console.log("[k1-network] public doc fetched from inside the sandbox ✓");
+    // 1. public docs/package fetch works by default (exec throws on failure —
+    // stderr is kept so a CI failure is diagnosable, not just "exit 1").
+    let fetchedFrom: string | null = null;
+    const failures: string[] = [];
+    for (const url of PROBE_URLS) {
+      try {
+        await container.exec("wget", ["-T", "15", "-O", "/workspace/fetched.txt", url], { timeoutMs: 60_000 });
+        fetchedFrom = url;
+        break;
+      } catch (e) {
+        const err = e as { stderr?: string; message?: string };
+        failures.push(`  ${url}: ${(err.stderr ?? err.message ?? String(e)).trim()}`);
+      }
+    }
+    assert(
+      fetchedFrom !== null,
+      `no public URL reachable from the default sandbox (Track 8 expects outbound internet):\n${failures.join("\n")}`,
+    );
+    console.log(`[k1-network] public doc fetched from inside the sandbox (${fetchedFrom}) ✓`);
 
     // 2. no company secrets inside the container.
     const env = await container.exec("printenv", [], { timeoutMs: 30_000 });
@@ -57,8 +82,8 @@ async function main(): Promise<void> {
 
     // 3. dependency work lands as normal PR content in the workspace: the
     // fetched file is on the host side of the mount, ready for git.
-    const html = await readFile(join(ws, "example.html"), "utf8");
-    assert(html.toLowerCase().includes("example"), "fetched content should land in the workspace");
+    const fetched = await readFile(join(ws, "fetched.txt"), "utf8");
+    assert(fetched.trim().length > 0, "fetched content should land in the workspace");
     console.log("[k1-network] fetched content landed in the task workspace (normal PR content) ✓");
   } finally {
     await container.stop().catch(() => {});

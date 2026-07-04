@@ -4,7 +4,7 @@ import { httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from 
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
-import { Queue } from "@marathon/queue";
+import { DEFAULT_JOB_KIND, Queue } from "@marathon/queue";
 import { DeliveryFanout } from "@marathon/surface";
 import { RealSlackClient, SlackDelivery, SocketModeClient } from "@marathon/surface-slack";
 import { InMemorySourceLedger, ToolGateway, ToolRegistry, toolPolicyFromSpec } from "@marathon/tools";
@@ -157,6 +157,9 @@ export async function startSlackApp(): Promise<void> {
     }),
     // Track 12: clarifying questions publish durably BEFORE the task parks.
     onWaiting: makeWaitingNotifier(db, fanout),
+    // Partitioned dequeue (Track 15): this worker owns general agent jobs;
+    // BUILD-kind jobs belong to the github-app's BUILD worker.
+    kinds: [DEFAULT_JOB_KIND],
     visibilityMs: 120_000,
   });
   const orchestrator = new Orchestrator(db, queue);

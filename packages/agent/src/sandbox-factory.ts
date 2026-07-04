@@ -61,20 +61,20 @@ export function workspaceContainerOptions(
 
 /**
  * Resolve the sandbox network for an agent spec (Track 15 closes Track 14's
- * "per-agent sandbox.network reaches BUILD wiring"). Precedence: an explicit
- * `opts.network` wins; otherwise "none" from EITHER the deployment env or the
- * agent YAML wins (strictness composes — a strict deployment cannot be
- * loosened by an agent, and a strict agent cannot be loosened by the env).
+ * "per-agent sandbox.network reaches BUILD wiring"). Strictness composes:
+ * `"none"` from ANY source — explicit options, the deployment env, or the
+ * agent YAML — wins, so no caller (including `makeBuildWiring`'s exposed
+ * sandbox options) can relax a strict deployment or a strict agent. Among
+ * non-strict values, precedence is options > env > spec.
  */
 export function resolveSandboxNetwork(
   sandbox: AgentSandboxConfig,
   opts: WorkspaceSandboxOptions = {},
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  if (opts.network) return opts.network;
   const envNetwork = env.MARATHON_SANDBOX_NETWORK;
-  if (envNetwork === "none" || sandbox.network === "none") return "none";
-  return envNetwork ?? sandbox.network;
+  if (opts.network === "none" || envNetwork === "none" || sandbox.network === "none") return "none";
+  return opts.network ?? envNetwork ?? sandbox.network;
 }
 
 /**

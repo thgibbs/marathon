@@ -17,13 +17,13 @@ import { PiAgentRuntime } from "@marathon/agent";
 import { EnvSecretStore, loadAgentSpecs, loadConfig, type AgentSpec } from "@marathon/config";
 import { GithubDelivery, HttpGithubClient, httpGithubClientFactory, makeDocumentTools } from "@marathon/connector-github";
 import { Database, migrate } from "@marathon/db";
-import { bootstrapGithubApp, handleWebhookRequest, isBuildTask, makeBuildWiring, type GithubAppDeps } from "@marathon/github-app";
+import { bootstrapGithubApp, handleWebhookRequest, makeBuildWiring, type GithubAppDeps } from "@marathon/github-app";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
 import { Queue } from "@marathon/queue";
 import { DeliveryFanout } from "@marathon/surface";
 import { ToolGateway, toolPolicyFromSpec, ToolRegistry } from "@marathon/tools";
-import { InvocationRouter, Orchestrator, Worker } from "@marathon/worker";
+import { BUILD_JOB_KIND, InvocationRouter, Orchestrator, Worker } from "@marathon/worker";
 
 /** The kernel runs the Pi harness; `claude-code` is a config value reserved for K7. */
 function assertSupportedHarness(spec: AgentSpec): void {
@@ -101,9 +101,10 @@ async function main(): Promise<void> {
   });
   const buildWorker = new Worker(queue, db, {
     stepRunner: build.stepRunner,
-    // Document tasks are driven inline by the webhook handlers; this worker
-    // only owns BUILD-stage tasks.
-    accepts: isBuildTask,
+    // Partitioned dequeue (Track 15): this worker only LEASES BUILD-kind jobs,
+    // so it can never consume the document-task jobs the webhook handlers
+    // drive inline — those stay on the queue for whichever worker owns them.
+    kinds: [BUILD_JOB_KIND],
     visibilityMs: 120_000,
   });
   const pollBuild = async (): Promise<void> => {

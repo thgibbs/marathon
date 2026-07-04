@@ -7,7 +7,14 @@ import { ScriptedBuildRuntime, ScriptedCrash } from "@marathon/agent";
 import { CodeTaskRegistry } from "@marathon/code-handoff";
 import { emptyCheckpoint, parseCheckpoint, type Checkpoint, type Task } from "@marathon/core";
 import { beforeAll, describe, expect, it } from "vitest";
-import { loadDiffSnapshot, makeBuildStepRunner, resolveBuildBinding, type BuildStepDb } from "../src/build-step";
+import {
+  BUILD_JOB_KIND,
+  jobKindForSourceRef,
+  loadDiffSnapshot,
+  makeBuildStepRunner,
+  resolveBuildBinding,
+  type BuildStepDb,
+} from "../src/build-step";
 
 const execFileAsync = promisify(execFile);
 
@@ -273,5 +280,19 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
     expect(cpBinding?.baseSha).toBe("other-sha");
 
     expect(resolveBuildBinding(makeTask({ sourceRef: {} }), emptyCheckpoint())).toBeNull();
+  });
+
+  it("jobKindForSourceRef partitions BUILD-stage tasks from everything else (Track 15)", () => {
+    expect(jobKindForSourceRef(makeTask().sourceRef)).toBe(BUILD_JOB_KIND);
+    expect(
+      jobKindForSourceRef({
+        kind: "code_revision",
+        planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: "sha" },
+        baseSha: "tip",
+      }),
+    ).toBe(BUILD_JOB_KIND);
+    // Everything else — Slack asks, doc tasks — keeps the queue default.
+    expect(jobKindForSourceRef({ channel: "C1", thread_ts: "1.0" })).toBe("task");
+    expect(jobKindForSourceRef(null)).toBe("task");
   });
 });

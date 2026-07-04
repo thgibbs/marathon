@@ -30,11 +30,16 @@ track describe the codebase *before* its work landed; completed tracks carry a s
     The **coherent BUILD loop now exists in a live app**: `makeBuildWiring`
     (packages/github-app/build.ts) assembles, from ONE `AgentSpec`, the Pi runtime with
     `workspaceSandboxFromSpec` (per-agent `sandbox.network` finally reaches BUILD wiring —
-    strictness composes: "none" from env OR YAML wins), the brokered `github.exec` (families
+    strictness composes: "none" from ANY source — options, env, or YAML — wins, so no
+    caller can relax a strict deployment or agent), the brokered `github.exec` (families
     from the YAML)/`git.exec`/`delivery.report_pr` surface behind one gateway, and
     `makeBuildStepRunner` with the spec's model + budget; the live github-app runs it in a
-    polling `Worker` whose new `accepts` option declines the doc tasks the webhook handlers
-    drive inline. `ClaudeCodeAgentRuntime` remains K7 (explicitly non-blocking).
+    polling `Worker`. Workers on a shared queue **partition by job kind at dequeue**
+    (`Queue.dequeue(..., { kinds })`): the job `kind` is derived from the task's source ref
+    at every enqueue (`jobKindForSourceRef` — submit AND resume), BUILD-stage tasks queue
+    as `build`, the BUILD worker leases only those, and the Slack worker leases only the
+    default kind — a worker can never consume (or dead-letter) another worker's jobs.
+    `ClaudeCodeAgentRuntime` remains K7 (explicitly non-blocking).
   - **Track 16 (status + cost):** `@agent status` is a first-class Slack flow —
     `isStatusAsk` short-circuits `handleMention` into `handleStatusAsk` (thread → 
     `findLatestTaskByThread`; read-only, no ack, no task). The §15.3 view is shared:

@@ -11,6 +11,7 @@ import { CodeWorkspace, type CodeTaskRegistry } from "@marathon/code-handoff";
 import type { Checkpoint, PlanRef, StepContext, StepResult, Task } from "@marathon/core";
 import { redactSecrets } from "@marathon/core";
 import { assertWithinTaskBudget, type BudgetPolicy } from "@marathon/observability";
+import { DEFAULT_JOB_KIND } from "@marathon/queue";
 
 /** What the BUILD runner needs from the database (Database satisfies this). */
 export interface BuildStepDb {
@@ -232,6 +233,30 @@ export function makeBuildStepRunner(opts: BuildStepOptions) {
   };
 }
 
+/** The BUILD binding carried in a task's source ref, when it has one (§29.1). */
+export function buildBindingFromSourceRef(
+  sourceRef: Record<string, unknown> | null | undefined,
+): { planRef: PlanRef; baseSha: string } | null {
+  const ref = sourceRef as {
+    kind?: unknown;
+    planRef?: { repo?: unknown; docPath?: unknown; mergeCommitSha?: unknown };
+    baseSha?: unknown;
+  } | null;
+  const p = ref?.planRef;
+  if (
+    typeof p?.repo === "string" &&
+    typeof p.docPath === "string" &&
+    typeof p.mergeCommitSha === "string" &&
+    typeof ref?.baseSha === "string"
+  ) {
+    return {
+      planRef: { repo: p.repo, docPath: p.docPath, mergeCommitSha: p.mergeCommitSha },
+      baseSha: ref.baseSha,
+    };
+  }
+  return null;
+}
+
 /** The BUILD binding for a task: plan ref + pinned base, from input or checkpoint. */
 export function resolveBuildBinding(
   task: Task,
@@ -240,24 +265,21 @@ export function resolveBuildBinding(
   if (checkpoint.planRef && checkpoint.baseSha) {
     return { planRef: checkpoint.planRef, baseSha: checkpoint.baseSha };
   }
-  const ref = task.sourceRef as {
-    kind?: unknown;
-    planRef?: { repo?: unknown; docPath?: unknown; mergeCommitSha?: unknown };
-    baseSha?: unknown;
-  };
-  const p = ref?.planRef;
-  if (
-    typeof p?.repo === "string" &&
-    typeof p.docPath === "string" &&
-    typeof p.mergeCommitSha === "string" &&
-    typeof ref.baseSha === "string"
-  ) {
-    return {
-      planRef: { repo: p.repo, docPath: p.docPath, mergeCommitSha: p.mergeCommitSha },
-      baseSha: ref.baseSha,
-    };
-  }
-  return null;
+  return buildBindingFromSourceRef(task.sourceRef);
+}
+
+/** The job kind BUILD-stage tasks are queued under (worker partitioning, Track 15). */
+export const BUILD_JOB_KIND = "build";
+
+/**
+ * The queue kind for a task, derived from its source ref: BUILD-stage tasks
+ * (implementation/code-revision — anything carrying a plan binding) partition
+ * to the BUILD worker; everything else keeps the queue default. Derived at
+ * every enqueue (submit AND resume) so a task's jobs always reach the worker
+ * that owns its kind.
+ */
+export function jobKindForSourceRef(sourceRef: Record<string, unknown> | null | undefined): string {
+  return buildBindingFromSourceRef(sourceRef) ? BUILD_JOB_KIND : DEFAULT_JOB_KIND;
 }
 
 /** Load the checkpointed workspace diff — inline or via its snapshot file. */
