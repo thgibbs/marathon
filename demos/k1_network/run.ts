@@ -13,7 +13,7 @@
  *   3. dependency work writes normal PR content into the workspace;
  *   4. the strict opt-in (`network: "none"`) actually blocks egress.
  */
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workspaceSandbox } from "@marathon/agent";
@@ -43,6 +43,11 @@ async function main(): Promise<void> {
   process.env.OPENAI_API_KEY = "sk-demo-fake-key";
 
   const ws = await mkdtemp(join(tmpdir(), "marathon-k1-network-ws-"));
+  // The container runs as a non-root user (hardening, §12.6) while mkdtemp
+  // makes a 0700 dir owned by whoever runs the demo — open it up so the
+  // in-container user can write on native-Linux hosts (host<->container uid
+  // mapping is the deferred M9 item; macOS Docker Desktop masks ownership).
+  await chmod(ws, 0o777);
   const binding = { dir: ws, baseSha: "0000000" };
   const request = { taskId: "k1-network", instructions: "", input: "", modelRef: "fake:none" };
 
