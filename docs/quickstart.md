@@ -7,18 +7,18 @@ The loop you are setting up (design §0.1):
 
 ```text
 Slack ask -> design-doc PR -> iterate -> merge-as-approval -> sandboxed code work ->
-green-tested code PR -> deliver links back to Slack and the doc PR
+verified code PR -> deliver links back to Slack and the doc PR
 ```
 
-> **Status.** Track 14 lands the configuration surface (YAML agents, credential
-> layout, this walkthrough). The single `make demo-kernel` umbrella and the timed
-> stranger test close later in K6 — until then, the loop is proven piecewise by
-> `make demo-slack-app`, `make demo-github-app`, `make demo-k1-brokered`, and
-> `make demo-k4`/`smoke-k4`.
+> **Status.** The migration tracks (1–17) have all landed: the loop is proven
+> end-to-end by **`make demo-kernel`** (the K1–K5 umbrella: brokered delivery,
+> sandbox network reality, fan-out, iteration continuity, kill/resume,
+> status + cost). The remaining K6 item is the timed stranger test — this
+> walkthrough completing on a fresh machine in under ~30 minutes.
 
 ## 0. Prerequisites
 
-- Node ≥ 22, pnpm, Docker (compose).
+- Node >= 22, pnpm 10, Docker Compose for Postgres, and Docker for sandbox/code tasks.
 - A GitHub repo you can install an App on (your target repo).
 - A Slack workspace where you can create an app.
 - One model provider API key (OpenAI or Anthropic), with billing + a spend cap.
@@ -29,21 +29,28 @@ Account-level details (creating keys, billing caps) live in
 ## 1. Clone, install, boot
 
 ```bash
-git clone https://github.com/<you>/marathon && cd marathon
+git clone https://github.com/thgibbs/marathon.git
+cd marathon
 pnpm install
 cp .env.example .env          # fill in as you go below
 make demo-slack-app           # boots Postgres, migrates, proves the Slack loop offline
 ```
 
-If host port 5432 is taken: `make demo-slack-app MARATHON_DB_PORT=55432` (and
-adjust `DATABASE_URL`).
+If host port 5432 is taken, use one port everywhere:
+
+```bash
+make demo-slack-app MARATHON_DB_PORT=55432
+```
+
+Set `DATABASE_URL=postgres://marathon:marathon@localhost:55432/marathon` in `.env`
+for live app runs on that port.
 
 ## 2. Define your agent (YAML)
 
-Agents are YAML files in `agents/` (override with `MARATHON_AGENTS_DIR`); the
-first file alphabetically is the deployment's default agent. Start from the
-flagship, [`agents/forge.yaml`](../agents/forge.yaml), and set the one thing it
-needs — your target repo:
+Agents are YAML files in `agents/` (override with `MARATHON_AGENTS_DIR`); files
+are loaded alphabetically, and the first file is the deployment's default agent. Start
+from the flagship, [`agents/forge.yaml`](../agents/forge.yaml), and set the one thing
+it needs — your target repo:
 
 ```yaml
 repo: your-org/your-repo
@@ -52,6 +59,10 @@ repo: your-org/your-repo
 This is required, not optional: the live apps refuse to boot while GitHub or
 document tools are granted without a `repo`, because every grant is scoped to
 the ONE configured repo by construction.
+
+The default Forge spec uses OpenAI model refs. If you want another provider, edit
+`models.default` before starting the live apps, optionally add `models.build` for a
+different BUILD-stage model, and put that provider's API key in `.env`.
 
 The full config shape (design §6.2 / §21.0):
 
@@ -62,9 +73,9 @@ The full config shape (design §6.2 / §21.0):
 | `harness` | `pi` (default) — `claude-code` arrives with K7 |
 | `repo` | the ONE target repo; scopes every GitHub grant by construction |
 | `tools` | grants, incl. brokered command families (`github.exec: pr view, pr create, …`; `git.exec: push, fetch`) |
-| `sandbox.network` | BUILD container network: `bridge` (internet, default) or `none` |
-| `models` | role → `provider:model` routing (`default`, `reasoning`, `cheap`) |
-| `budget` | hard spend cap in USD (`limit_usd`, fails closed) + `warn_ratio` |
+| `sandbox.network` | BUILD container network: `bridge` (internet, default) or `none` — `none` from the YAML, `MARATHON_SANDBOX_NETWORK`, or code wins (strictness composes) |
+| `models` | role → `provider:model` routing (`default`, `reasoning`, `cheap`; a `build` role routes the BUILD stage) |
+| `budget` | hard spend cap in USD (`limit_usd`, fails closed) + `warn_ratio` — enforced per agent AND per task, at every turn boundary |
 
 Config is deliberately restart-applied: edit the YAML, restart the app, and the
 new instructions publish as the next agent version.
@@ -88,14 +99,24 @@ Marathon does not hand the model a GitHub token. The credential layout
 
 Setup:
 
-1. Create a fine-grained token (or GitHub App) with Contents + Pull requests
-   read/write on your target repo → `GITHUB_TOKEN` in `.env`.
+1. Create a fine-grained token with Contents + Pull requests read/write on your
+   target repo → `GITHUB_TOKEN` in `.env`. For production, use the GitHub App
+   fields in `.env.example`; the broker model is the same.
 2. Protect your default branch (Marathon only pushes `marathon/*` branches;
    branch protection makes that structural).
 3. For the document surface webhooks: create a GitHub App, subscribe to
    `issue_comment`, `pull_request_review_comment`, and `pull_request`, point it
-   at your tunnel + `GITHUB_WEBHOOK_SECRET`, and install it on the repo. Then
-   `make github-app` (needs `GITHUB_OWNER`, a tunnel like ngrok in dev).
+   at your tunnel + `GITHUB_WEBHOOK_SECRET`, and install it on the repo.
+4. Set `GITHUB_OWNER` to the repository owner used for this Marathon tenant,
+   then run `make github-app` behind your dev tunnel.
+
+`make github-app` runs both halves of the GitHub side: the webhook receiver
+(mention → doc PR, comment → revision, merge → implementation task) **and the
+BUILD worker** that consumes those implementation/revision tasks — Pi in the
+credential-free sandbox (network mode from the agent YAML), brokered
+`gh`/`git`, `delivery.report_pr`, model + budget from the same YAML. Workers on
+a shared queue partition by job kind, so the BUILD worker and the Slack app's
+general worker never take each other's work.
 
 ## 4. Slack app
 
@@ -110,7 +131,11 @@ Setup:
    `reaction_added`.
 5. Run the listener: `make slack-app`, invite the bot to a channel, and
    `@marathon <ask>`. The default agent (your first YAML file) answers in a
-   thread; replies to its clarifying questions resume the same durable task.
+   thread; replies to its clarifying questions resume the same durable task,
+   and a reply after it finishes chains a follow-up task in the same thread.
+   `@marathon status` in a task's thread reports the §15.3 view — what it's
+   doing now, completed steps, what it's waiting on, the delivered PR link,
+   and cost so far; final results carry a silent cost footer (§13.3).
 
 ## 5. Sandbox toolchain (code tasks)
 
@@ -119,12 +144,14 @@ BUILD-stage work runs in a pinned, credential-free Docker image with git, gh
 
 ```bash
 make sandbox-image        # builds marathon-sandbox:kernel from docker/sandbox/Dockerfile
-make smoke-sandbox        # proves the open (bridge) default and the strict (none) mode
+make demo-k1-network      # proves internet + no-secrets + the strict (none) mode, workspace-bound
+make smoke-sandbox        # same boundary on the one-shot ToolSandbox seam
 ```
 
-Network default is internet-enabled (`bridge`) for installs/docs — override per
-deployment with `MARATHON_SANDBOX_NETWORK=none` or per agent with
-`sandbox.network` in the YAML. No env vars or secrets ever enter the container.
+Network default is internet-enabled (`bridge`) for installs/docs. To disable
+egress, set `MARATHON_SANDBOX_NETWORK=none` or `sandbox.network: none` in the
+agent YAML; `none` wins across options, env, and YAML. No env vars or secrets
+ever enter the container.
 
 ## 6. Tell Marathon how to verify your repo
 
@@ -143,10 +170,20 @@ with a failure summary, never a claimed-green one.
 ## 7. Prove the loop
 
 ```bash
-make demo-slack-app      # ask -> durable clarifying question -> resume -> answer
-make demo-github-app     # mention -> doc PR -> revise -> merge spawns implementation task
+make demo-kernel         # the whole K1-K5 regression umbrella, in one command
+```
+
+Or piecewise:
+
+```bash
 make demo-k1-brokered    # YAML grants -> brokered git push / gh pr create -> delivery.report_pr
+make demo-k1-network     # credential-free sandbox fetches the public internet (needs Docker)
+make demo-k2             # one result fans out to the Slack thread AND the doc PR, idempotently
+make demo-k3             # clarify -> resume; finished-thread reply -> continuation; PR comments -> revisions
 make demo-k4             # mid-BUILD kill -> resume -> exactly one PR
+make demo-k5             # @agent status views + cost footers
+make demo-slack-app      # the Slack dispatcher end-to-end (ask/feedback/dedupe/resume)
+make demo-github-app     # mention -> doc PR -> revise -> merge spawns implementation task
 ```
 
 All demos are deterministic (fakes/fixtures); the `smoke-*` targets run the

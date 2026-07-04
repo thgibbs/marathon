@@ -5,43 +5,55 @@ Slack and GitHub-backed markdown documents. One loop is the product (design §0.
 
 ```text
 Slack ask -> design-doc PR -> iterate on review -> merge-as-approval ->
-sandboxed code work -> green-tested code PR -> links back to Slack and the doc PR
+sandboxed code work -> verified code PR -> links back to Slack and the doc PR
 ```
 
 You `@marathon` an ask in Slack. The agent drafts a **design document as a markdown
 PR**; you review and iterate in the PR; **merging it is the approval**. Marathon then
 implements the merged plan in a **credential-free sandbox** (normal git, internet for
-installs, the repo's own tests), pushes through a **credentialed broker**, opens a code
-PR, and delivers the links back to the thread and the doc PR. Tasks are durable: a
+installs, the repo's own verification), pushes through a **credentialed broker**, opens
+a code PR, and delivers the links back to the thread and the doc PR. Tasks are durable: a
 clarifying question parks the task until you reply; a killed worker resumes mid-BUILD
 without repeating work.
 
-> **Status:** the durable spine, both surfaces, the brokered `gh`/`git` delivery path,
-> per-turn checkpoint/resume, durable clarifying questions, and YAML agent config are
-> in place (roadmap K1–K4 + Track 14); status/cost UX (K5) and the single
-> `make demo-kernel` umbrella (K6) are in flight.
+> **Status:** the kernel loop is functionally complete (roadmap K1–K5, migration
+> tracks 1–17): durable spine, both surfaces, brokered `gh`/`git` delivery, per-turn
+> checkpoint/resume, durable clarifying questions, YAML agent config, spec-driven
+> models + hard per-task budgets, `@agent status` + cost footers, and the
+> `make demo-kernel` regression umbrella. Remaining: the K6 timed stranger test and
+> the K7 Claude Code harness (non-blocking); the "first blood" ratchet — a change to
+> Marathon merged through its own loop — is the live bar (design §0.6).
 >
 > **Talk to it:** `make slack-app` runs the live listener — `@marathon …` in a channel
-> the bot is in gets a real, threaded, durable agent reply.
+> the bot is in gets a real, threaded, durable agent reply. Replies in the thread
+> answer its clarifying questions or chain follow-up tasks; `@marathon status` in a
+> task's thread reports what it's doing, what's done, and cost so far (§15.3); final
+> results carry a silent cost footer (§13.3).
 
 ## Quickstart
 
-Requires Node ≥ 22, pnpm, and Docker. Full walkthrough (Slack app, GitHub App,
-credentials, sandbox image): **[`docs/quickstart.md`](./docs/quickstart.md)**.
+Requires Node >= 22, pnpm 10, Docker Compose for Postgres, and Docker for sandbox
+demos/code tasks. Full walkthrough (Slack app, GitHub App, credentials, sandbox image):
+**[`docs/quickstart.md`](./docs/quickstart.md)**.
 
 ```bash
 pnpm install
 make hooks               # gitleaks pre-commit secret scan (once)
-make demo-slack-app      # ask -> durable clarifying question -> reply -> resume
-make demo-github-app     # mention -> doc PR -> revise -> merge spawns the build task
-make demo-k1-brokered    # YAML grants -> brokered git push / gh pr create -> report PR
-make demo-k4             # kill the worker mid-BUILD -> resume -> exactly one PR
+make demo-kernel         # the K1-K5 umbrella: brokered delivery, sandbox network
+                         # reality, fan-out, iteration continuity, kill/resume, status+cost
 pnpm test && pnpm typecheck
 ```
 
+Or piecewise: `demo-k1-brokered` (YAML grants → brokered `git push` / `gh pr create` →
+report PR), `demo-k1-network` (credential-free sandbox with real internet; needs
+Docker), `demo-k2` (fan-out to Slack + doc PR), `demo-k3` (clarify/resume/revision
+continuity), `demo-k4` (kill mid-BUILD → resume → exactly one PR), `demo-k5`
+(status + cost), `demo-slack-app`, `demo-github-app`.
+
 All demos are deterministic (fakes/fixtures) and end with `demo-* OK`; `make demo` runs
-the whole suite. If host port 5432 is taken: `make demo MARATHON_DB_PORT=55432`. Stop
-the database with `make down`.
+the whole suite, kernel demos first. The network sandbox demo skips cleanly when Docker
+is unavailable; database-backed demos still need Docker Compose. If host port 5432 is
+taken: `make demo MARATHON_DB_PORT=55432`. Stop the database with `make down`.
 
 ## Agents are YAML
 
@@ -62,15 +74,18 @@ tools:
     families: ["push", "fetch"]
   - delivery.report_pr        # the narrow final step
 sandbox: { network: bridge }  # internet for installs; NEVER any credentials
-models: { default: openai:gpt-4o-mini }
-budget: { limit_usd: 5 }      # hard cap, fails closed
+                              # ("none" from YAML, env, or code wins — strictness composes)
+models: { default: openai:gpt-4o-mini }   # roles route models, e.g. build: openai:gpt-4o
+budget: { limit_usd: 5 }      # hard cap — per agent AND per task; fails closed
 ```
 
 Grants are enforced **by construction** (§7.8) — the repo allowlist, command families,
 and branch namespace are structural, not prompt rules. Destructive actions (e.g. merge)
 are never direct tools: the model proposes, a human approves, a non-model executor
-performs (**Proposed Effects**, §7.9). Target repos declare their verification in
-[`.marathon/config.yml`](./.marathon/config.yml) (`verify:` commands, §29.3).
+performs (**Proposed Effects**, §7.9). Target repos declare their verification in a
+repo-local `.marathon/config.yml` (`verify:` commands, §29.3). A red verify is delivered
+honestly as a draft PR with the failure summary; Marathon should never claim green tests
+it did not get.
 
 ## Docs
 
@@ -115,9 +130,9 @@ packages/
   memory/    @marathon/memory   — swappable MemoryStore (pgvector default, Mem0 adapter)
   observability/ @marathon/observability — task timeline, cost rollups, budgets, metrics
   slack-app/ @marathon/slack-app — live Slack app: bootstrap, dispatch, Socket Mode wiring
-  github-app/ @marathon/github-app — live GitHub document app: webhook receiver + dispatch
+  github-app/ @marathon/github-app — live GitHub app: document webhooks + BUILD worker
 agents/      YAML agent definitions (forge.yaml — the flagship)
-demos/       deterministic per-milestone/kernel demos (k1, k1_brokered, k4, m0–m9, apps)
+demos/       deterministic kernel + milestone demos (k1–k5 variants, m0–m9, apps)
 docker/      pinned BUILD sandbox toolchain image (make sandbox-image)
 ```
 
