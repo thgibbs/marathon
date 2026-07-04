@@ -91,7 +91,10 @@ function deliveryContract(branch: string): string {
     `- git.exec { argv: ["push", "<owner/repo>", "HEAD:refs/heads/${branch}"] } to push your branch;\n` +
     `- github.exec { argv: ["pr", "create", "--repo", "<owner/repo>", ...] } (or "pr edit") for the PR;\n` +
     `- finish by calling delivery.report_pr EXACTLY ONCE with the PR URL, a short summary, and the ` +
-    `verification commands you actually ran with their honest exit codes.`
+    `verification commands you actually ran with their honest exit codes.\n` +
+    `Verify before delivering (§29.3): run the repo's own verify commands — the "verify:" list in ` +
+    `.marathon/config.yml if the repo has one, else the plan's Verification section, else your ` +
+    `best judgment (make test, pnpm test, …).`
   );
 }
 

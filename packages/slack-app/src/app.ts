@@ -1,4 +1,4 @@
-import { EnvSecretStore, loadConfig } from "@marathon/config";
+import { EnvSecretStore, loadAgentSpecs, loadConfig, type AgentSpec } from "@marathon/config";
 import { PiAgentRuntime } from "@marathon/agent";
 import { httpGithubClientFactory, makeGithubReadTools } from "@marathon/connector-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
@@ -7,7 +7,7 @@ import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
 import { Queue } from "@marathon/queue";
 import { DeliveryFanout } from "@marathon/surface";
 import { RealSlackClient, SlackDelivery, SocketModeClient } from "@marathon/surface-slack";
-import { InMemorySourceLedger, ToolGateway, ToolRegistry } from "@marathon/tools";
+import { InMemorySourceLedger, ToolGateway, ToolRegistry, toolPolicyFromSpec } from "@marathon/tools";
 import {
   InvocationRouter,
   makeAgentTaskStepRunner,
@@ -15,14 +15,15 @@ import {
   Orchestrator,
   Worker,
 } from "@marathon/worker";
-
-const SLACK_AGENT_PERSONA =
-  "You are Marathon, a concise engineering assistant in Slack. You can read GitHub " +
-  "repositories with the github_read_file and github_list_contents tools — pass `repo` as " +
-  "\"owner/name\". Use them to ground answers in real code before making claims. Be brief and " +
-  "state uncertainty clearly.";
 import { bootstrapSlackApp } from "./bootstrap";
 import { dispatchEnvelope, type AppDeps } from "./handlers";
+
+/** The kernel runs the Pi harness; `claude-code` is a config value reserved for K7. */
+function assertSupportedHarness(spec: AgentSpec): void {
+  if (spec.harness !== "pi") {
+    throw new Error(`agent '${spec.name}': harness '${spec.harness}' is not available yet (K7) — use 'pi'`);
+  }
+}
 
 /** Start the live Marathon Slack app (Socket Mode). Long-running. */
 export async function startSlackApp(): Promise<void> {
@@ -45,18 +46,26 @@ export async function startSlackApp(): Promise<void> {
   if (!auth.ok) throw new Error(`auth.test failed: ${auth.error}`);
   const teamId = auth.team_id ?? auth.team ?? "unknown";
 
-  const boot = await bootstrapSlackApp(db, { teamId, teamName: auth.team });
+  // Configured agents (Track 14): YAML specs from the agents dir; the first
+  // file is the deployment default (the flagship — agents/forge.yaml). The
+  // spec drives everything below: persona (via AgentVersion), tool policy,
+  // model policy, and the budget cap.
+  const specs = await loadAgentSpecs(cfg.agentsDir);
+  const flagship = specs[0]!;
+  assertSupportedHarness(flagship);
+  const boot = await bootstrapSlackApp(db, { teamId, teamName: auth.team, specs });
 
-  const modelRef = resolveModelRef(DEFAULT_MODEL_POLICY);
+  const modelRef = resolveModelRef(flagship.models ?? DEFAULT_MODEL_POLICY);
   const memory = new PgVectorMemoryStore(cfg.databaseUrl, new OpenAIEmbedder(secrets));
 
   // Governed GitHub read tools, exposed to the agent through the Tool Gateway
   // (policy + credential injection + source ledger + audit + redaction). Read-only
   // for now; reads land in the per-task source ledger so egressing tools can be
-  // routed deterministically when they are added (§7.8).
+  // routed deterministically when they are added (§7.8). The grants (and the
+  // one-repo constraint, when `repo:` is set) come from the agent's YAML.
   const toolGateway = new ToolGateway({
     registry: new ToolRegistry(makeGithubReadTools(httpGithubClientFactory())),
-    policy: { grants: [{ tool: "github.read_file" }, { tool: "github.list_contents" }] },
+    policy: toolPolicyFromSpec(flagship),
     secrets,
     recorder: dbToolRecorder(db),
     sourceLedger: new InMemorySourceLedger(),
@@ -79,7 +88,11 @@ export async function startSlackApp(): Promise<void> {
     stepRunner: makeAgentTaskStepRunner(db, runtime, {
       modelRef,
       memory,
-      instructions: SLACK_AGENT_PERSONA,
+      // Persona comes from the seeded AgentVersion (the YAML instructions);
+      // this is only the fallback for tasks without an agent.
+      instructions: flagship.instructions,
+      // Hard per-agent spend cap from the YAML (fails closed when exceeded).
+      budget: flagship.budget ? { policy: flagship.budget } : undefined,
       // Track 12: thread history rides into the prompt, fenced as untrusted.
       loadContext: (task) => delivery.loadContext(task.sourceRef, { limit: 30 }),
     }),

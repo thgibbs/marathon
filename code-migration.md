@@ -18,6 +18,31 @@ features.
 Progress against the tracks below, most recent first. The "Current mismatch" lists in each
 track describe the codebase *before* its work landed; completed tracks carry a status note.
 
+- **Track 14: agent configuration and quickstart — done (2026-07-03, K6 config surface).**
+  `AgentSpec` (@marathon/config) is now the full §6.2/§21.0 shape: `harness` (pi |
+  claude-code — the latter validated but refused until K7), the ONE configured `repo`,
+  `tools` grants (string or `{ tool, families }` — brokered `gh`/`git` command families),
+  `sandbox.network` (default internet-enabled `bridge`), `models` (role → provider:model),
+  `budget` (`limit_usd` fails closed, `warn_ratio`), and optional `keywords`;
+  `loadAgentSpecs(dir)` reads the agents directory (`MARATHON_AGENTS_DIR`, default
+  `agents/`; first file = default agent). `agents/forge.yaml` is the full-config flagship
+  spanning the whole loop (draft doc → build → brokered delivery). Bootstraps lost their
+  hardcoded bruce/quill defaults: `seedConfiguredAgents` (worker) takes YAML `specs`
+  (publishing instructions through `ensureAgentFromSpec` → AgentVersion) or explicit
+  descriptors (demos), and throws when nothing is configured; the live Slack app and live
+  GitHub app load specs and drive model policy, budget, and the gateway policy
+  (`toolPolicyFromSpec` — the spec's repo becomes every grant's `allowedRepos`) from the
+  flagship spec. `ghFamiliesForNames` resolves YAML family names against the known `gh`
+  families (typos fail the boot); `demo-k1-brokered` now derives its broker surface from
+  forge.yaml, proving a family absent from the YAML is refused. Verification config:
+  `.marathon/config.yml` discovery already existed (§29.3); the BUILD brief now teaches
+  it, and Marathon's own repo carries one (dogfood). Docs: README rewritten around the
+  kernel loop; `docs/quickstart.md` is the K6 walkthrough (Slack app, GitHub App +
+  brokered-credential model, sandbox toolchain, verify config); `.env.example` gained
+  `SLACK_APP_TOKEN`, `GITHUB_OWNER`, `MARATHON_AGENTS_DIR`, `MARATHON_SANDBOX_IMAGE/NETWORK`.
+  Still open for K6 proper: `make demo-kernel` and the timed stranger test; per-agent
+  `sandbox.network` reaches BUILD wiring when a live BUILD runner consumes specs (Track 15).
+
 - **Track 12: prompt, context, and iteration continuity — done (2026-07-03, K3).**
   Clarifying questions are a first-class durable wait: the runtime seam is
   `AgentTurn.waiting` (Pi exposes an `ask_user` tool when `clarification: true`; the Fake
@@ -152,9 +177,9 @@ track describe the codebase *before* its work landed; completed tracks carry a s
   to the merge commit and inherited delivery targets; `packages/surface/src/fanout.ts`
   delivers to every target idempotently. `make demo-k1` proves the path.
 
-Not started: remaining Tracks 13–17 (memory migration, Forge YAML *full* config
-+ quickstart, model routing, status/cost UX, kernel demos beyond
-K1/K4/K1-brokered and the K3 slack-app round-trip).
+Not started: remaining Tracks 13 and 15–17 (memory migration, model routing,
+status/cost UX, kernel demos beyond K1/K4/K1-brokered and the K3 slack-app
+round-trip).
 
 New design correction after Tracks 1–5: the original `github.submit_code_changes`
 contract is probably too heavy. Marathon should not replace normal `git` and `gh`
@@ -186,7 +211,9 @@ Not aligned with the current design:
 - The sandbox design is still too network-restrictive for the kernel. The revised direction is
   internet access by default, with no company secrets in the sandbox.
 - Memory still has `agent` as an access scope and feedback corrections are agent-scoped.
-- Agents are hardcoded in app bootstraps; there is no YAML-defined `forge` flagship agent.
+- ~~Agents are hardcoded in app bootstraps; there is no YAML-defined `forge` flagship
+  agent.~~ Resolved by Track 14: bootstraps read configured agents (YAML specs or
+  explicit descriptors); `agents/forge.yaml` is the full-config flagship.
 - There is no `make demo-kernel`, `make demo-k2`, `make demo-k3`, `make demo-k5`, etc.
 
 ## Migration Principles

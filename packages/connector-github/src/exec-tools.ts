@@ -75,6 +75,26 @@ export const DEFAULT_GH_FAMILIES: GhCommandFamily[] = [
   { prefix: ["pr", "edit"], kind: "write", repo: repoFlag },
 ];
 
+/**
+ * Resolve YAML-granted family names (Track 14, e.g. `["pr view", "api"]`)
+ * against the known `gh` families. Unknown names throw at wiring time — a
+ * typo in an agent config should fail the boot, not silently widen or narrow
+ * the allowlist at call time.
+ */
+export function ghFamiliesForNames(
+  names: string[],
+  known: GhCommandFamily[] = DEFAULT_GH_FAMILIES,
+): GhCommandFamily[] {
+  return names.map((name) => {
+    const family = known.find((f) => f.prefix.join(" ") === name.trim());
+    if (!family) {
+      const knownNames = known.map((f) => f.prefix.join(" ")).join(", ");
+      throw new Error(`unknown gh command family "${name}" (known: ${knownNames})`);
+    }
+    return family;
+  });
+}
+
 export interface GithubExecOptions {
   /** Repos the broker may address (the task's configured repo(s)). */
   allowedRepos: string[];

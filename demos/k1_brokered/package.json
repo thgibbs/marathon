@@ -12,6 +12,7 @@
     "@marathon/core": "workspace:*",
     "@marathon/surface": "workspace:*",
     "@marathon/tools": "workspace:*",
-    "@marathon/worker": "workspace:*"
+    "@marathon/worker": "workspace:*",
+    "@marathon/config": "workspace:*"
   }
 }

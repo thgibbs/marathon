@@ -1,3 +1,4 @@
+import type { AgentSpec } from "@marathon/config";
 import type { Tool, ToolGrant, ToolInput, ToolPolicy } from "./types";
 
 export type PolicyDecision = "allow" | "deny" | "requires_proposal";
@@ -23,6 +24,21 @@ export function findGrant(policy: ToolPolicy, toolName: string): ToolGrant | und
  *   - autonomous / native_review -> allow (native review happens in the
  *                                artifact's own surface, e.g. PR merge)
  */
+/**
+ * The gateway policy for a YAML-configured agent (Track 14): one grant per
+ * declared tool, with the spec's ONE configured repo (§0.4) applied as the
+ * repo allowlist on every grant. Command families ride the spec separately —
+ * they narrow the exec tools at construction (`ghFamiliesForNames`), not here.
+ */
+export function toolPolicyFromSpec(spec: Pick<AgentSpec, "tools" | "repo">): ToolPolicy {
+  return {
+    grants: spec.tools.map((t) => ({
+      tool: t.tool,
+      ...(spec.repo ? { constraints: { allowedRepos: [spec.repo] } } : {}),
+    })),
+  };
+}
+
 export function enforce(policy: ToolPolicy, tool: Tool, input: ToolInput): PolicyResult {
   const grant = findGrant(policy, tool.name);
   if (!grant) return { decision: "deny", reason: `tool not granted: ${tool.name}` };
