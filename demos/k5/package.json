@@ -1,24 +1,20 @@
 {
-  "name": "@marathon/slack-app",
+  "name": "@marathon/demo-k5",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": {
-    ".": "./src/index.ts"
+  "scripts": {
+    "start": "tsx run.ts"
   },
   "dependencies": {
     "@marathon/agent": "workspace:*",
-    "@marathon/config": "workspace:*",
-    "@marathon/connector-github": "workspace:*",
     "@marathon/core": "workspace:*",
     "@marathon/db": "workspace:*",
-    "@marathon/memory": "workspace:*",
-    "@marathon/model-gateway": "workspace:*",
     "@marathon/observability": "workspace:*",
     "@marathon/queue": "workspace:*",
+    "@marathon/slack-app": "workspace:*",
     "@marathon/surface": "workspace:*",
     "@marathon/surface-slack": "workspace:*",
-    "@marathon/tools": "workspace:*",
     "@marathon/worker": "workspace:*"
   }
 }

@@ -10,6 +10,7 @@ import type {
 import { CodeWorkspace, type CodeTaskRegistry } from "@marathon/code-handoff";
 import type { Checkpoint, PlanRef, StepContext, StepResult, Task } from "@marathon/core";
 import { redactSecrets } from "@marathon/core";
+import { assertWithinTaskBudget, type BudgetPolicy } from "@marathon/observability";
 
 /** What the BUILD runner needs from the database (Database satisfies this). */
 export interface BuildStepDb {
@@ -20,6 +21,8 @@ export interface BuildStepDb {
     checkpoint: Checkpoint,
     modelInvocations?: Array<Omit<ModelInvocationData, "taskId">>,
   ): Promise<void>;
+  /** This task's model spend so far — the per-task budget input (Track 15). */
+  sumModelCostUsd(taskId: string): Promise<number>;
 }
 
 export interface BuildStepOptions {
@@ -37,6 +40,14 @@ export interface BuildStepOptions {
   source: string | ((task: Task) => string | Promise<string>);
   modelRef: string;
   instructions?: string;
+  /**
+   * Hard per-task cost cap (Track 15, §0.4). Enforced before the run starts
+   * AND at every turn boundary — the per-turn checkpoint hook is awaited by
+   * the harness, so a run past its cap is aborted at the next completed turn
+   * (the turn's work is already checkpointed; nothing is lost, and a resume
+   * fails the same check up front).
+   */
+  taskBudget?: BudgetPolicy;
   /** PR base for the handoff; defaults to "main". */
   defaultBranch?: string;
   /** Redact secrets from stored findings/trace (on by default). */
@@ -91,6 +102,10 @@ export function makeBuildStepRunner(opts: BuildStepOptions) {
 
     const task = await opts.db.getTask(taskId);
     if (!task) throw new Error(`build step: task ${taskId} not found`);
+
+    // Fail closed before provisioning anything: a task already past its cap
+    // (e.g. a retry after a mid-run budget abort) must not spend more.
+    if (opts.taskBudget) await assertWithinTaskBudget(opts.db, taskId, opts.taskBudget);
 
     const binding = resolveBuildBinding(task, checkpoint);
     if (!binding) {
@@ -160,6 +175,10 @@ export function makeBuildStepRunner(opts: BuildStepOptions) {
           turn.modelInvocation ? [turn.modelInvocation] : [],
         );
         lastCheckpoint = cp;
+        // Per-task cap AT the turn boundary (Track 15): the turn's cost is
+        // persisted above, so the check sees real spend; throwing here aborts
+        // the harness run (the hook is awaited) with the checkpoint intact.
+        if (opts.taskBudget) await assertWithinTaskBudget(opts.db, taskId, opts.taskBudget);
       };
 
       const turn = await opts.runtime.nextTurn({

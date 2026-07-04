@@ -59,12 +59,15 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 /** In-memory BuildStepDb: records completeStep calls like the real one would. */
 function makeDb(task: Task) {
   const steps: Array<{ stepType: string; checkpoint: Checkpoint; invocations: number }> = [];
+  let spentUsd = 0;
   const db: BuildStepDb = {
     getTask: async () => task,
     completeStep: async (_taskId, stepType, checkpoint, modelInvocations = []) => {
       steps.push({ stepType, checkpoint, invocations: modelInvocations.length });
+      for (const m of modelInvocations) spentUsd += m.costUsd ?? 0;
       task.checkpoint = JSON.parse(JSON.stringify(checkpoint)) as Record<string, unknown>;
     },
+    sumModelCostUsd: async () => spentUsd,
   };
   return { db, steps };
 }
@@ -227,6 +230,34 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
     expect(cp.workspaceDiffRef).toContain(diffDir);
     const loaded = await loadDiffSnapshot(parseCheckpoint(task.checkpoint));
     expect(loaded).toContain("big.txt");
+  });
+
+  it("aborts a run at the turn boundary once the per-task budget is exceeded (Track 15)", async () => {
+    const task = makeTask();
+    const { db, steps } = makeDb(task);
+    // ScriptedBuildRuntime prices each turn at 10 in + 5 out tokens of a
+    // { input: 1, output: 2 } spec = $0.00002/turn; cap after the first turn.
+    const runtime = new ScriptedBuildRuntime({
+      turns: [() => "turn one", () => "turn two", () => "turn three"],
+    });
+    const run = makeBuildStepRunner({
+      db,
+      runtime,
+      registry: new CodeTaskRegistry(),
+      source: origin,
+      modelRef: "fake:scripted",
+      taskBudget: { limitUsd: 0.00002 },
+    });
+
+    await expect(run({ taskId: task.id, checkpoint: emptyCheckpoint() })).rejects.toThrow(/budget exceeded/);
+    // The first turn's work is checkpointed (nothing lost); later turns never ran.
+    expect(steps.map((s) => s.stepType)).toEqual(["turn:0"]);
+
+    // A retry fails closed up front — before provisioning another workspace.
+    await expect(run({ taskId: task.id, checkpoint: parseCheckpoint(task.checkpoint) })).rejects.toThrow(
+      /budget exceeded/,
+    );
+    expect(steps).toHaveLength(1);
   });
 
   it("resolveBuildBinding prefers the checkpoint, falls back to sourceRef, rejects neither", () => {

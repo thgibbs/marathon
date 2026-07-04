@@ -45,6 +45,30 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+      # Kernel demos first (design §0.6, roadmap §2c): the loop is the
+      # critical path. demo-kernel = K1-K5 (the K6 umbrella); demo-k1 is the
+      # legacy submit-path regression kept until deletion.
+      - name: Kernel demo (K1 legacy submit path)
+        run: pnpm --filter @marathon/demo-k1 start
+
+      - name: Kernel demo (K1 brokered delivery)
+        run: pnpm --filter @marathon/demo-k1-brokered start
+
+      - name: Kernel demo (K1 sandbox network reality)
+        run: pnpm --filter @marathon/demo-k1-network start
+
+      - name: Kernel demo (K2 delivery fan-out)
+        run: pnpm --filter @marathon/demo-k2 start
+
+      - name: Kernel demo (K3 iteration continuity)
+        run: pnpm --filter @marathon/demo-k3 start
+
+      - name: Kernel demo (K4 kill/resume)
+        run: pnpm --filter @marathon/demo-k4 start
+
+      - name: Kernel demo (K5 status + cost)
+        run: pnpm --filter @marathon/demo-k5 start
+
       - name: Automated demo (M0)
         run: pnpm --filter @marathon/demo-m0 start
 

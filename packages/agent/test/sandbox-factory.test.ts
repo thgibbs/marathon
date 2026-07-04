@@ -2,8 +2,10 @@ import { DockerContainer, dockerStartArgs } from "@marathon/tools";
 import { describe, expect, it } from "vitest";
 import {
   KERNEL_TOOLCHAIN_IMAGE,
+  resolveSandboxNetwork,
   workspaceContainerOptions,
   workspaceSandbox,
+  workspaceSandboxFromSpec,
 } from "../src/sandbox-factory";
 import type { AgentRequest } from "../src/types";
 
@@ -61,5 +63,28 @@ describe("workspaceSandbox (Track 11)", () => {
   it("passes the shell through for the toolchain image", () => {
     expect(workspaceSandbox({ shellPath: "/bin/bash" }, {}).shellPath).toBe("/bin/bash");
     expect(workspaceSandbox({}, {}).shellPath).toBeUndefined();
+  });
+});
+
+describe("per-agent sandbox network (Track 15)", () => {
+  it("takes the network from the agent YAML when the env is silent", () => {
+    expect(resolveSandboxNetwork({ network: "bridge" }, {}, {})).toBe("bridge");
+    expect(resolveSandboxNetwork({ network: "none" }, {}, {})).toBe("none");
+  });
+
+  it('strictness composes: "none" from EITHER the env or the spec wins', () => {
+    expect(resolveSandboxNetwork({ network: "bridge" }, {}, { MARATHON_SANDBOX_NETWORK: "none" })).toBe("none");
+    expect(resolveSandboxNetwork({ network: "none" }, {}, { MARATHON_SANDBOX_NETWORK: "bridge" })).toBe("none");
+    expect(resolveSandboxNetwork({ network: "bridge" }, {}, { MARATHON_SANDBOX_NETWORK: "bridge" })).toBe("bridge");
+  });
+
+  it("an explicit option wins over both", () => {
+    expect(resolveSandboxNetwork({ network: "none" }, { network: "bridge" }, { MARATHON_SANDBOX_NETWORK: "none" })).toBe("bridge");
+  });
+
+  it("workspaceSandboxFromSpec builds spec-driven containers", () => {
+    const sandbox = workspaceSandboxFromSpec({ sandbox: { network: "none" } }, {}, {});
+    const container = sandbox.createContainer(req, ws);
+    expect(container).toBeInstanceOf(DockerContainer);
   });
 });

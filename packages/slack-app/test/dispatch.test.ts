@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyEnvelope } from "../src/handlers";
+import { classifyEnvelope, isStatusAsk } from "../src/handlers";
 
 describe("classifyEnvelope", () => {
   it("classifies an app_mention", () => {
@@ -45,5 +45,19 @@ describe("classifyEnvelope", () => {
     expect(reply({ ...base, text: "<@U0BOT> do more" }).kind).toBe("ignore"); // arrives as app_mention
     expect(reply({ ...base, thread_ts: undefined }).kind).toBe("ignore");
     expect(reply({ ...base, text: "  " }).kind).toBe("ignore");
+  });
+});
+
+describe("isStatusAsk (Track 16, §15.3)", () => {
+  it("matches a bare status ask, case- and whitespace-insensitively", () => {
+    expect(isStatusAsk("status")).toBe(true);
+    expect(isStatusAsk("  Status ")).toBe(true);
+    expect(isStatusAsk("STATUS")).toBe(true);
+  });
+
+  it("does not swallow real work that merely mentions status", () => {
+    expect(isStatusAsk("what's the status of the rollout?")).toBe(false);
+    expect(isStatusAsk("status page is down")).toBe(false);
+    expect(isStatusAsk("")).toBe(false);
   });
 });

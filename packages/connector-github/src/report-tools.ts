@@ -27,6 +27,11 @@ export interface DeliveryReportOptions {
   fanout?: DeliveryFanout;
   /** The task's delivery targets (wire to `db.getTask(...).deliveryTargets`). */
   getDeliveryTargets?(taskId: string): Promise<DeliveryTarget[]>;
+  /**
+   * The task's model spend so far (wire to `db.sumModelCostUsd`) — rendered as
+   * the silent cost footer on the fanned-out result (Track 16, §13.3).
+   */
+  getCostUsd?(taskId: string): Promise<number | null>;
   /** Post-report hook (e.g. task bookkeeping/audit) after record + fan-out. */
   onReported?(info: { taskId: string; repo: string; prNumber: number; prUrl: string }): Promise<void> | void;
 }
@@ -147,6 +152,8 @@ export function makeDeliveryReportTool(opts: DeliveryReportOptions): Tool {
             summary: String(input.summary),
             actionsTaken: [`Opened PR: ${pr.url}`],
             openQuestions: verification.length === 0 ? ["No verification results were reported."] : undefined,
+            // Silent cost footer (Track 16, §13.3) — consistent with Slack delivery.
+            costUsd: (await opts.getCostUsd?.(ctx.taskId)) ?? undefined,
           },
           "pr_reported",
         );

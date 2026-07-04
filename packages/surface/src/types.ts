@@ -46,8 +46,9 @@ export interface SurfaceMessage {
  * identity resolution, context loading, progress, delivery, feedback, status —
  * progress/delivery are the required core, context loading is the optional
  * `loadContext` below (Track 12), identity resolution lives in
- * `Database.findOrCreateUserByIdentity` + the §7.20 verification fields, and
- * feedback/status stay surface-specific until Track 16 unifies status.
+ * `Database.findOrCreateUserByIdentity` + the §7.20 verification fields,
+ * status is the shared §15.3 view (`renderStatusText` in @marathon/observability,
+ * posted through `postProgress` — Track 16), and feedback stays surface-specific.
  */
 export interface SurfaceAdapter {
   acknowledge(ref: Record<string, unknown>): Promise<void>;

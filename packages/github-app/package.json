@@ -3,14 +3,18 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "dependencies": {
     "@marathon/agent": "workspace:*",
+    "@marathon/code-handoff": "workspace:*",
     "@marathon/config": "workspace:*",
     "@marathon/connector-github": "workspace:*",
     "@marathon/core": "workspace:*",
     "@marathon/db": "workspace:*",
     "@marathon/memory": "workspace:*",
+    "@marathon/model-gateway": "workspace:*",
     "@marathon/surface": "workspace:*",
     "@marathon/surface-github": "workspace:*",
     "@marathon/tools": "workspace:*",

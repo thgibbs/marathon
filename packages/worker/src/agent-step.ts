@@ -2,7 +2,7 @@ import type { Checkpoint, StepContext, StepResult, Task } from "@marathon/core";
 import { fenceUntrusted, redactSecrets } from "@marathon/core";
 import { Database } from "@marathon/db";
 import type { MemoryStore } from "@marathon/memory";
-import { assertWithinBudget, type BudgetPolicy } from "@marathon/observability";
+import { assertWithinBudget, assertWithinTaskBudget, type BudgetPolicy } from "@marathon/observability";
 import type { AgentRequest, AgentRuntime, AgentTurn } from "@marathon/agent";
 import type { SurfaceMessage } from "@marathon/surface";
 import { buildAgentPrompt } from "./prompt";
@@ -80,6 +80,11 @@ export interface AgentTaskStepOptions {
   /** When set, model spend is enforced before each turn (M8); throws if exceeded. */
   budget?: { policy: BudgetPolicy; scope?: { agentId?: string } };
   /**
+   * Hard per-task cost cap (Track 15, §0.4): this task's own spend is checked
+   * before each turn; an exceeded cap fails the turn (fail closed).
+   */
+  taskBudget?: BudgetPolicy;
+  /**
    * Conversation context for the task's surface (Track 12, §7.18) — wire to
    * the surface adapter, e.g. `(task) => adapter.loadContext?.(task.sourceRef)`.
    * The result is fenced as untrusted in the prompt.
@@ -95,7 +100,8 @@ export interface AgentTaskStepOptions {
 export function makeAgentTaskStepRunner(db: Database, runtime: AgentRuntime, opts: AgentTaskStepOptions) {
   return async ({ taskId, checkpoint }: StepContext): Promise<StepResult> => {
     const task = await db.getTask(taskId);
-    // Enforce the spend budget before incurring more model cost (M8).
+    // Enforce the spend budgets before incurring more model cost: the
+    // cumulative tenant/agent budget (M8) and the hard per-task cap (Track 15).
     if (opts.budget && task) {
       await assertWithinBudget(
         db,
@@ -103,6 +109,7 @@ export function makeAgentTaskStepRunner(db: Database, runtime: AgentRuntime, opt
         opts.budget.policy,
       );
     }
+    if (opts.taskBudget) await assertWithinTaskBudget(db, taskId, opts.taskBudget);
     // Assemble instructions (persona) + recalled memory + surface context +
     // the ask (design §7.18) — every non-persona block fenced as untrusted.
     const parts = task

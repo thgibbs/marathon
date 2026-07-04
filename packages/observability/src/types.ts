@@ -1,4 +1,4 @@
-export type TimelineEventType = "step" | "model_call" | "tool_call" | "approval" | "audit";
+export type TimelineEventType = "step" | "model_call" | "tool_call" | "approval" | "audit" | "delivery";
 
 export interface TimelineEvent {
   at: Date;

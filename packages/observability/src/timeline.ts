@@ -26,12 +26,13 @@ export async function getTaskTimeline(db: Database, tenantId: string, taskId: st
   // Tenant isolation: never assemble a timeline for a task in another tenant.
   const task = await db.getTask(taskId);
   if (!task || task.tenantId !== tenantId) return [];
-  const [steps, models, tools, approvals, audits] = await Promise.all([
+  const [steps, models, tools, approvals, audits, change] = await Promise.all([
     db.getTaskSteps(taskId),
     db.getModelInvocations(taskId),
     db.getToolInvocations(taskId),
     db.listApprovalsForTask(taskId),
     db.getTaskAuditEvents(taskId),
+    db.getCodeChangeByTask(taskId),
   ]);
 
   const events: TimelineEvent[] = [];
@@ -74,6 +75,29 @@ export async function getTaskTimeline(db: Database, tenantId: string, taskId: st
   }
   for (const e of audits) {
     events.push({ at: at(e.created_at), type: "audit", summary: `${e.event_type}: ${e.summary ?? ""}` });
+  }
+  // Delivery events (Track 16): the code PR + its verification runs, first-class
+  // in the timeline instead of buried in the CodeChange row. The brokered
+  // git.exec/github.exec/delivery.report_pr calls already appear as tool_call
+  // events above; this is the *outcome* view.
+  if (change) {
+    for (const v of change.verification) {
+      events.push({
+        at: at(change.updatedAt),
+        type: "delivery",
+        status: v.exitCode === 0 ? "pass" : "fail",
+        summary: `verification \`${v.command}\` exit ${v.exitCode}${v.summary ? ` — ${v.summary}` : ""}`,
+      });
+    }
+    if (change.prUrl) {
+      events.push({
+        at: at(change.updatedAt),
+        type: "delivery",
+        status: change.state,
+        summary: `PR reported: ${change.prUrl} (${change.state})`,
+        detail: { branch: change.branch, baseSha: change.baseSha },
+      });
+    }
   }
 
   return events.sort((x, y) => x.at.getTime() - y.at.getTime());

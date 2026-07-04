@@ -53,6 +53,9 @@ importers:
       '@marathon/queue':
         specifier: workspace:*
         version: link:../../packages/queue
+      '@marathon/surface':
+        specifier: workspace:*
+        version: link:../../packages/surface
       '@marathon/surface-github':
         specifier: workspace:*
         version: link:../../packages/surface-github
@@ -102,6 +105,78 @@ importers:
         specifier: workspace:*
         version: link:../../packages/worker
 
+  demos/k1_network:
+    dependencies:
+      '@marathon/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+
+  demos/k2:
+    dependencies:
+      '@marathon/code-handoff':
+        specifier: workspace:*
+        version: link:../../packages/code-handoff
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@marathon/connector-github':
+        specifier: workspace:*
+        version: link:../../packages/connector-github
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/surface':
+        specifier: workspace:*
+        version: link:../../packages/surface
+
+  demos/k3:
+    dependencies:
+      '@marathon/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@marathon/connector-github':
+        specifier: workspace:*
+        version: link:../../packages/connector-github
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@marathon/github-app':
+        specifier: workspace:*
+        version: link:../../packages/github-app
+      '@marathon/memory':
+        specifier: workspace:*
+        version: link:../../packages/memory
+      '@marathon/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
+      '@marathon/slack-app':
+        specifier: workspace:*
+        version: link:../../packages/slack-app
+      '@marathon/surface':
+        specifier: workspace:*
+        version: link:../../packages/surface
+      '@marathon/surface-github':
+        specifier: workspace:*
+        version: link:../../packages/surface-github
+      '@marathon/surface-slack':
+        specifier: workspace:*
+        version: link:../../packages/surface-slack
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+      '@marathon/worker':
+        specifier: workspace:*
+        version: link:../../packages/worker
+
   demos/k4:
     dependencies:
       '@marathon/agent':
@@ -128,6 +203,36 @@ importers:
       '@marathon/tools':
         specifier: workspace:*
         version: link:../../packages/tools
+      '@marathon/worker':
+        specifier: workspace:*
+        version: link:../../packages/worker
+
+  demos/k5:
+    dependencies:
+      '@marathon/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@marathon/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
+      '@marathon/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
+      '@marathon/slack-app':
+        specifier: workspace:*
+        version: link:../../packages/slack-app
+      '@marathon/surface':
+        specifier: workspace:*
+        version: link:../../packages/surface
+      '@marathon/surface-slack':
+        specifier: workspace:*
+        version: link:../../packages/surface-slack
       '@marathon/worker':
         specifier: workspace:*
         version: link:../../packages/worker
@@ -476,6 +581,9 @@ importers:
       '@marathon/agent':
         specifier: workspace:*
         version: link:../agent
+      '@marathon/code-handoff':
+        specifier: workspace:*
+        version: link:../code-handoff
       '@marathon/config':
         specifier: workspace:*
         version: link:../config
@@ -491,6 +599,9 @@ importers:
       '@marathon/memory':
         specifier: workspace:*
         version: link:../memory
+      '@marathon/model-gateway':
+        specifier: workspace:*
+        version: link:../model-gateway
       '@marathon/surface':
         specifier: workspace:*
         version: link:../surface
@@ -564,6 +675,9 @@ importers:
       '@marathon/model-gateway':
         specifier: workspace:*
         version: link:../model-gateway
+      '@marathon/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@marathon/queue':
         specifier: workspace:*
         version: link:../queue

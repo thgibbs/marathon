@@ -18,6 +18,52 @@ features.
 Progress against the tracks below, most recent first. The "Current mismatch" lists in each
 track describe the codebase *before* its work landed; completed tracks carry a status note.
 
+- **Tracks 15–17: model/budget runtime, status + cost, kernel demos — done (2026-07-04).**
+  - **Track 15 (model runtime, kernel scope):** model refs are spec-driven everywhere — the
+    live GitHub app resolves from `spec.models` (hardcoded fallback gone), the BUILD stage
+    resolves the `build` role via `resolveModelRef` (falls back to `default`; advanced
+    routing stays deferred per §7.19). The **hard per-task cost cap** (§0.4) is real:
+    `assertWithinTaskBudget` (observability) reads `db.sumModelCostUsd(taskId)` and is
+    enforced before every turn in `makeAgentTaskStepRunner` AND at every turn boundary
+    inside the BUILD run (the awaited `onTurnCheckpoint` hook — a run past its cap aborts
+    at the next completed turn with the checkpoint intact; retries fail closed up front).
+    The **coherent BUILD loop now exists in a live app**: `makeBuildWiring`
+    (packages/github-app/build.ts) assembles, from ONE `AgentSpec`, the Pi runtime with
+    `workspaceSandboxFromSpec` (per-agent `sandbox.network` finally reaches BUILD wiring —
+    strictness composes: "none" from env OR YAML wins), the brokered `github.exec` (families
+    from the YAML)/`git.exec`/`delivery.report_pr` surface behind one gateway, and
+    `makeBuildStepRunner` with the spec's model + budget; the live github-app runs it in a
+    polling `Worker` whose new `accepts` option declines the doc tasks the webhook handlers
+    drive inline. `ClaudeCodeAgentRuntime` remains K7 (explicitly non-blocking).
+  - **Track 16 (status + cost):** `@agent status` is a first-class Slack flow —
+    `isStatusAsk` short-circuits `handleMention` into `handleStatusAsk` (thread → 
+    `findLatestTaskByThread`; read-only, no ack, no task). The §15.3 view is shared:
+    `taskStatusView`/`renderStatusText`/`getTaskStatus` (observability/status.ts) render
+    headline per `TaskStatus`, current step from `Checkpoint.phase`/latest finding, the
+    pending question, completed steps, the delivered PR URL (from the task's `CodeChange`),
+    and a "cost so far" footer. The **cost footer is consistent across surfaces**:
+    `delivery.report_pr` gained `getCostUsd` (wired to `db.sumModelCostUsd`) and the
+    github-app mention results now carry `costUsd` — all rendered by the one
+    `renderResultText`. The timeline gained first-class `delivery` events (verification
+    commands with exit codes + the reported PR, derived from the `CodeChange`); brokered
+    `git.exec`/`github.exec`/report calls already land as `tool_call` events via the
+    gateway recorder. Open (deliberately): K5's meta-exit — asking for this change in
+    Slack and merging it **through the loop** — is a live ratchet exercise, not a code
+    change; this track ships the functionality and the `demo-k5` proof.
+  - **Track 17 (demos):** kernel demos now cover K1–K5: `demo-k1-network` (workspace-bound
+    sandbox fetches public docs with planted fake secrets invisible inside; strict
+    `network: none` blocks egress; Docker-less runs skip gracefully), `demo-k2` (fan-out to
+    Slack thread + doc PR, cross-links, per-target idempotency, `no_adapter` visibility,
+    `delivery.report_pr` with the cost footer — fully in-memory), `demo-k3` (Slack durable
+    wait → answer resumes the SAME task; reply to a finished loop → chained continuation;
+    doc-PR comment → same-branch revision; code-PR comment → revision task pinned to the
+    branch tip), `demo-k5` (status while waiting/completed/building, PR link in status,
+    cost footers from real ModelInvocation rows). **`make demo-kernel`** is the K6 umbrella
+    (K1-brokered + K1-network + K2 + K3 + K4 + K5), `make demo` runs kernel demos first,
+    and CI now runs ALL kernel demos (k1/k1-brokered/k4 had never been in CI). Old demos
+    stay as regressions; `smoke-k1` (a live real-repo PR via brokered `git`/`gh`) remains
+    open alongside the existing `smoke-k4`.
+
 - **Track 13: memory migration — done (2026-07-03, §7.12 / OQ-3).** Memory scopes are now
   audiences: `MemoryLevel` is `tenant | project | user | thread` (`agent` retired — migration
   0009 drops the un-gateable agent-level rows, adds `user_id`, renames `source` →
@@ -197,8 +243,9 @@ track describe the codebase *before* its work landed; completed tracks carry a s
   to the merge commit and inherited delivery targets; `packages/surface/src/fanout.ts`
   delivers to every target idempotently. `make demo-k1` proves the path.
 
-Not started: remaining Tracks 15–17 (model routing, status/cost UX, kernel
-demos beyond K1/K4/K1-brokered and the K3 slack-app round-trip).
+All tracks (1–17) have landed. Still open outside the track structure: the K5 meta-exit
+(first blood — a change merged to `main` **through the loop**), the K6 timed stranger
+test, `smoke-k1`, and the deferred list (§ Do Not Optimize Yet).
 
 New design correction after Tracks 1–5: the original `github.submit_code_changes`
 contract is probably too heavy. Marathon should not replace normal `git` and `gh`
@@ -235,7 +282,9 @@ Not aligned with the current design:
 - ~~Agents are hardcoded in app bootstraps; there is no YAML-defined `forge` flagship
   agent.~~ Resolved by Track 14: bootstraps read configured agents (YAML specs or
   explicit descriptors); `agents/forge.yaml` is the full-config flagship.
-- There is no `make demo-kernel`, `make demo-k2`, `make demo-k3`, `make demo-k5`, etc.
+- ~~There is no `make demo-kernel`, `make demo-k2`, `make demo-k3`, `make demo-k5`,
+  etc.~~ Resolved by Track 17: kernel demos K1–K5 plus the `demo-kernel` umbrella, all
+  in CI.
 
 ## Migration Principles
 
@@ -1077,6 +1126,13 @@ Required changes:
 
 ## Track 15: Model Runtime and Harness Breadth
 
+> **Status (2026-07-04): implemented (kernel scope)** — see "Completed Work" above.
+> Spec-driven model refs (+ `build` role), hard per-task budget in both step runners
+> (mid-BUILD abort at turn boundaries), and the coherent BUILD loop live in the
+> github-app (`makeBuildWiring`: spec-driven sandbox network + brokered tools +
+> report). Advanced routing (tiers, constraint filter, fallback chains) and
+> `ClaudeCodeAgentRuntime` stay deferred (§7.19 / K7), per the kernel note below.
+
 Design target:
 
 - `design/07-functional-requirements.md` §7.5 and §7.19
@@ -1111,6 +1167,11 @@ Required changes:
   blocking first dogfood success.
 
 ## Track 16: Observability, Status, and Cost
+
+> **Status (2026-07-04): implemented** — see "Completed Work" above. `@agent status`
+> (§15.3 shared rendering from checkpoint phase + records), consistent cost footers on
+> Slack and GitHub delivery, first-class `delivery` timeline events. The K5 meta-exit
+> (built via the loop) is a live exercise that stays open.
 
 Design target:
 
@@ -1148,6 +1209,11 @@ Required changes:
 - Build K5 through the loop once K1-K4 are ready.
 
 ## Track 17: Demos and Regression Proofs
+
+> **Status (2026-07-04): implemented** — see "Completed Work" above. `demo-k1-network`,
+> `demo-k2`, `demo-k3`, `demo-k5`, the `demo-kernel` umbrella (K1-brokered + K1-network +
+> K2 + K3 + K4 + K5), kernel-first `make demo` ordering, and CI coverage for every kernel
+> demo. Old milestone demos stay as regressions; `smoke-k1` remains open.
 
 Design target:
 

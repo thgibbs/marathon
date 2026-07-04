@@ -131,9 +131,9 @@ async function main(): Promise<void> {
     assert((await db.countTasksBySourceTask(docTask.id)) === 1, "webhook re-delivery must not spawn a second implementation task");
     console.log("[github-app demo] bad sig -> 401; merged PR -> chained implementation task (idempotent)");
 
-    // The BUILD stage isn't wired to the worker yet (tracks 4-5): sweep the
-    // queued implementation job so other demos sharing this database see an
-    // idle queue.
+    // This demo scripts the document side only — the live app's BUILD worker
+    // (makeBuildWiring, Track 15) is what consumes implementation tasks. Sweep
+    // the queued job so other demos sharing this database see an idle queue.
     const sweeper = new Worker(queue, db, {
       stepRunner: async ({ checkpoint }) => ({ stepType: "noop", done: true, checkpoint }),
     });

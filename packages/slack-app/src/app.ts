@@ -149,6 +149,9 @@ export async function startSlackApp(): Promise<void> {
       instructions: flagship.instructions,
       // Hard per-agent spend cap from the YAML (fails closed when exceeded).
       budget: flagship.budget ? { policy: flagship.budget } : undefined,
+      // The same limit as a hard per-task cap (Track 15, §0.4): one runaway
+      // task cannot spend the whole agent budget.
+      taskBudget: flagship.budget,
       // Track 12: thread history rides into the prompt, fenced as untrusted.
       loadContext: (task) => delivery.loadContext(task.sourceRef, { limit: 30 }),
     }),

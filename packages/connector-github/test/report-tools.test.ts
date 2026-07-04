@@ -22,7 +22,7 @@ class RecordingAdapter implements SurfaceAdapter {
   }
 }
 
-function setup(opts: { targets?: DeliveryTarget[]; bind?: boolean } = {}) {
+function setup(opts: { targets?: DeliveryTarget[]; bind?: boolean; getCostUsd?: (taskId: string) => Promise<number | null> } = {}) {
   const client = new FixturesGithubClient({});
   const store = new InMemoryCodeChangeStore();
   const registry = new CodeTaskRegistry();
@@ -44,6 +44,7 @@ function setup(opts: { targets?: DeliveryTarget[]; bind?: boolean } = {}) {
     store,
     fanout,
     getDeliveryTargets: async () => targets,
+    getCostUsd: opts.getCostUsd,
     onReported: (info) => void reported.push({ taskId: info.taskId, prUrl: info.prUrl }),
   });
   return { client, store, registry, slack, github, tool, reported };
@@ -108,6 +109,14 @@ describe("delivery.report_pr (Track 7)", () => {
     expect(slack.results[0]?.result.actionsTaken).toEqual([`Opened PR: ${pr.url}`]);
     expect(reported).toEqual([{ taskId: TASK, prUrl: pr.url }]);
     expect(res.details).toMatchObject({ pr_number: pr.number, state: "submitted_ready", verified: true, delivered: 2 });
+  });
+
+  it("carries the silent cost footer on the fanned-out result (Track 16, §13.3)", async () => {
+    const { client, slack, github, tool } = setup({ getCostUsd: async () => 0.1234 });
+    const pr = await client.createPullRequest(REPO, "T", "b-cost", "main");
+    await tool.execute({ pr_url: pr.url, summary: "s", verification: green }, ctx);
+    expect(slack.results[0]?.result.costUsd).toBe(0.1234);
+    expect(github.results[0]?.result.costUsd).toBe(0.1234);
   });
 
   it("is idempotent per target: a retried report cannot double-post", async () => {

@@ -22,6 +22,12 @@ export class SimulatedCrash extends Error {
 export interface WorkerOptions {
   stepRunner: StepRunner;
   visibilityMs?: number;
+  /**
+   * When set, jobs whose task this worker does not own are acked untouched
+   * (Track 15): e.g. the live GitHub app's BUILD worker declines document
+   * tasks, whose lifecycle the webhook handlers drive inline.
+   */
+  accepts?: (task: Task) => boolean | Promise<boolean>;
   /** Test hook: abandon the lease right after persisting this step index. */
   crashAfterStepIndex?: number;
   /** Heartbeat cadence is implicit (once per step) for M1. */
@@ -71,6 +77,12 @@ export class Worker {
       return "completed";
     }
     if (isTerminal(task.status)) {
+      await this.queue.ack(job.id, token);
+      return "completed";
+    }
+    if (this.opts.accepts && !(await this.opts.accepts(task))) {
+      // Not this worker's job: ack it without touching the task — whoever owns
+      // the task's lifecycle (e.g. an inline surface handler) drives it.
       await this.queue.ack(job.id, token);
       return "completed";
     }
