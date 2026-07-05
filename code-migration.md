@@ -1268,7 +1268,8 @@ Design correction:
 
 - Merging plan docs into the default branch litters main with documents that may never be
   implemented or may not match the final outcome.
-- Doc PRs should target a long-lived **plans branch** (default `marathon/plans`,
+- Doc PRs should target a long-lived **plans branch** (default `marathon-plans` —
+  deliberately outside the agent-owned `marathon/*` push namespace, protected like main;
   configurable); merging THERE is the approval — same sha-pinned native signal, main
   untouched.
 - An implemented plan reaches main **with its implementation**: the BUILD workspace
@@ -1296,7 +1297,10 @@ Current code (all still merge-into-main):
 Required changes:
 
 - Add `plans.branch` config (agent YAML or repo `.marathon/config.yml`; default
-  `marathon/plans`); bootstrap creates the branch from the default branch when missing.
+  `marathon-plans`); wiring REFUSES a plans branch under the agent push namespace
+  (`marathon/*`) — the approval boundary cannot live in the prefix rulesets leave open to
+  agent pushes (§29.1a); bootstrap creates the branch from the default branch when missing,
+  and the quickstart tells operators to branch-protect it like main.
 - `document.create`/`update` target the plans branch as the PR base.
 - Merge webhook: only a doc-artifact PR merged **into the plans branch** is an approval;
   spawn the implementation task with `plan_ref` = plans-branch merge commit and

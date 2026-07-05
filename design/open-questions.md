@@ -223,7 +223,9 @@ whose precondition most Marathon tasks don't meet.
 
 > **Resolved 2026-07-04 (design; implementation = code-migration Track 18).** **Plans branch
 > + plan-rides-the-code-PR** (§29.1a). Doc PRs target a long-lived plans branch (default
-> `marathon/plans`); merging **there** is the approval — same deliberate, sha-pinned, natively
+> `marathon-plans` — deliberately OUTSIDE the agent-owned `marathon/*` push namespace, and
+> branch-protected like main, since rulesets are the final enforcement on the brokered push
+> path); merging **there** is the approval — same deliberate, sha-pinned, natively
 > attributable signal, same review UX/CODEOWNERS/branch protection, but the default branch is
 > untouched. The BUILD workspace materializes the approved plan at its `doc_path`, so the code
 > PR carries **code + plan as one unit** and the plan reaches main only when the work merges

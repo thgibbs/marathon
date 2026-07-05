@@ -48,10 +48,18 @@ idempotency_key     = (repo, doc_path, merge_commit_sha, "implement")
 branch litters it with documents that may never be implemented or may not match the final
 outcome. Instead:
 
-* **Doc PRs target a long-lived plans branch** (default `marathon/plans`; configurable —
+* **Doc PRs target a long-lived plans branch** (default `marathon-plans`; configurable —
   `plans.branch`). Review UX, CODEOWNERS, and branch protection apply to that branch
   unchanged; the merge remains the same deliberate, sha-pinned, natively-attributable
   approval signal (§7.9). Marathon creates the branch at bootstrap when missing.
+* **The plans branch is an approval boundary, so it must sit OUTSIDE the agent push
+  namespace.** Agents push implementation branches under `marathon/*` (§29.5), and the
+  brokered `git.exec` path relies on GitHub branch protection/rulesets for final
+  enforcement — a plans branch *inside* that namespace (e.g. `marathon/plans`) would live in
+  exactly the prefix rulesets leave open to the agent. Hence the default is `marathon-plans`
+  (outside the prefix), wiring refuses a `plans.branch` under `marathon/*`, and the branch
+  must be protected like the default branch: changes land only by merging a reviewed PR,
+  never by direct push.
 * **An implemented plan merges into main WITH its implementation.** The BUILD workspace
   materializes the approved plan doc at its `doc_path` (part of provisioning, so it is in the
   diff by construction); the code PR therefore carries **code + plan as one reviewable
