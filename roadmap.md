@@ -861,7 +861,11 @@ fold into M7–M9 sequencing as capacity allows.
     same signature-verified `handleWebhookRequest` (verification path unchanged; the App's
     webhook URL is set to the stable smee channel once, no URL churn). Production keeps the
     plain receiver. Quickstart drops the tunnel step — a straight win for the ≤30-minute
-    stranger bar.
+    stranger bar. **Landed 2026-07-05:** `WebhookProxyClient` (+ SSE parser +
+    `parseSmeeDelivery`) in `@marathon/surface-github` — the GitHub parallel of the Slack
+    `SocketModeClient` — wired into the live github-app behind `MARATHON_WEBHOOK_PROXY`;
+    delivery-id dedupe keeps proxy + direct receiver safe together; quickstart §3 now
+    points the App at a smee channel instead of a tunnel.
 
 ---
 

@@ -2,9 +2,13 @@
  * Run the LIVE Marathon GitHub document app — a webhook receiver (node:http).
  *
  * Needs: GITHUB_TOKEN (Contents+PR write), GITHUB_WEBHOOK_SECRET, a model key
- * (OPENAI_API_KEY), Postgres at DATABASE_URL, and a public tunnel pointing at
- * this server's /webhooks/github (configure the GitHub App/webhook to send
- * issue_comment, pull_request_review_comment, pull_request).
+ * (OPENAI_API_KEY), Postgres at DATABASE_URL, and inbound events one of two
+ * ways (configure the GitHub App/webhook to send issue_comment,
+ * pull_request_review_comment, pull_request):
+ *   - dev (§2b #12): MARATHON_WEBHOOK_PROXY=https://smee.io/<channel> — the
+ *     app SUBSCRIBES outbound to the channel (no tunnel); point the App's
+ *     webhook URL at the same channel once.
+ *   - production shape: a public URL/tunnel to this server's /webhooks/github.
  *
  *   make github-app
  *   then comment "@marathon draft …" on a PR/issue in the repo (the default
@@ -16,6 +20,7 @@ import { tmpdir } from "node:os";
 import { PiAgentRuntime } from "@marathon/agent";
 import { EnvSecretStore, loadAgentSpecs, loadConfig, type AgentSpec } from "@marathon/config";
 import { ensureBranch, GithubDelivery, HttpGithubClient, httpGithubClientFactory, makeDocumentTools } from "@marathon/connector-github";
+import { WebhookProxyClient } from "@marathon/surface-github";
 import { Database, migrate } from "@marathon/db";
 import { bootstrapGithubApp, handleWebhookRequest, makeBuildWiring, type GithubAppDeps } from "@marathon/github-app";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
@@ -150,6 +155,23 @@ async function main(): Promise<void> {
   });
 
   server.listen(port, () => console.log(`[github-app] webhook receiver on :${port}/webhooks/github (owner ${owner})`));
+
+  // Dev webhook proxy (§2b #12): subscribe outbound to a smee.io channel and
+  // feed relayed deliveries through the SAME signature-verified handler —
+  // no tunnel, no webhook-URL churn. Delivery-id dedupe makes it safe even if
+  // a tunnel also points at the receiver above.
+  const proxyUrl = process.env.MARATHON_WEBHOOK_PROXY?.trim();
+  if (proxyUrl) {
+    const proxy = new WebhookProxyClient(proxyUrl, {
+      onConnected: () => console.log(`[github-app] webhook proxy subscribed to ${proxyUrl}`),
+      onError: (e) => console.error("[github-app] webhook proxy error:", e),
+    });
+    void proxy.start(async (delivery) => {
+      const result = await handleWebhookRequest(deps, secret, delivery);
+      const note = result.note ? ` (${result.note})` : "";
+      console.log(`[github-app] proxied ${delivery.eventType} ${delivery.deliveryId ?? ""}: ${result.status}${note}`);
+    });
+  }
 }
 
 main().catch((err) => {
