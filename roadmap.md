@@ -924,7 +924,19 @@ fold into M7–M9 sequencing as capacity allows.
     text becomes the in-thread comment reply and is never committed. Deterministic
     post-turn check: no `document.*` ToolInvocation recorded → the task reports a visible
     no-op instead of silently committing nothing. Applies to draft + revise, both surfaces
-    (Slack drafting shares the pattern).
+    (Slack drafting shares the pattern). **Landed 2026-07-05:** the github-app mention
+    flows now run the agent with the governed document tools (Pi tool-def catalog shared
+    from `@marathon/connector-github`; Slack was already tool-driven) and a per-task
+    **tool contract** in the trusted instructions (`buildAgentPrompt`'s new `contract`
+    block — survives the AgentVersion persona override): draft calls `document.create`,
+    revise calls `document.revise`, and the handler commits nothing. Post-turn evidence is
+    deterministic — draft: the `onDocumentPr`-recorded `DocumentArtifact` (the same row
+    the merge webhook anchors on); revise: an ok `document.revise`/`document.update`
+    ToolInvocation (`countSucceededToolInvocations`) — and its absence delivers an
+    explicit "nothing was committed" reply while the task completes instead of parking
+    for an approval that can never come. The live github-app gateway gained the recorder
+    + PR-recorder wiring both checks depend on; the deterministic demo adds a
+    tool-less-turn scenario asserting the visible no-op.
 
 ---
 

@@ -19,16 +19,16 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PiAgentRuntime } from "@marathon/agent";
 import { EnvSecretStore, loadAgentSpecs, loadConfig, type AgentSpec } from "@marathon/config";
-import { ensureBranch, GithubDelivery, HttpGithubClient, httpGithubClientFactory, makeDocumentTools } from "@marathon/connector-github";
+import { ensureBranch, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
 import { WebhookProxyClient } from "@marathon/surface-github";
-import { Database, migrate } from "@marathon/db";
+import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { bootstrapGithubApp, handleWebhookRequest, makeBuildWiring, type GithubAppDeps } from "@marathon/github-app";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
 import { Queue } from "@marathon/queue";
 import { DeliveryFanout } from "@marathon/surface";
-import { ToolGateway, toolPolicyFromSpec, ToolRegistry } from "@marathon/tools";
-import { BUILD_JOB_KIND, InvocationRouter, Orchestrator, Worker } from "@marathon/worker";
+import { InMemorySourceLedger, ToolGateway, toolPolicyFromSpec, ToolRegistry } from "@marathon/tools";
+import { BUILD_JOB_KIND, InvocationRouter, makeDocumentPrRecorder, Orchestrator, Worker } from "@marathon/worker";
 
 /** The kernel runs the Pi harness; `claude-code` is a config value reserved for K7. */
 function assertSupportedHarness(spec: AgentSpec): void {
@@ -68,21 +68,42 @@ async function main(): Promise<void> {
   // (docs/quickstart.md §3) — it is an approval boundary.
   const plansBranch = flagship.plans.branch;
   if (flagship.repo) await ensureBranch(client, flagship.repo, plansBranch, "main");
+  // Doc writes are tool calls, not committed chat text (§2b #16): the agent's
+  // session gets the governed document tools (spec grants ∩ catalog), and the
+  // doc body flows through this gateway as a schema-validated tool argument.
+  // Wiring here is load-bearing for the handlers' post-turn checks:
+  //  - dbToolRecorder persists ToolInvocations (the "did a doc write happen"
+  //    evidence — without it every run reports a no-op);
+  //  - makeDocumentPrRecorder persists the DocumentArtifact + doc-PR delivery
+  //    target the merge webhook needs to recognize the plan.
+  const toolGateway = new ToolGateway({
+    // The configured plans branch is the AUTHORITATIVE doc-PR base (§29.1a).
+    registry: new ToolRegistry([
+      ...makeGithubReadTools(httpGithubClientFactory()),
+      ...makeDocumentTools(httpGithubClientFactory(), {
+        docBase: plansBranch,
+        onDocumentPr: makeDocumentPrRecorder(db),
+      }),
+    ]),
+    policy: toolPolicyFromSpec(flagship),
+    secrets,
+    recorder: dbToolRecorder(db),
+    sourceLedger: new InMemorySourceLedger(),
+  });
   const deps: GithubAppDeps = {
     db,
     client,
     memory: new PgVectorMemoryStore(cfg.databaseUrl, new OpenAIEmbedder(secrets)),
     router: new InvocationRouter(db, orchestrator),
     orchestrator,
-    gateway: new ToolGateway({
-      // The configured plans branch is the AUTHORITATIVE doc-PR base (§29.1a).
-      registry: new ToolRegistry(makeDocumentTools(httpGithubClientFactory(), { docBase: plansBranch })),
-      policy: toolPolicyFromSpec(flagship),
-      secrets,
-    }),
     delivery,
     fanout,
-    runtime: new PiAgentRuntime({ secrets }),
+    runtime: new PiAgentRuntime({
+      secrets,
+      // Durable per-task sessions (K4) — same location the BUILD side uses.
+      sessionDir: join(tmpdir(), "marathon-sessions"),
+      governed: { gateway: toolGateway, tools: governedToolDefsFor(flagship.tools.map((t) => t.tool)) },
+    }),
     tenantId: boot.tenantId,
     agents: boot.agents,
     agentIdByName: boot.agentIdByName,

@@ -14,7 +14,6 @@ import { Database } from "@marathon/db";
 import type { MemoryStore } from "@marathon/memory";
 import { DeliveryFanout, type AgentDescriptor, type NormalizedInvocation } from "@marathon/surface";
 import { classifyGithubEvent } from "@marathon/surface-github";
-import { ToolGateway } from "@marathon/tools";
 import {
   buildAgentPrompt,
   InvocationRouter,
@@ -28,8 +27,18 @@ export interface GithubAppDeps {
   router: InvocationRouter;
   /** Spawns the merge-triggered implementation task (K2 task chain). */
   orchestrator: Orchestrator;
-  gateway: ToolGateway; // must include document.* tools
   delivery: GithubDelivery;
+  /**
+   * Doc writes are tool calls, not committed chat text (§2b #16): the runtime
+   * MUST expose the governed `document.*` tools (create/revise at least) so
+   * the agent submits the doc body as a schema-validated tool argument through
+   * the Tool Gateway — the handlers here never commit the model's turn text.
+   * The gateway behind those tools must be wired with the db recorder
+   * (`dbToolRecorder`) and `makeDocumentPrRecorder` — both are load-bearing:
+   * the recorder backs the deterministic "did a doc write happen" post-turn
+   * check, and the PR recorder persists the DocumentArtifact + delivery
+   * target the merge webhook needs.
+   */
   runtime: AgentRuntime;
   /** Used for repo-permission checks (agent + invoking user) before acting. */
   client: GithubClient;
@@ -57,7 +66,47 @@ export interface GithubAppDeps {
 }
 
 const DRAFT_PERSONA = "You are a documentation agent. Draft a concise markdown design document that fulfills the request.";
-const REVISE_PERSONA = "You are a documentation agent. Revise the document in <context> per the request. Return ONLY the full revised markdown.";
+const REVISE_PERSONA = "You are a documentation agent. Revise the document in <context> per the request.";
+
+/**
+ * The doc-task tool contracts (§2b #16), mirroring the BUILD contract (§29.4):
+ * the document body is delivered ONLY as a `document.*` tool argument through
+ * the Tool Gateway — the turn's text is just the in-thread reply and is never
+ * committed. Tool names use the model-facing form (dots → underscores).
+ */
+function draftContract(o: { repo: string; path: string }): string {
+  return (
+    `This task delivers a design document. Submit it by calling the document_create tool ` +
+    `exactly once, with repo "${o.repo}", path "${o.path}", a concise "title" for the pull ` +
+    `request, and the COMPLETE markdown document as the "content" argument. The document ` +
+    `reaches review ONLY through that tool call — text in your reply is never committed ` +
+    `anywhere. After the tool call, finish with a short reply for the requester's thread ` +
+    `(a sentence or two on what you drafted); never include the document body in the reply. ` +
+    `If you cannot produce a document, make no document tool call and explain why in your reply.`
+  );
+}
+
+function reviseContract(o: { repo: string; path: string; branch: string }): string {
+  return (
+    `This task revises the existing document ${o.path}, under review on pull-request branch ` +
+    `"${o.branch}" (its current content is in the untrusted context). Apply the requested ` +
+    `changes and submit the COMPLETE revised markdown by calling the document_revise tool ` +
+    `exactly once, with repo "${o.repo}", path "${o.path}", branch "${o.branch}", and the full ` +
+    `revised document as the "content" argument. The revision lands ONLY through that tool ` +
+    `call — text in your reply is never committed anywhere. After the tool call, finish with a ` +
+    `short reply for the PR thread; never include the document body in the reply. If no change ` +
+    `is warranted, make no document tool call and explain why in your reply.`
+  );
+}
+
+/** The governed tools whose success means "the revision actually landed". */
+const DOC_REVISE_TOOLS = ["document.revise", "document.update"];
+
+/** Reply text (the turn's final message) + a deterministic outcome footer. */
+function withFooter(reply: string | undefined, footer: string): string {
+  const r = (reply ?? "").trim();
+  return r ? `${r}\n\n${footer}` : footer;
+}
 
 function fanoutOf(deps: GithubAppDeps): DeliveryFanout {
   return deps.fanout ?? new DeliveryFanout({ github: deps.delivery }, deps.db);
@@ -97,13 +146,14 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
     defaultAgent: deps.defaultAgent,
   });
   const agentId = deps.agentIdByName[agentName];
-  const ctx = { taskId: task.id, tenantId: deps.tenantId, agentId };
 
   // Conversation context (Track 12, §7.18): the PR/issue comment history,
   // loaded through the surface adapter and fenced as untrusted by the builder.
   const context = await deps.delivery.loadContext?.({ repo, number }, { limit: 30 }).catch(() => undefined);
 
-  // Revision loop (§6.8): a mention on a PR we produced -> revise the doc on its branch.
+  // Revision loop (§6.8): a mention on a PR we produced -> revise the doc on
+  // its branch. Tool-driven (§2b #16): the agent submits the revised markdown
+  // by calling `document.revise` itself; the handler never commits turn text.
   const existing =
     invocation.sourceRef.kind === "pr" ? await deps.db.findDocumentArtifactByPr(deps.tenantId, repo, number) : null;
   const loc = (existing?.location ?? {}) as { path?: string; branch?: string };
@@ -111,65 +161,93 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
     const current = await deps.client.readFileWithSha(repo, loc.path, loc.branch).catch(() => ({ content: "", sha: "" }));
     const prompt = await buildAgentPrompt({ db: deps.db, memory: deps.memory }, task, {
       basePersona: REVISE_PERSONA,
+      contract: reviseContract({ repo, path: loc.path, branch: loc.branch }),
       documents: [{ path: loc.path, content: current.content }],
       context,
     });
     const turn = await deps.runtime.nextTurn({
-      request: { taskId: task.id, instructions: prompt.instructions, input: prompt.input, modelRef },
+      request: {
+        taskId: task.id,
+        instructions: prompt.instructions,
+        input: prompt.input,
+        modelRef,
+        // Governed tool calls run under this task's identity (policy + audit).
+        tenantId: deps.tenantId,
+        agentId,
+      },
       checkpoint: emptyCheckpoint(),
     });
-    await deps.gateway.run("document.revise", { repo, path: loc.path, content: turn.text, branch: loc.branch }, ctx);
+    // Deterministic post-turn check (§2b #16): the revision only exists if a
+    // document write went through the gateway — no recorded `document.*`
+    // invocation means NOTHING was committed, and the reply must say so
+    // instead of pretending otherwise.
+    const revised = (await deps.db.countSucceededToolInvocations(task.id, DOC_REVISE_TOOLS)) > 0;
     await deps.delivery.deliverResult(
       { repo, number },
       {
-        summary: `Revised the document on PR #${number} per your comments.`,
+        summary: withFooter(
+          turn.text,
+          revised
+            ? `Revised the document on PR #${number} per your comments.`
+            : `No revision was committed — the document on PR #${number} is unchanged.`,
+        ),
         // Silent cost footer (Track 16, §13.3) — consistent with Slack delivery.
         costUsd: await deps.db.sumModelCostUsd(task.id),
       },
     );
+    await deps.db.transitionTask(task.id, "running");
+    await deps.db.transitionTask(task.id, "completed");
     return;
   }
 
-  // Draft a new design-doc PR.
+  // Draft a new design-doc PR. Tool-driven (§2b #16): the agent opens the PR
+  // by calling `document.create` itself (the gateway's configured plans-branch
+  // base applies, §29.1a, and its onDocumentPr recorder persists the
+  // DocumentArtifact + doc-PR delivery target). The handler suggests the path;
+  // it never commits the model's turn text.
+  const path = `${deps.docBasePath ?? "docs"}/${slug(invocation.text)}.md`;
   const prompt = await buildAgentPrompt({ db: deps.db, memory: deps.memory }, task, {
     basePersona: DRAFT_PERSONA,
+    contract: draftContract({ repo, path }),
     context,
   });
   const turn = await deps.runtime.nextTurn({
-    request: { taskId: task.id, instructions: prompt.instructions, input: prompt.input, modelRef },
+    request: {
+      taskId: task.id,
+      instructions: prompt.instructions,
+      input: prompt.input,
+      modelRef,
+      // Governed tool calls run under this task's identity (policy + audit).
+      tenantId: deps.tenantId,
+      agentId,
+    },
     checkpoint: emptyCheckpoint(),
   });
 
-  const path = `${deps.docBasePath ?? "docs"}/${slug(invocation.text)}.md`;
-  // §29.1a: the doc PR targets the plans branch, never the default branch.
-  const created = await deps.gateway.run(
-    "document.create",
-    { repo, path, content: turn.text, base: deps.plansBranch ?? DEFAULT_PLANS_BRANCH, title: `Design: ${invocation.text.slice(0, 60)}` },
-    ctx,
-  );
-  const details = created.details as { number: number; branch?: string };
-  const prNumber = Number(details.number);
-
-  await deps.db.recordDocumentArtifact({
-    tenantId: deps.tenantId,
-    location: { repo, prNumber, path, branch: details.branch },
-    role: "produced",
-    owningTaskId: task.id,
-    owningAgentId: agentId,
-    title: path,
-  });
-
-  // K2: the doc PR becomes a delivery target alongside the originating place,
-  // so the implementation task spawned on merge inherits both.
-  await deps.db.updateTaskDeliveryTargets(
-    task.id,
-    mergeDeliveryTargets(task.deliveryTargets, { surfaceType: "github", ref: { repo, number: prNumber, kind: "pr" } }),
-  );
+  // Deterministic post-turn check (§2b #16): the artifact is written by the
+  // gateway's onDocumentPr recorder inside a successful `document.create` /
+  // `document.update` — its absence means no doc PR exists, and the reply
+  // must report a visible no-op instead of silently committing nothing.
+  const artifact = await deps.db.findDocumentArtifactByTask(deps.tenantId, task.id);
+  const artifactLoc = (artifact?.location ?? {}) as { prNumber?: number };
+  if (!artifact || typeof artifactLoc.prNumber !== "number") {
+    await deps.delivery.deliverResult(
+      { repo, number },
+      {
+        summary: withFooter(turn.text, "No design document was produced by this run — nothing was committed. Mention me again to retry."),
+        costUsd: await deps.db.sumModelCostUsd(task.id),
+      },
+    );
+    await deps.db.transitionTask(task.id, "running");
+    await deps.db.transitionTask(task.id, "completed");
+    return;
+  }
+  const prNumber = artifactLoc.prNumber;
 
   await deps.delivery.deliverResult(
     { repo, number },
     {
-      summary: `Drafted design doc: PR #${prNumber} — comment to revise, merge to execute.`,
+      summary: withFooter(turn.text, `Drafted design doc: PR #${prNumber} — comment to revise, merge to execute.`),
       costUsd: await deps.db.sumModelCostUsd(task.id),
     },
   );

@@ -5,6 +5,13 @@ export interface FakeTurnSpec {
   text: string;
   /** Ask the user this clarifying question: the turn ends in a durable wait (Track 12). */
   ask?: string;
+  /**
+   * Deterministic stand-in for the model's tool calls this turn (§2b #16):
+   * runs (awaited) before the turn returns, with the full turn context —
+   * demos/tests use it to call the Tool Gateway exactly the way the real
+   * agent would (e.g. submit a document via `document.create`).
+   */
+  act?: (ctx: AgentTurnContext) => Promise<void> | void;
   inputTokens?: number;
   outputTokens?: number;
 }
@@ -36,6 +43,7 @@ export class FakeAgentRuntime implements AgentRuntime {
     if (!turn) {
       return { text: "", done: true };
     }
+    if (turn.act) await turn.act(ctx);
     const inputTokens = turn.inputTokens ?? 10;
     const outputTokens = turn.outputTokens ?? 5;
     // model ref is honored for provider/model labelling; pricing uses the fake spec

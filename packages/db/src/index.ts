@@ -414,6 +414,22 @@ export class Database implements AuditWriter, IdempotencyStore {
     );
   }
 
+  /**
+   * How many of the given tools ran successfully for a task (§2b #16). Backs
+   * the deterministic post-turn check on tool-driven doc flows: zero recorded
+   * `document.*` writes → the task reports a visible no-op instead of
+   * pretending something was committed. Requires the gateway to be wired with
+   * a db recorder ({@link dbToolRecorder}) — without it the count is always 0.
+   */
+  async countSucceededToolInvocations(taskId: Id, toolIds: string[]): Promise<number> {
+    const { rows } = await this.pool.query(
+      `select count(*)::int as n from tool_invocation
+       where task_id = $1 and status = 'ok' and tool_id = any($2)`,
+      [taskId, toolIds],
+    );
+    return rows[0].n as number;
+  }
+
   async countToolInvocations(taskId: Id): Promise<number> {
     const { rows } = await this.pool.query(
       `select count(*)::int as n from tool_invocation where task_id = $1`,
@@ -739,6 +755,22 @@ export class Database implements AuditWriter, IdempotencyStore {
        where tenant_id = $1 and location->>'repo' = $2 and (location->>'prNumber')::int = $3
        order by created_at desc limit 1`,
       [tenantId, repo, prNumber],
+    );
+    return rows[0] ? rowToDocumentArtifact(rows[0]) : null;
+  }
+
+  /**
+   * The document a task produced (§2b #16): the newest 'produced' artifact
+   * owned by the task. In the tool-driven doc flow this is the deterministic
+   * post-turn evidence that the agent's `document.create`/`document.update`
+   * call actually landed (the gateway's onDocumentPr recorder wrote it).
+   */
+  async findDocumentArtifactByTask(tenantId: Id, owningTaskId: Id): Promise<DocumentArtifact | null> {
+    const { rows } = await this.pool.query(
+      `select * from document_artifact
+       where tenant_id = $1 and owning_task_id = $2 and role = 'produced'
+       order by created_at desc limit 1`,
+      [tenantId, owningTaskId],
     );
     return rows[0] ? rowToDocumentArtifact(rows[0]) : null;
   }

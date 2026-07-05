@@ -16,7 +16,7 @@
  *      pinned to the branch's CURRENT tip (§29.6), briefed to update the same
  *      branch/PR through the brokered git/gh path.
  */
-import { FakeAgentRuntime } from "@marathon/agent";
+import { FakeAgentRuntime, type AgentTurnContext } from "@marathon/agent";
 import { EnvSecretStore } from "@marathon/config";
 import type { StepRunner } from "@marathon/core";
 import { FixturesGithubClient, GithubDelivery, makeDocumentTools } from "@marathon/connector-github";
@@ -33,6 +33,7 @@ import {
   BUILD_JOB_KIND,
   InvocationRouter,
   makeAgentTaskStepRunner,
+  makeDocumentPrRecorder,
   makeWaitingNotifier,
   Orchestrator,
   Worker,
@@ -130,20 +131,37 @@ async function main(): Promise<void> {
     });
     const gh = new FixturesGithubClient({});
     const ghOrchestrator = new Orchestrator(db, queue);
+    // §2b #16: doc writes are TOOL calls made by the agent, never handler-
+    // committed turn text — the fake turns below call the gateway exactly the
+    // way the real agent does, and the onDocumentPr recorder persists the
+    // artifact the revision path looks up.
+    const ghGateway = new ToolGateway({
+      registry: new ToolRegistry(makeDocumentTools(() => gh, { onDocumentPr: makeDocumentPrRecorder(db) })),
+      policy: { grants: [{ tool: "document.create" }, { tool: "document.revise" }] } as ToolPolicy,
+      secrets: new EnvSecretStore({}),
+      recorder: dbToolRecorder(db),
+    });
+    const govCtx = (ctx: AgentTurnContext) => ({
+      taskId: ctx.request.taskId,
+      tenantId: ctx.request.tenantId ?? ghBoot.tenantId,
+      agentId: ctx.request.agentId,
+    });
     const ghDeps: GithubAppDeps = {
       db,
       client: gh,
       memory: new FakeMemoryStore(),
       router: new InvocationRouter(db, ghOrchestrator),
       orchestrator: ghOrchestrator,
-      gateway: new ToolGateway({
-        registry: new ToolRegistry(makeDocumentTools(() => gh)),
-        policy: { grants: [{ tool: "document.create" }, { tool: "document.revise" }] } as ToolPolicy,
-        secrets: new EnvSecretStore({}),
-        recorder: dbToolRecorder(db),
-      }),
       delivery: new GithubDelivery(gh),
-      runtime: new FakeAgentRuntime({ turns: [{ text: "# Rate limiting design\n\n- token bucket per key" }] }),
+      runtime: new FakeAgentRuntime({
+        turns: [{
+          text: "Drafted the rate-limiting design.",
+          act: (ctx) =>
+            ghGateway
+              .run("document.create", { repo: REPO, path: "docs/rate-limiting.md", content: "# Rate limiting design\n\n- token bucket per key", title: "Design: rate limiting" }, govCtx(ctx))
+              .then(() => {}),
+        }],
+      }),
       tenantId: ghBoot.tenantId,
       agents: ghBoot.agents,
       agentIdByName: ghBoot.agentIdByName,
@@ -160,6 +178,17 @@ async function main(): Promise<void> {
     }));
     assert(count("createPullRequest") === 1, "the ask should open a design-doc PR");
     const putsBefore = count("putFile");
+    // The revise turn commits the full revised markdown to the doc's branch.
+    ghDeps.runtime = new FakeAgentRuntime({
+      turns: [{
+        text: "Tightened the limits section.",
+        act: async (ctx) => {
+          const artifact = await db.findDocumentArtifactByPr(ghBoot.tenantId, REPO, 1);
+          const loc = artifact!.location as { path: string; branch: string };
+          await ghGateway.run("document.revise", { repo: REPO, path: loc.path, content: "# Rate limiting design\n\n- tightened limits", branch: loc.branch }, govCtx(ctx));
+        },
+      }],
+    });
     await handleWebhookRequest(ghDeps, SECRET, signed("issue_comment", `k3-revise-${u}`, {
       action: "created",
       repository: { full_name: REPO, owner: { login: "thgibbs" } },
