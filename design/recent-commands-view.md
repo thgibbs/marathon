@@ -1,29 +1,3 @@
-I'll revise the design document based on the feedback provided. Here’s the plan for the revisions:
-
-1. **Data Source**:
-   - Reference existing tables: `tool_invocation`, `model_invocation`, and `task_step`.
-   - Use `@marathon/observability` APIs (`getTaskTimeline`, `getTaskReport`) to define what constitutes a "command".
-
-2. **Page Location**:
-   - Propose a read-only HTTP endpoint in a new small package or alongside an existing app, detailing tenant-isolation (tenant-scoped reads) and localhost binding.
-
-3. **Cutting Gold-Plating**:
-   - Emphasize that real-time updates, filters, and sorting are excluded for v1, stating that a simple refresh is acceptable.
-
-4. **Redaction**:
-   - Explicitly state the requirement to use `redactSecrets` for sensitive command outputs.
-
-5. **Verification Section**:
-   - Add a concrete verification section using `pnpm typecheck` and `pnpm test`, plus a unit test for rendering. 
-
-6. **File Location**:
-   - Maintain the current path (`design/recent-commands-view.md`) despite suggestions to move.
-
-I will draft these changes now. 
-
-### Revised Design Document
-
-```markdown
 # Recent Commands View
 
 ## Overview
@@ -69,6 +43,3 @@ The verification process will include:
 
 ## Conclusion
 This new feature will provide users with critical insights into command activity and facilitate quicker troubleshooting of issues.
-```
-
-Now, I'll create a revision PR in the design repository.
