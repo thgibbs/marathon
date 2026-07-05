@@ -105,6 +105,16 @@ async function main(): Promise<void> {
       surface: "github", externalId: `owner2-${dep}`, name: dep,
     });
     assert(standalone.id !== viaSlack.id, "expected no deployment -> a fresh tenant per surface id");
+    // Concurrent boots on a fresh deployment (both live apps at once, plus a
+    // duplicate boot of one surface) must converge on ONE tenant — the loser
+    // of the unique-index race re-resolves instead of failing the boot.
+    const race = `race-${Date.now()}`;
+    const raced = await Promise.all([
+      db.findOrCreateTenantBySurface({ surface: "slack", externalId: `T-${race}`, name: race, deployment: race }),
+      db.findOrCreateTenantBySurface({ surface: "github", externalId: `o-${race}`, name: race, deployment: race }),
+      db.findOrCreateTenantBySurface({ surface: "github", externalId: `o-${race}`, name: race, deployment: race }),
+    ]);
+    assert(new Set(raced.map((t) => t.id)).size === 1, "expected concurrent boots to converge on one tenant");
 
     console.log(
       `[m0] tenant=${tenant.id} task=${task.id} audit_events=${auditCount}`,

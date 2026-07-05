@@ -113,26 +113,41 @@ export class Database implements AuditWriter, IdempotencyStore {
     deployment?: string;
   }): Promise<Tenant> {
     const key = opts.surface === "slack" ? "slack_team_id" : "github_owner";
-    const bound = await this.pool.query(`select * from tenant where settings->>$1 = $2 limit 1`, [
-      key,
-      opts.externalId,
-    ]);
-    if (bound.rows[0]) return rowToTenant(bound.rows[0]);
-    if (opts.deployment) {
-      const attached = await this.pool.query(
-        `update tenant set settings = coalesce(settings, '{}'::jsonb) || jsonb_build_object($2::text, $3::text)
-         where settings->>'deployment' = $1 returning *`,
-        [opts.deployment, key, opts.externalId],
-      );
-      if (attached.rows[0]) return rowToTenant(attached.rows[0]);
+    // Concurrent boots (both live apps starting on a fresh MARATHON_TENANT,
+    // or two boots of the same surface) can pass the lookups together and
+    // collide on the unique binding/deployment indexes. A 23505 means the
+    // row this boot wanted now exists — re-resolve instead of failing the
+    // boot. Three attempts bound the loop; each conflict leaves a row the
+    // next lookup or attach finds.
+    let conflict: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const bound = await this.pool.query(`select * from tenant where settings->>$1 = $2 limit 1`, [
+        key,
+        opts.externalId,
+      ]);
+      if (bound.rows[0]) return rowToTenant(bound.rows[0]);
+      try {
+        if (opts.deployment) {
+          const attached = await this.pool.query(
+            `update tenant set settings = coalesce(settings, '{}'::jsonb) || jsonb_build_object($2::text, $3::text)
+             where settings->>'deployment' = $1 returning *`,
+            [opts.deployment, key, opts.externalId],
+          );
+          if (attached.rows[0]) return rowToTenant(attached.rows[0]);
+        }
+        const settings: Record<string, string> = { [key]: opts.externalId };
+        if (opts.deployment) settings.deployment = opts.deployment;
+        const { rows } = await this.pool.query(
+          `insert into tenant(name, settings) values ($1, $2) returning *`,
+          [opts.name, JSON.stringify(settings)],
+        );
+        return rowToTenant(rows[0]);
+      } catch (e) {
+        if ((e as { code?: string }).code !== "23505") throw e;
+        conflict = e;
+      }
     }
-    const settings: Record<string, string> = { [key]: opts.externalId };
-    if (opts.deployment) settings.deployment = opts.deployment;
-    const { rows } = await this.pool.query(
-      `insert into tenant(name, settings) values ($1, $2) returning *`,
-      [opts.name, JSON.stringify(settings)],
-    );
-    return rowToTenant(rows[0]);
+    throw conflict;
   }
 
   async findOrCreateAgent(tenantId: Id, name: string): Promise<Agent> {
