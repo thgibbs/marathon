@@ -248,9 +248,10 @@ track describe the codebase *before* its work landed; completed tracks carry a s
   to the merge commit and inherited delivery targets; `packages/surface/src/fanout.ts`
   delivers to every target idempotently. `make demo-k1` proves the path.
 
-All tracks (1–17) have landed. Still open outside the track structure: the K5 meta-exit
-(first blood — a change merged to `main` **through the loop**), the K6 timed stranger
-test, `smoke-k1`, and the deferred list (§ Do Not Optimize Yet).
+Tracks 1–17 have landed. Not started: Track 18 (plans branch — the 2026-07-04 design
+change, §29.1a). Still open outside the track structure: the K5 meta-exit (first blood —
+a change merged to `main` **through the loop**), the K6 timed stranger test, `smoke-k1`,
+and the deferred list (§ Do Not Optimize Yet).
 
 New design correction after Tracks 1–5: the original `github.submit_code_changes`
 contract is probably too heavy. Marathon should not replace normal `git` and `gh`
@@ -1254,6 +1255,62 @@ Required changes:
   - `make demo-kernel`: full loop umbrella.
 - Update `make demo` ordering to prioritize kernel demos.
 - Add live smoke `make smoke-k1` for a real small PR in a sandbox repo using `git`/`gh`.
+
+## Track 18: Plans Branch — Main Only Carries Shipped Plans
+
+Design target:
+
+- `design/29-code-handoff.md` §29.1 / §29.1a (decision 2026-07-04)
+- `design/open-questions.md` OQ-9
+- `design/00-core-kernel.md` §0.1, `design/06-core-user-journeys.md` §6.8
+
+Design correction:
+
+- Merging plan docs into the default branch litters main with documents that may never be
+  implemented or may not match the final outcome.
+- Doc PRs should target a long-lived **plans branch** (default `marathon/plans`,
+  configurable); merging THERE is the approval — same sha-pinned native signal, main
+  untouched.
+- An implemented plan reaches main **with its implementation**: the BUILD workspace
+  materializes the approved plan doc at its `doc_path`, so the code PR carries code + plan
+  as one reviewable unit (and review-forced divergence is amended on the code branch — main
+  gets the as-built plan).
+- An abandoned plan just stays on the plans branch. Invariant: a plan doc on main means the
+  plan shipped.
+
+Current code (all still merge-into-main):
+
+- `packages/connector-github/src/document-tools.ts` — `document.create` targets `base`
+  (default `main`).
+- `packages/github-app/src/handlers.ts` — `handleGithubMention` passes `base: "main"`;
+  `handleGithubMerge` treats any doc-artifact PR merge as approval and pins
+  `base_sha = mergeCommitSha` (the coincidence §29.1a removes).
+- `packages/surface-github/src/parse.ts` — `classifyGithubEvent` merge action carries no
+  base-branch filter.
+- `packages/code-handoff/src/workspace.ts` — `CodeWorkspace.materialize` has no plan-doc
+  materialization step.
+- `packages/worker/src/prompt.ts` — `renderImplementationBrief` says the plan is in the
+  tree at the merge commit.
+- `packages/config/src/index.ts` — no `plans.branch` config.
+
+Required changes:
+
+- Add `plans.branch` config (agent YAML or repo `.marathon/config.yml`; default
+  `marathon/plans`); bootstrap creates the branch from the default branch when missing.
+- `document.create`/`update` target the plans branch as the PR base.
+- Merge webhook: only a doc-artifact PR merged **into the plans branch** is an approval;
+  spawn the implementation task with `plan_ref` = plans-branch merge commit and
+  `base_sha` = **default-branch head captured at approval time** (they decouple; both are
+  already separate fields on the task/`CodeChange`).
+- `CodeWorkspace.materialize` writes the plan doc at its `doc_path` (content fetched at
+  `plan_ref.mergeCommitSha`) so it rides the diff into the code PR by construction.
+- `renderImplementationBrief`/`renderRevisionBrief`: the plan is materialized in the
+  workspace (not "in the tree at base"), and plan amendments during revisions happen on the
+  code branch.
+- Idempotency unchanged: `implementationTaskKey(repo, docPath, mergeCommitSha)`.
+- Update demos (`demo-github-app`, `demo-k3`) and the quickstart/README once the behavior
+  lands; keep a compatibility mode (plans branch = default branch reproduces today's
+  behavior) if migration needs it.
 
 ## Suggested Build Order
 

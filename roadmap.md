@@ -873,9 +873,14 @@ Build (per design §29):
 - **Trigger + input (§29.1):** merge webhook → implementation task with `plan_ref`,
   `base_sha` **pinned to the plan's merge commit**, and the
   `(repo, doc_path, merge_commit_sha, "implement")` idempotency key.
+  *(Amended 2026-07-04, §29.1a / Track 18: doc PRs merge into a dedicated **plans branch**;
+  `plan_ref` pins that merge commit while `base_sha` pins the default-branch head at
+  approval — they decouple.)*
 - **Workspace lifecycle (§29.2):** host-side clone at `base_sha`, **remotes + credential
   helpers stripped** before mounting; the merged plan is already in the tree at its doc path
-  (no side-channel plan delivery); teardown always destroys everything.
+  (no side-channel plan delivery); teardown always destroys everything. *(Amended, §29.1a:
+  the plan doc is materialized into the workspace at its doc path, so it rides the diff into
+  the code PR.)*
 - **`github.submit_code_changes` (§29.4):** the single governed handoff tool — the model
   passes title/summary/plan-ref/verification only; **the gateway reads the diff from the
   workspace** (`git diff base_sha..worktree`, host-side), then: size caps, protected-path

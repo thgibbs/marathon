@@ -19,11 +19,13 @@
 3. ITERATE  people comment on the doc PR and reply in the Slack thread;
       |     the agent revises the doc and asks clarifying questions
       |
-4. BUILD    a human merges the doc PR (the merge IS the approval);
-      |     the agent implements the plan — sandboxed code edits, tests run
+4. BUILD    a human merges the doc PR into the PLANS branch (the merge IS
+      |     the approval — §29.1a; main is untouched); the agent implements
+      |     the plan — sandboxed code edits, tests run
       |
-5. DELIVER  the agent opens a code PR, posts the link + summary back to
-            the Slack thread and the doc; a human reviews and merges
+5. DELIVER  the agent opens a code PR carrying code + the plan doc together,
+            posts the link + summary back to the Slack thread and the doc;
+            a human reviews and merges — only then does the plan reach main
 ```
 
 This is §6.8 (document-driven execution) plus one emphasis the corpus underweights: **the
@@ -60,7 +62,8 @@ simplified below.
 
 - **K1 — Code-writing path end-to-end.** Implements the **execution contract in
   [[29-code-handoff]]** — the product's central path, specified, not glue: pinned
-  `base_sha` = the plan's merge commit → host-materialized, credential-stripped workspace →
+  `base_sha` (default-branch head at approval; the plan itself is pinned separately by
+  `plan_ref` on the plans branch — §29.1a) → host-materialized, credential-stripped workspace →
   sandboxed edits + verify (repo `verify:` config → plan's Verification section → judgment)
   → the single `github.submit_code_changes` handoff, whose **diff the gateway reads from the
   workspace itself** (protected-path + secret + size checks) → `marathon/<task>-<slug>`

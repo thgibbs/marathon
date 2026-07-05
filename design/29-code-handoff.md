@@ -17,25 +17,64 @@ Two principles shape everything below:
 
 ## 29.1 Trigger and task input
 
-The doc PR merge (M6 webhook) spawns the **implementation task**:
+Plan documents live on a dedicated **plans branch**, not the default branch (§29.1a —
+decision 2026-07-04). The doc PR targets the plans branch; **merging it there is the
+approval**, and the merge (M6 webhook, filtered on the plans base ref) spawns the
+**implementation task**:
 
 ```text
 plan_ref            = { repo, doc_path, merge_commit_sha }   # the plan, at its merged version
-base_sha            = merge_commit_sha                       # the commit the work builds on
+                                                             #   (a plans-branch commit)
+base_sha            = <default-branch head at approval>      # the commit the work builds on
 delivery_targets    = [ originating Slack thread, doc PR ]   # inherited via the task chain (K2)
 idempotency_key     = (repo, doc_path, merge_commit_sha, "implement")
 ```
 
-* `base_sha` is **pinned to the plan's merge commit**: deterministic, auditable, and it
-  guarantees the merged plan is *in the tree* the agent works on — the prompt references the
-  plan by path; the agent reads it with its own file tools. No side-channel plan delivery.
-* One implementation task per merged plan version: a re-delivered webhook is a no-op; a
-  revised-and-re-merged plan is a **new** version → a new task.
+* `plan_ref` is **pinned to the plan's merge commit on the plans branch**: deterministic,
+  auditable, content-addressable forever (git history is the record), and voided by revision —
+  a revised-and-re-merged plan is a **new** version → a new task.
+* `base_sha` is **pinned to the default branch's head, captured once at approval time** and
+  carried on the task. It no longer coincides with the plan's merge commit (they live on
+  different branches); each is recorded separately on the task and the `CodeChange` (§29.8).
+* Because the plan is no longer in the tree at `base_sha`, the workspace **materializes the
+  plan doc** at its `doc_path` during provisioning (§29.2) — the agent still reads it with its
+  own file tools, no side-channel plan delivery, and the doc rides the diff into the code PR
+  (§29.1a).
+* One implementation task per merged plan version: a re-delivered webhook is a no-op.
+
+## 29.1a The plans branch — main only carries shipped plans
+
+**Decision (2026-07-04, supersedes merge-into-main).** Merging plan docs into the default
+branch litters it with documents that may never be implemented or may not match the final
+outcome. Instead:
+
+* **Doc PRs target a long-lived plans branch** (default `marathon/plans`; configurable —
+  `plans.branch`). Review UX, CODEOWNERS, and branch protection apply to that branch
+  unchanged; the merge remains the same deliberate, sha-pinned, natively-attributable
+  approval signal (§7.9). Marathon creates the branch at bootstrap when missing.
+* **An implemented plan merges into main WITH its implementation.** The BUILD workspace
+  materializes the approved plan doc at its `doc_path` (part of provisioning, so it is in the
+  diff by construction); the code PR therefore carries **code + plan as one reviewable
+  unit**, and the plan lands on the default branch only when the work does. If review on the
+  code PR forces divergence from the approved plan, the agent amends the doc **on the code
+  branch** — what reaches main is the **as-built** plan, not the as-hoped one.
+* **An abandoned plan stays on the plans branch.** Never implemented, or its code PR closed
+  unmerged — nothing reaches main. The plans branch is the append-only ledger of everything
+  considered; the default branch keeps the invariant: **a plan doc on main means the plan
+  shipped**.
+
+Alternatives considered and rejected: merge-to-main + cleanup (transient litter, churn
+commits); approve-without-merge via PR review (weaker ritual, review-dismissal state
+machinery, no canonical merged plan); a separate plans repo (cross-repo credentials, fights
+the K6 thirty-minute setup); ADR-style append-only log on main (exactly the litter being
+declined). Recorded in `open-questions.md` (OQ-9).
 
 ## 29.2 Workspace lifecycle
 
 1. **Provision** the sandbox (pinned toolchain image digest — K1 prerequisite).
 2. **Materialize** the workspace **host-side**: clone the repo at `base_sha` (detached),
+   **write the approved plan doc at its `doc_path`** (fetched at `plan_ref.merge_commit_sha`
+   from the plans branch, §29.1a — so the plan is in the working tree and thus in the diff),
    then **strip remotes and credential helpers** before mounting at `/workspace`. The clone
    is a governed read (recorded in the source ledger, §7.8); the sandbox never fetches — it
    has no network beyond the broker and, for Claude Code, the model proxy (§12.6).
@@ -128,6 +167,8 @@ agent can correct course in-session):
 * **Revisions:** an `@marathon` comment on the *code* PR spawns a revision task (K3
   machinery) that pins `base_sha` = **the task branch's current tip**, works in a fresh
   workspace, and hands off through the same tool — appending to the **same branch and PR**.
+  A revision that diverges from the approved plan **amends the plan doc on the code branch**
+  (§29.1a): the doc that merges with the code is the as-built plan.
 * **Merge conflicts** with a moved default branch are the reviewer's signal, not something the
   kernel auto-rebases: GitHub shows the conflict; a human (or an explicit `@marathon rebase
   this` revision task) resolves it. Honest and simple; auto-rebase is post-kernel.
