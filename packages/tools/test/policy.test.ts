@@ -49,9 +49,11 @@ describe("enforce", () => {
       grants: [{ tool: "github.read_file", constraints: { allowedRepos: ["o/ok"] } }],
     };
     expect(enforce(policy, readTool, { repo: "o/ok" }).decision).toBe("allow");
+    // The denial teaches the allowed repo — agent-visible errors must let a
+    // model that guessed wrong self-correct.
     expect(enforce(policy, readTool, { repo: "o/nope" })).toEqual({
       decision: "deny",
-      reason: "repo not allowed: o/nope",
+      reason: "repo not allowed: o/nope — this agent's configured repo is o/ok",
     });
   });
 

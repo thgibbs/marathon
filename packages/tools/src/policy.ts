@@ -61,7 +61,12 @@ export function enforce(policy: ToolPolicy, tool: Tool, input: ToolInput): Polic
 
   const allowedRepos = grant.constraints?.allowedRepos;
   if (allowedRepos && typeof input.repo === "string" && !allowedRepos.includes(input.repo)) {
-    return { decision: "deny", reason: `repo not allowed: ${input.repo}` };
+    // Name what IS allowed: the error is agent-visible, and a model that
+    // guessed the repo can only self-correct if the block teaches it.
+    return {
+      decision: "deny",
+      reason: `repo not allowed: ${input.repo} — this agent's configured repo is ${allowedRepos.join(", ")}`,
+    };
   }
 
   switch (tool.defaultMode) {

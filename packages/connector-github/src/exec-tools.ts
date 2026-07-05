@@ -165,7 +165,9 @@ export function makeGithubExecTool(opts: GithubExecOptions): Tool {
       const repo = family.repo(argv);
       if (!repo) return `name the repo explicitly (e.g. --repo owner/repo) for gh ${family.prefix.join(" ")}`;
       if (!REPO_RE.test(repo)) return `invalid repo: ${repo}`;
-      if (!opts.allowedRepos.includes(repo)) return `repo not allowed: ${repo}`;
+      if (!opts.allowedRepos.includes(repo)) {
+        return `repo not allowed: ${repo} — this agent's configured repo is ${opts.allowedRepos.join(", ")}`;
+      }
       return null;
     },
     async execute(input, ctx) {
@@ -263,7 +265,9 @@ export function makeGitExecTool(opts: GitExecOptions): Tool {
       if (!input.argv.every((a) => typeof a === "string")) return "argv must contain only strings";
       const p = parse(input);
       if (!p) return 'argv must be ["push"|"fetch", "owner/repo", ...refspecs]';
-      if (!opts.allowedRepos.includes(p.repo)) return `repo not allowed: ${p.repo}`;
+      if (!opts.allowedRepos.includes(p.repo)) {
+        return `repo not allowed: ${p.repo} — this agent's configured repo is ${opts.allowedRepos.join(", ")}`;
+      }
       if (p.refspecs.length === 0) return `at least one refspec is required for git ${p.op}`;
       const flag = p.refspecs.find((r) => r.startsWith("-"));
       if (flag) return `flags are not allowed through the broker: ${flag}`;
