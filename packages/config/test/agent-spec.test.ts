@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { grantFamilies, loadAgentSpec, loadAgentSpecs, parseAgentSpec } from "../src/index";
+import { grantFamilies, loadAgentSpec, loadAgentSpecs, parseAgentSpec, resolveAgentsDir } from "../src/index";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -114,5 +114,16 @@ describe("agents/forge.yaml (design §21.0)", () => {
     const specs = await loadAgentSpecs(join(repoRoot, "agents"));
     expect(specs.length).toBeGreaterThan(0);
     expect(specs.map((s) => s.name)).toContain("forge");
+  });
+
+  it("resolveAgentsDir finds a relative dir by walking UP (live apps run from package cwds)", () => {
+    // The live entrypoints run with demos/<app> as cwd; the default relative
+    // "agents" must resolve to the repo root's directory, not demos/<app>/agents.
+    expect(resolveAgentsDir("agents", join(repoRoot, "demos", "github-app"))).toBe(join(repoRoot, "agents"));
+    // Absolute paths pass through untouched.
+    expect(resolveAgentsDir(join(repoRoot, "agents"), "/anywhere")).toBe(join(repoRoot, "agents"));
+    // Nothing found anywhere: fall back to plain resolution so the caller's
+    // readdir error names the path that was tried.
+    expect(resolveAgentsDir("no-such-dir-xyz", join(repoRoot, "demos"))).toBe(join(repoRoot, "demos", "no-such-dir-xyz"));
   });
 });
