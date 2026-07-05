@@ -27,20 +27,40 @@ export interface EnsureAgentResult {
   published: boolean;
 }
 
+/**
+ * The published persona: the YAML instructions plus the deployment facts the
+ * model must know to call tools correctly. Grants are enforced by
+ * construction (§7.8), but enforcement without disclosure strands the agent —
+ * a model that was never TOLD the configured repo guesses `owner/repo` values
+ * and gets blocked on every call.
+ */
+export function composeInstructions(spec: AgentSpec): string {
+  if (!spec.repo) return spec.instructions;
+  return (
+    `${spec.instructions}\n\n` +
+    `Deployment configuration (trusted):\n` +
+    `- The ONE configured repository is ${spec.repo}. Pass exactly "${spec.repo}" as the ` +
+    `repo argument in every github.*/document.*/git tool call — no other repository is allowed.\n` +
+    `- Design documents branch from and merge into the plans branch (${spec.plans.branch}); ` +
+    `code PRs target the default branch.`
+  );
+}
+
 export async function ensureAgentFromSpec(
   db: AgentSeedDb,
   tenantId: Id,
   spec: AgentSpec,
 ): Promise<EnsureAgentResult> {
   const agent = await db.findOrCreateAgent(tenantId, spec.name);
+  const instructions = composeInstructions(spec);
   const latest = await db.getLatestAgentVersion(agent.id);
-  if (latest && latest.instructions === spec.instructions) {
+  if (latest && latest.instructions === instructions) {
     return { agent, version: latest, published: false };
   }
   const version = await db.createAgentVersion({
     agentId: agent.id,
     versionNumber: (latest?.versionNumber ?? 0) + 1,
-    instructions: spec.instructions,
+    instructions,
   });
   return { agent, version, published: true };
 }

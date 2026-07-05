@@ -81,6 +81,23 @@ describe("ensureAgentFromSpec (Track 12: YAML instructions → AgentVersion)", (
     expect(updated.version.versionNumber).toBe(2);
     expect(versions).toHaveLength(2);
   });
+
+  it("a configured repo is TAUGHT in the published persona (enforcement without disclosure strands the agent)", async () => {
+    const withRepo = parseAgentSpec({
+      name: "forge",
+      instructions: "You are Forge.",
+      repo: "acme/service",
+      plans: { branch: "design-plans" },
+    });
+    const { db, versions } = makeDb();
+    const res = await ensureAgentFromSpec(db, "tn1", withRepo);
+    expect(res.version.instructions).toContain('Pass exactly "acme/service"');
+    expect(res.version.instructions).toContain("plans branch (design-plans)");
+    // Idempotency holds over the COMPOSED instructions.
+    const again = await ensureAgentFromSpec(db, "tn1", withRepo);
+    expect(again.published).toBe(false);
+    expect(versions).toHaveLength(1);
+  });
 });
 
 describe("seedConfiguredAgents (Track 14: configured agents, no hardcoded defaults)", () => {
