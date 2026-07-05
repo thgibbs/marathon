@@ -70,6 +70,19 @@ async function upsertDocPr(
   return { number: pr.number, url: pr.url, converged: false };
 }
 
+/** What `onDocumentPr` hears after a doc PR is opened or converged on. */
+export interface DocumentPrEvent {
+  taskId: string;
+  tenantId: string;
+  repo: string;
+  path: string;
+  branch: string;
+  prNumber: number;
+  prUrl: string;
+  /** True when a retry converged on an existing branch/PR instead of creating one. */
+  converged: boolean;
+}
+
 export interface DocumentToolsOptions {
   /**
    * The configured base branch for document PRs — the plans branch (§29.1a).
@@ -78,6 +91,15 @@ export interface DocumentToolsOptions {
    * unset, `input.base` is honored (default "main") — the pre-§29.1a behavior.
    */
   docBase?: string;
+  /**
+   * Called after `document.create`/`document.update` opens (or converges on)
+   * a doc PR. Load-bearing for model-driven surfaces (the Slack loop): the
+   * caller records the `DocumentArtifact` + delivery target the merge webhook
+   * needs to recognize the PR as an approvable plan — without it, merging the
+   * plan would be ignored. Awaited; a failure fails the tool call, and the
+   * agent's retry converges on the same branch/PR.
+   */
+  onDocumentPr?: (event: DocumentPrEvent) => Promise<void> | void;
 }
 
 /**
@@ -145,6 +167,16 @@ export function makeDocumentTools(getClient: GithubClientFactory, opts: Document
         commitMessage: `docs: add ${path}`,
         prBody: "Drafted by Marathon — review and merge to execute.",
       });
+      await opts.onDocumentPr?.({
+        taskId: ctx.taskId,
+        tenantId: ctx.tenantId,
+        repo,
+        path,
+        branch,
+        prNumber: pr.number,
+        prUrl: pr.url,
+        converged: pr.converged,
+      });
       return {
         content: `${pr.converged ? "updated" : "opened"} PR #${pr.number} ${pr.url}`,
         details: { number: pr.number, url: pr.url, branch, path, converged: pr.converged },
@@ -181,6 +213,16 @@ export function makeDocumentTools(getClient: GithubClientFactory, opts: Document
         commitMessage: `docs: update ${path}`,
         prBody: "Updated by Marathon.",
         fileSha: String(input.sha),
+      });
+      await opts.onDocumentPr?.({
+        taskId: ctx.taskId,
+        tenantId: ctx.tenantId,
+        repo,
+        path,
+        branch,
+        prNumber: pr.number,
+        prUrl: pr.url,
+        converged: pr.converged,
       });
       return {
         content: `${pr.converged ? "updated" : "opened"} PR #${pr.number} ${pr.url}`,

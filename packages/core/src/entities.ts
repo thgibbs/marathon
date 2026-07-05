@@ -1,3 +1,4 @@
+import { stableStringify } from "./idempotency";
 import type { Id } from "./ids";
 import type { TaskStatus } from "./task-state";
 
@@ -112,6 +113,22 @@ export interface AgentVersion {
 export interface DeliveryTarget {
   surfaceType: SurfaceType;
   ref: Record<string, unknown>;
+}
+
+/** Append targets, deduping structurally (webhook/tool retries must converge). */
+export function mergeDeliveryTargets(
+  existing: DeliveryTarget[] | null | undefined,
+  ...added: DeliveryTarget[]
+): DeliveryTarget[] {
+  const out: DeliveryTarget[] = [];
+  const seen = new Set<string>();
+  for (const t of [...(existing ?? []), ...added]) {
+    const key = stableStringify(t);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
+  }
+  return out;
 }
 
 export interface Task {

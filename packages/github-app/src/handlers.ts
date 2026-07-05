@@ -4,8 +4,8 @@ import { getRepoAccess, type GithubClient, type GithubDelivery } from "@marathon
 import {
   emptyCheckpoint,
   implementationTaskKey,
+  mergeDeliveryTargets,
   revisionTaskKey,
-  stableStringify,
   type DeliveryTarget,
   type Id,
   type PlanRef,
@@ -61,19 +61,6 @@ const REVISE_PERSONA = "You are a documentation agent. Revise the document in <c
 
 function fanoutOf(deps: GithubAppDeps): DeliveryFanout {
   return deps.fanout ?? new DeliveryFanout({ github: deps.delivery }, deps.db);
-}
-
-/** Append targets, deduping structurally (webhook retries must converge). */
-function addTargets(existing: DeliveryTarget[] | null, ...added: DeliveryTarget[]): DeliveryTarget[] {
-  const out: DeliveryTarget[] = [];
-  const seen = new Set<string>();
-  for (const t of [...(existing ?? []), ...added]) {
-    const key = stableStringify(t);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(t);
-  }
-  return out;
 }
 
 function slug(s: string): string {
@@ -176,7 +163,7 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
   // so the implementation task spawned on merge inherits both.
   await deps.db.updateTaskDeliveryTargets(
     task.id,
-    addTargets(task.deliveryTargets, { surfaceType: "github", ref: { repo, number: prNumber, kind: "pr" } }),
+    mergeDeliveryTargets(task.deliveryTargets, { surfaceType: "github", ref: { repo, number: prNumber, kind: "pr" } }),
   );
 
   await deps.delivery.deliverResult(
@@ -221,7 +208,7 @@ export async function handleCodePrRevision(
 
   const sourceTask = await deps.db.getTask(change.taskId);
   const codePrTarget: DeliveryTarget = { surfaceType: "github", ref: { repo, number, kind: "pr" } };
-  const deliveryTargets = addTargets(sourceTask?.deliveryTargets ?? null, codePrTarget);
+  const deliveryTargets = mergeDeliveryTargets(sourceTask?.deliveryTargets ?? null, codePrTarget);
 
   const { task, deduped } = await deps.orchestrator.submit({
     tenantId: deps.tenantId,
@@ -304,7 +291,7 @@ export async function handleGithubMerge(
       ? mergeCommitSha
       : (await deps.client.getRef(repo, `heads/${defaultBranch}`)).sha;
   const docPrTarget: DeliveryTarget = { surfaceType: "github", ref: { repo, number: prNumber, kind: "pr" } };
-  const deliveryTargets = addTargets(docTask.deliveryTargets, docPrTarget);
+  const deliveryTargets = mergeDeliveryTargets(docTask.deliveryTargets, docPrTarget);
 
   // Track 10: the artifact keeps the full plan pointer — path/branch/PR were
   // recorded at draft time; the merge commit completes it.

@@ -4,6 +4,7 @@ export * from "./build-step";
 export * from "./agents";
 export * from "./approvals";
 export * from "./continuity";
+export * from "./documents";
 export * from "./effects";
 export * from "./prompt";
 export * from "./router";
