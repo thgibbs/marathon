@@ -2,7 +2,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EnvSecretStore, loadAgentSpecs, loadConfig, type AgentSpec } from "@marathon/config";
 import { PiAgentRuntime } from "@marathon/agent";
-import { ensureBranch, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
+import { ensureBranch, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
@@ -28,62 +28,11 @@ function assertSupportedHarness(spec: AgentSpec): void {
   }
 }
 
-const repoProp = { repo: { type: "string", description: 'Repository as "owner/name".' } };
-
-/**
- * Pi definitions for the tools this app can register. The list actually
- * exposed to the model is `spec.tools ∩ this catalog` — the YAML grants drive
- * the surface, and a granted tool this surface cannot serve (e.g. the BUILD
- * broker) is simply not exposed here.
- */
-const GOVERNED_TOOL_DEFS: Record<string, { name: string; description: string; parameters: Record<string, unknown> }> = {
-  "github.read_file": {
-    name: "github.read_file",
-    description: "Read a file from a GitHub repository.",
-    parameters: { type: "object", properties: { ...repoProp, path: { type: "string" } }, required: ["repo", "path"] },
-  },
-  "github.list_contents": {
-    name: "github.list_contents",
-    description: "List files/directories at a path in a GitHub repository.",
-    parameters: { type: "object", properties: { ...repoProp, path: { type: "string" } }, required: ["repo"] },
-  },
-  "document.read_region": {
-    name: "document.read_region",
-    description: "Read a markdown file (optionally a line range) from the repo.",
-    parameters: {
-      type: "object",
-      properties: { ...repoProp, path: { type: "string" }, ref: { type: "string" }, startLine: { type: "number" }, endLine: { type: "number" } },
-      required: ["repo", "path"],
-    },
-  },
-  "document.create": {
-    name: "document.create",
-    description: "Create a markdown design document by opening a pull request (a human merging it is the approval).",
-    parameters: {
-      type: "object",
-      properties: { ...repoProp, path: { type: "string" }, content: { type: "string" }, title: { type: "string" }, base: { type: "string" } },
-      required: ["repo", "path", "content"],
-    },
-  },
-  "document.update": {
-    name: "document.update",
-    description: "Update a markdown document via a pull request (pass the file's current git sha).",
-    parameters: {
-      type: "object",
-      properties: { ...repoProp, path: { type: "string" }, content: { type: "string" }, sha: { type: "string" }, base: { type: "string" } },
-      required: ["repo", "path", "content", "sha"],
-    },
-  },
-  "document.revise": {
-    name: "document.revise",
-    description: "Revise an existing document by committing to its open PR branch.",
-    parameters: {
-      type: "object",
-      properties: { ...repoProp, path: { type: "string" }, content: { type: "string" }, branch: { type: "string" } },
-      required: ["repo", "path", "content", "branch"],
-    },
-  },
-};
+// Pi definitions for the governed tools this app can register live in
+// @marathon/connector-github (governedToolDefsFor): the list actually exposed
+// to the model is `spec.tools ∩ that catalog` — the YAML grants drive the
+// surface, and a granted tool this surface cannot serve (e.g. the BUILD
+// broker) is simply not exposed.
 
 /** Start the live Marathon Slack app (Socket Mode). Long-running. */
 export async function startSlackApp(): Promise<void> {
@@ -151,9 +100,7 @@ export async function startSlackApp(): Promise<void> {
     recorder: dbToolRecorder(db),
     sourceLedger: new InMemorySourceLedger(),
   });
-  const governedTools = flagship.tools
-    .map((t) => GOVERNED_TOOL_DEFS[t.tool])
-    .filter((d): d is NonNullable<typeof d> => d !== undefined);
+  const governedTools = governedToolDefsFor(flagship.tools.map((t) => t.tool));
   const runtime = new PiAgentRuntime({
     secrets,
     // Durable per-task sessions (Track 12/K4): a resumed turn — answering a

@@ -13,7 +13,7 @@
  *
  * Requires Postgres at DATABASE_URL.
  */
-import { FakeAgentRuntime } from "@marathon/agent";
+import { FakeAgentRuntime, type AgentTurnContext } from "@marathon/agent";
 import { EnvSecretStore } from "@marathon/config";
 import { FixturesGithubClient, GithubDelivery, makeDocumentTools } from "@marathon/connector-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
@@ -22,7 +22,7 @@ import { FakeMemoryStore } from "@marathon/memory";
 import { Queue } from "@marathon/queue";
 import { computeGithubSignature } from "@marathon/surface-github";
 import { ToolGateway, ToolRegistry, type ToolPolicy } from "@marathon/tools";
-import { InvocationRouter, Orchestrator, Worker } from "@marathon/worker";
+import { InvocationRouter, makeDocumentPrRecorder, Orchestrator, Worker } from "@marathon/worker";
 
 const SECRET = "demo-webhook-secret";
 const REPO = "thgibbs/agentp-demo";
@@ -52,20 +52,42 @@ async function main(): Promise<void> {
     });
     const gh = new FixturesGithubClient({ userPermissions: { [`${REPO}:stranger`]: "none" } });
     const orchestrator = new Orchestrator(db, queue);
+    // §2b #16: doc writes are TOOL calls made by the agent, never handler-
+    // committed turn text. The fake turns below call this gateway exactly the
+    // way the real agent does; its wiring is load-bearing for the handlers —
+    // the docBase pins doc PRs to the plans branch (§29.1a, authoritative),
+    // dbToolRecorder backs the post-turn "did a doc write happen" check, and
+    // makeDocumentPrRecorder persists the DocumentArtifact + delivery target
+    // the merge webhook needs.
+    const gateway = new ToolGateway({
+      registry: new ToolRegistry(
+        makeDocumentTools(() => gh, { docBase: "marathon-plans", onDocumentPr: makeDocumentPrRecorder(db) }),
+      ),
+      policy: { grants: [{ tool: "document.create" }, { tool: "document.revise" }, { tool: "document.comment" }] } as ToolPolicy,
+      secrets: new EnvSecretStore({}),
+      recorder: dbToolRecorder(db),
+    });
+    const govCtx = (ctx: AgentTurnContext) => ({
+      taskId: ctx.request.taskId,
+      tenantId: ctx.request.tenantId ?? boot.tenantId,
+      agentId: ctx.request.agentId,
+    });
     const deps: GithubAppDeps = {
       db,
       client: gh,
       memory: new FakeMemoryStore(),
       router: new InvocationRouter(db, orchestrator),
       orchestrator,
-      gateway: new ToolGateway({
-        registry: new ToolRegistry(makeDocumentTools(() => gh)),
-        policy: { grants: [{ tool: "document.create" }, { tool: "document.revise" }, { tool: "document.comment" }] } as ToolPolicy,
-        secrets: new EnvSecretStore({}),
-        recorder: dbToolRecorder(db),
-      }),
       delivery: new GithubDelivery(gh),
-      runtime: new FakeAgentRuntime({ turns: [{ text: "# Rate limiting design\n\n- token bucket per key" }] }),
+      runtime: new FakeAgentRuntime({
+        turns: [{
+          text: "Drafted the rate-limiting design.",
+          act: (ctx) =>
+            gateway
+              .run("document.create", { repo: REPO, path: "docs/rate-limiting.md", content: "# Rate limiting design\n\n- token bucket per key", title: "Design: rate limiting" }, govCtx(ctx))
+              .then(() => {}),
+        }],
+      }),
       tenantId: boot.tenantId,
       agents: boot.agents,
       agentIdByName: boot.agentIdByName,
@@ -73,7 +95,7 @@ async function main(): Promise<void> {
     };
     const u = Date.now(); // unique ids per run (delivery dedupe + router idempotency)
 
-    // 1. mention -> draft a doc PR
+    // 1. mention -> the AGENT drafts a doc PR by calling document.create (§2b #16)
     await handleWebhookRequest(deps, SECRET, signed("issue_comment", `d-mention-${u}`, {
       action: "created",
       repository: { full_name: REPO, owner: { login: "thgibbs" } },
@@ -90,7 +112,18 @@ async function main(): Promise<void> {
     assert((await db.countDocumentArtifacts(boot.tenantId)) === 1, "a document artifact should be recorded");
     console.log("[github-app demo] mention -> drafted design-doc PR #1 against the plans branch");
 
-    // 2. PR comment on PR #1 -> revise the doc on its branch (no new PR)   [M7 #3]
+    // 2. PR comment on PR #1 -> the AGENT revises the doc on its branch by
+    //    calling document.revise (no new PR)   [M7 #3, §2b #16]
+    deps.runtime = new FakeAgentRuntime({
+      turns: [{
+        text: "Tightened the limits section.",
+        act: async (ctx) => {
+          const artifact = await db.findDocumentArtifactByPr(boot.tenantId, REPO, 1);
+          const loc = artifact!.location as { path: string; branch: string };
+          await gateway.run("document.revise", { repo: REPO, path: loc.path, content: "# Rate limiting design\n\n- tightened limits", branch: loc.branch }, govCtx(ctx));
+        },
+      }],
+    });
     const putsBefore = count(gh, "putFile");
     await handleWebhookRequest(deps, SECRET, signed("issue_comment", `d-rev-${u}`, {
       action: "created",
@@ -102,6 +135,26 @@ async function main(): Promise<void> {
     assert(count(gh, "putFile") === putsBefore + 1, "revision should commit once to the existing branch");
     assert(gh.writes.some((w) => w.op === "putFile" && (w.args as { branch?: string }).branch?.startsWith("marathon/doc-")), "revision committed to the draft branch");
     console.log("[github-app demo] PR comment -> revised doc on its branch (no new PR)");
+
+    // 2b. §2b #16: a turn that makes NO document tool call commits NOTHING and
+    //     reports a visible no-op — the model's chat text is never committed.
+    deps.runtime = new FakeAgentRuntime({
+      turns: [{ text: "That looks like a question, not a doc ask — here is the answer instead." }],
+    });
+    const prsBeforeNoop = count(gh, "createPullRequest");
+    const putsBeforeNoop = count(gh, "putFile");
+    await handleWebhookRequest(deps, SECRET, signed("issue_comment", `d-noop-${u}`, {
+      action: "created",
+      repository: { full_name: REPO, owner: { login: "thgibbs" } },
+      issue: { number: 22 },
+      comment: { id: u + 20, body: "@marathon quill draft what does the limiter do?", user: { login: "thgibbs" } },
+    }));
+    assert(count(gh, "createPullRequest") === prsBeforeNoop, "a tool-less turn must not open a PR");
+    assert(count(gh, "putFile") === putsBeforeNoop, "a tool-less turn must not commit anything");
+    assert((await db.countDocumentArtifacts(boot.tenantId)) === 1, "a tool-less turn must not record an artifact");
+    const noopReply = gh.writes.filter((w) => w.op === "commentIssue").map((w) => (w.args as { body: string }).body).at(-1)!;
+    assert(noopReply.includes("No design document was produced"), `the reply must report the visible no-op (got: ${noopReply.slice(0, 120)})`);
+    console.log("[github-app demo] tool-less turn -> visible no-op, nothing committed (§2b #16)");
 
     // 3. bad signature -> 401
     const bad = await handleWebhookRequest(deps, SECRET, { eventType: "issue_comment", deliveryId: "d-x", rawBody: "{}", signature: "sha256=bad" });

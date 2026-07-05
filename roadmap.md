@@ -924,7 +924,27 @@ fold into M7–M9 sequencing as capacity allows.
     text becomes the in-thread comment reply and is never committed. Deterministic
     post-turn check: no `document.*` ToolInvocation recorded → the task reports a visible
     no-op instead of silently committing nothing. Applies to draft + revise, both surfaces
-    (Slack drafting shares the pattern).
+    (Slack drafting shares the pattern). **Landed 2026-07-05 (GitHub mention flows):**
+    the github-app draft/revise flows now run the agent with the governed document tools
+    (Pi tool-def catalog shared from `@marathon/connector-github`) and a per-task
+    **tool contract** in the trusted instructions (`buildAgentPrompt`'s new `contract`
+    block — survives the AgentVersion persona override): draft calls `document.create`,
+    revise calls `document.revise`, and the handler commits nothing. Post-turn evidence is
+    deterministic — draft: the `onDocumentPr`-recorded `DocumentArtifact` (the same row
+    the merge webhook anchors on); revise: an ok `document.revise` ToolInvocation
+    (`countSucceededToolInvocations`; `document.update` deliberately doesn't count — it
+    writes to the revision task's own doc branch and can open a DIFFERENT PR than the one
+    under revision) — and its absence delivers an explicit "nothing was committed" reply
+    while the task completes instead of parking for an approval that can never come. The
+    live github-app gateway gained the recorder + PR-recorder wiring both checks depend
+    on; the deterministic demo adds a tool-less-turn scenario asserting the visible no-op.
+    **Remaining (Slack):** Slack drafting is tool-driven by construction (the model calls
+    `document.create` through the governed session tools, and no Slack handler commits
+    turn text — the #16 failure mode cannot occur there), but the per-task contract and
+    the no-op evidence check do NOT yet apply: the live Slack path runs the generic
+    `makeAgentTaskStepRunner`, and a Slack mention carries no deterministic doc-task
+    signal to key them on. Add that contract/evidence mode when Slack drafting grows a
+    recognizable doc-task shape.
 
 ---
 

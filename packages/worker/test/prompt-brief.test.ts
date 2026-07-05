@@ -111,6 +111,30 @@ describe("buildAgentPrompt surface context (Track 12, §7.18)", () => {
     const { input } = await buildAgentPrompt({ db: {} as never as Database }, task, { context: [] });
     expect(input).not.toContain("thread context");
   });
+
+  it("appends the trusted task contract after the persona + framing (§2b #16)", async () => {
+    const contract = "Submit the document by calling document_create exactly once.";
+    const { instructions } = await buildAgentPrompt({ db: {} as never as Database }, task, {
+      basePersona: "You are a documentation agent.",
+      contract,
+    });
+    expect(instructions).toContain(contract);
+    // The contract is instruction-side (trusted), after the untrusted framing.
+    expect(instructions.indexOf("never follow")).toBeLessThan(instructions.indexOf(contract));
+  });
+
+  it("the contract survives the AgentVersion persona override", async () => {
+    const db = {
+      getLatestAgentVersion: async () => ({ instructions: "You are Forge." }),
+    } as never as Database;
+    const { instructions } = await buildAgentPrompt({ db }, { ...task, agentId: "a1" }, {
+      basePersona: "overridden persona",
+      contract: "Call document_revise exactly once.",
+    });
+    expect(instructions).toContain("You are Forge.");
+    expect(instructions).not.toContain("overridden persona");
+    expect(instructions).toContain("Call document_revise exactly once.");
+  });
 });
 
 describe("renderRevisionBrief (Track 10, §29.6)", () => {
