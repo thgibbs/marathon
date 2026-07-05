@@ -839,6 +839,18 @@ fold into M7–M9 sequencing as capacity allows.
     re-linked. GitHub-surface users are auto-created keyed on the webhook-authenticated GitHub
     login. The hub **Identities** page lands with M10 Phase 2; IdP bulk-provisioning
     (`verification_method: idp`) when a tenant asks.
+11. **Submitted reviews trigger revisions on Marathon-owned PRs** *(UX; decided 2026-07-05,
+    surfaced dogfooding the loop).* Today only an explicit `@marathon` comment routes as a
+    revision request. On PRs Marathon created (identified by the existing
+    `DocumentArtifact`/`CodeChange` lookups), a **submitted PR review** — GitHub's native
+    batched "I'm done commenting, now act" signal, especially *Request changes* — should also
+    spawn ONE revision task carrying the review body + all its inline comments (not one task
+    per comment). Keep the explicit mention working everywhere as the deliberate summon; keep
+    plain unbatched comments mention-gated (PR threads are mixed-audience — human-to-human
+    chatter and CI bots must not trigger runs). Filter bot authors and Marathon's own posts;
+    mirror Slack's "chatter while running" rule (an already-queued revision for the PR absorbs
+    further triggers). Webhook: subscribe `pull_request_review`; classify on
+    `review.submitted` with the same repo/PR anchoring as comment mentions.
 
 ---
 
