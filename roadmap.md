@@ -909,6 +909,22 @@ fold into M7–M9 sequencing as capacity allows.
     posts" rule (#11) structural instead of heuristic. Requires the App to hold the write
     permissions the PAT holds today (Contents + Pull requests + Issues write); PAT remains
     the quickstart fallback.
+16. **Doc writes are tool calls, not committed chat text** *(correctness/architecture;
+    decided 2026-07-05 after a live revision committed the model's ENTIRE chat turn — plan
+    preamble, the doc trapped in a ```markdown fence, trailing "Now, I'll…" chatter — into
+    the design doc).* The M6-era doc flows are handler-orchestrated: a text-only turn, then
+    the HANDLER commits `turn.text` via `document.create`/`document.revise`; the only guard
+    is a persona sentence ("Return ONLY the markdown"). Extraction heuristics considered
+    and rejected — fragile parsing around a missing contract. Instead make the doc turn
+    **tool-driven**, mirroring the BUILD contract (§29.4: code is delivered by calling
+    `submit_code_changes`, never by emitting text): register `document.create`/
+    `document.revise` into the agent's session for doc tasks (the M6.1 governed-tool
+    wiring already supports this live), so the doc body is a **schema-validated tool
+    argument** through the ToolGateway (policy/audit/redaction apply); the turn's final
+    text becomes the in-thread comment reply and is never committed. Deterministic
+    post-turn check: no `document.*` ToolInvocation recorded → the task reports a visible
+    no-op instead of silently committing nothing. Applies to draft + revise, both surfaces
+    (Slack drafting shares the pattern).
 
 ---
 
