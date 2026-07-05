@@ -46,6 +46,12 @@ make demo-slack-app MARATHON_DB_PORT=55432
 Set `DATABASE_URL=postgres://marathon:marathon@localhost:55432/marathon` in `.env`
 for live app runs on that port.
 
+Also set `MARATHON_TENANT` in `.env` to one name for your deployment (e.g. your
+org). The Slack and GitHub apps each bind their surface to this ONE tenant, so
+the loop stays connected across surfaces — a doc PR drafted from a Slack ask is
+the same artifact the GitHub app revises when someone comments on it. Without
+it, each surface bootstraps an isolated tenant and cross-surface lookups miss.
+
 ## 2. Define your agent (YAML)
 
 Agents are YAML files in `agents/` (override with `MARATHON_AGENTS_DIR`); files

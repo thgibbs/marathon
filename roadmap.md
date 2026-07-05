@@ -866,6 +866,49 @@ fold into M7–M9 sequencing as capacity allows.
     `SocketModeClient` — wired into the live github-app behind `MARATHON_WEBHOOK_PROXY`;
     delivery-id dedupe keeps proxy + direct receiver safe together; quickstart §3 now
     points the App at a smee channel instead of a tunnel.
+13. **Startup config visibility — fail loud on missing/misspelled env** *(dev UX / K6
+    friction; surfaced 2026-07-05 dogfooding #12: the loop went silent again —
+    `MARATHON_WEBHOOK_URL` in `.env` instead of `MARATHON_WEBHOOK_PROXY`, so the app booted
+    in plain-receiver mode, never subscribed to the smee channel, and deliveries dropped
+    with no listener).* An app can't warn about a variable it doesn't know to look for, so
+    misconfiguration dies silently today. Two cheap guards: (a) each live app logs its
+    **effective inbound-event mode** at startup — "webhook proxy subscribed to <channel>"
+    (exists) vs. an explicit "no webhook proxy configured — inbound receiver only on
+    :<port>" for the negative case; (b) at boot, warn on any **unrecognized `MARATHON_*`
+    env var** against the known-vars list, with a closest-match hint ("did you mean
+    MARATHON_WEBHOOK_PROXY?"). Same ≤30-minute stranger-bar rationale as #12 — a stranger
+    hits a typo'd var name within minutes of touching `.env`.
+14. **One tenant across the live surfaces — Slack team ↔ GitHub owner** *(kernel
+    correctness; surfaced 2026-07-05 dogfooding: a follow-up `@marathon` comment on a
+    Marathon-drafted doc PR opened a DUPLICATE doc PR instead of revising it).* The design
+    says a Slack workspace and a GitHub installation are surfaces within ONE tenant, but
+    the live apps bootstrap separately — slack-app keys the tenant on the Slack team
+    (`findOrCreateTenantBySlackTeam`), github-app on the repo owner
+    (`findOrCreateTenantByGithubOwner`) — so a doc PR drafted from a Slack ask lands its
+    `DocumentArtifact` in one tenant and the GitHub webhook path looks it up in another:
+    the tenant-scoped `findDocumentArtifactByPr` misses, and the §6.8 revision loop
+    silently degrades to a fresh draft. The kernel loop is cross-surface by definition, so
+    the two live apps MUST resolve to the same tenant. Fix: surface **bindings on the
+    tenant record** (slack_team_id + github_owner, each unique) with one
+    `findOrCreateTenantBySurface` upsert both bootstraps share — an explicit admin-level
+    link, not name matching. Tenant-level counterpart of #10 (user identity linking).
+    **Landed 2026-07-05:** `MARATHON_TENANT` names the deployment tenant; both live apps
+    call `findOrCreateTenantBySurface` (binding lookup wins → deployment tenant gains the
+    binding → else per-surface create, so demos keep their isolation); migration 0010 adds
+    unique indexes on the `slack_team_id` / `github_owner` / `deployment` settings keys;
+    m0 demo asserts the convergence + binding-wins + no-deployment cases. Multi-tenant
+    admin linking (replacing the env var) stays future work with #10.
+15. **Marathon posts as itself on GitHub — App installation auth** *(product identity;
+    2026-07-05 dogfooding: every comment/PR Marathon makes is authored as the operator's
+    PAT user).* `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY` exist in `.env.example` but no
+    code reads them; all GitHub effects flow through `GITHUB_TOKEN`. Build the
+    installation-token path: App JWT → installation access token (cached, ~1h expiry,
+    refreshed on 401), behind the existing secret-store seam so `HttpGithubClient` AND the
+    brokered `gh`/`git` credential (`x-access-token:<token>@github.com`) both consume it —
+    posts then author as `<app-slug>[bot]`, which also makes the "filter Marathon's own
+    posts" rule (#11) structural instead of heuristic. Requires the App to hold the write
+    permissions the PAT holds today (Contents + Pull requests + Issues write); PAT remains
+    the quickstart fallback.
 
 ---
 

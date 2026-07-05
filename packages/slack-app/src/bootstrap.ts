@@ -21,9 +21,16 @@ export interface BootstrapResult {
  */
 export async function bootstrapSlackApp(
   db: Database,
-  opts: { teamId: string; teamName?: string; specs?: AgentSpec[]; agents?: AgentDescriptor[] },
+  opts: { teamId: string; teamName?: string; tenantName?: string; specs?: AgentSpec[]; agents?: AgentDescriptor[] },
 ): Promise<BootstrapResult> {
-  const tenant = await db.findOrCreateTenantBySlackTeam(opts.teamId, opts.teamName ?? opts.teamId);
+  // §2b #14: `tenantName` (MARATHON_TENANT) makes this surface bind to the
+  // shared deployment tenant instead of keying a tenant of its own.
+  const tenant = await db.findOrCreateTenantBySurface({
+    surface: "slack",
+    externalId: opts.teamId,
+    name: opts.tenantName ?? opts.teamName ?? opts.teamId,
+    deployment: opts.tenantName,
+  });
   const seeded = await seedConfiguredAgents(db, tenant.id, opts);
   return { tenantId: tenant.id, ...seeded };
 }

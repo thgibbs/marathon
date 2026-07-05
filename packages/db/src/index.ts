@@ -96,30 +96,41 @@ export class Database implements AuditWriter, IdempotencyStore {
     return rowToAgent(rows[0]);
   }
 
-  /** Find a tenant by its Slack team id (stored in settings), creating it if new. */
-  async findOrCreateTenantBySlackTeam(teamId: string, name: string): Promise<Tenant> {
-    const existing = await this.pool.query(
-      `select * from tenant where settings->>'slack_team_id' = $1 limit 1`,
-      [teamId],
-    );
-    if (existing.rows[0]) return rowToTenant(existing.rows[0]);
+  /**
+   * Resolve the tenant for a surface event source (§2b #14). Surface ids are
+   * bindings on the tenant record, kept in settings: an existing binding
+   * always wins. Otherwise, when `deployment` is set (MARATHON_TENANT), the
+   * deployment tenant gains this surface's binding — that is how the Slack
+   * and GitHub live apps land on ONE tenant. Without `deployment` a fresh
+   * tenant is created per surface id (demo/test behavior). Matching is on
+   * the explicit deployment marker, never the display name — demo tenants
+   * reuse names freely and must not capture live bindings.
+   */
+  async findOrCreateTenantBySurface(opts: {
+    surface: "slack" | "github";
+    externalId: string;
+    name: string;
+    deployment?: string;
+  }): Promise<Tenant> {
+    const key = opts.surface === "slack" ? "slack_team_id" : "github_owner";
+    const bound = await this.pool.query(`select * from tenant where settings->>$1 = $2 limit 1`, [
+      key,
+      opts.externalId,
+    ]);
+    if (bound.rows[0]) return rowToTenant(bound.rows[0]);
+    if (opts.deployment) {
+      const attached = await this.pool.query(
+        `update tenant set settings = coalesce(settings, '{}'::jsonb) || jsonb_build_object($2::text, $3::text)
+         where settings->>'deployment' = $1 returning *`,
+        [opts.deployment, key, opts.externalId],
+      );
+      if (attached.rows[0]) return rowToTenant(attached.rows[0]);
+    }
+    const settings: Record<string, string> = { [key]: opts.externalId };
+    if (opts.deployment) settings.deployment = opts.deployment;
     const { rows } = await this.pool.query(
       `insert into tenant(name, settings) values ($1, $2) returning *`,
-      [name, JSON.stringify({ slack_team_id: teamId })],
-    );
-    return rowToTenant(rows[0]);
-  }
-
-  /** Find a tenant by GitHub owner (stored in settings), creating it if new. */
-  async findOrCreateTenantByGithubOwner(owner: string, name?: string): Promise<Tenant> {
-    const existing = await this.pool.query(
-      `select * from tenant where settings->>'github_owner' = $1 limit 1`,
-      [owner],
-    );
-    if (existing.rows[0]) return rowToTenant(existing.rows[0]);
-    const { rows } = await this.pool.query(
-      `insert into tenant(name, settings) values ($1, $2) returning *`,
-      [name ?? owner, JSON.stringify({ github_owner: owner })],
+      [opts.name, JSON.stringify(settings)],
     );
     return rowToTenant(rows[0]);
   }

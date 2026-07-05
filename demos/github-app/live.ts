@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   const specs = await loadAgentSpecs(cfg.agentsDir);
   const flagship = specs[0]!;
   assertSupportedHarness(flagship);
-  const boot = await bootstrapGithubApp(db, { owner, specs });
+  const boot = await bootstrapGithubApp(db, { owner, tenantName: cfg.tenant, specs });
   const client = new HttpGithubClient(token);
   const orchestrator = new Orchestrator(db, queue);
   const delivery = new GithubDelivery(client);

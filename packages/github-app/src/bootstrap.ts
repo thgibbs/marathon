@@ -21,9 +21,16 @@ export interface GithubBootstrapResult {
  */
 export async function bootstrapGithubApp(
   db: Database,
-  opts: { owner: string; specs?: AgentSpec[]; agents?: AgentDescriptor[] },
+  opts: { owner: string; tenantName?: string; specs?: AgentSpec[]; agents?: AgentDescriptor[] },
 ): Promise<GithubBootstrapResult> {
-  const tenant = await db.findOrCreateTenantByGithubOwner(opts.owner);
+  // §2b #14: `tenantName` (MARATHON_TENANT) makes this surface bind to the
+  // shared deployment tenant instead of keying a tenant of its own.
+  const tenant = await db.findOrCreateTenantBySurface({
+    surface: "github",
+    externalId: opts.owner,
+    name: opts.tenantName ?? opts.owner,
+    deployment: opts.tenantName,
+  });
   const seeded = await seedConfiguredAgents(db, tenant.id, opts);
   return { tenantId: tenant.id, ...seeded };
 }

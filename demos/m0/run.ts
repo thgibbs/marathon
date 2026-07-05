@@ -87,6 +87,25 @@ async function main(): Promise<void> {
     }
     assert(rejected, "expected invalid transition completed -> running to be rejected");
 
+    // Surface bindings (§2b #14): with a deployment name, Slack and GitHub
+    // bootstraps land on ONE tenant; without one, each surface id keys its own.
+    const dep = `dep-${Date.now()}`;
+    const viaSlack = await db.findOrCreateTenantBySurface({
+      surface: "slack", externalId: `T-${dep}`, name: dep, deployment: dep,
+    });
+    const viaGithub = await db.findOrCreateTenantBySurface({
+      surface: "github", externalId: `owner-${dep}`, name: dep, deployment: dep,
+    });
+    assert(viaSlack.id === viaGithub.id, "expected both surfaces to bind to the deployment tenant");
+    const rebound = await db.findOrCreateTenantBySurface({
+      surface: "github", externalId: `owner-${dep}`, name: "other", deployment: undefined,
+    });
+    assert(rebound.id === viaSlack.id, "expected the existing binding to win over a fresh create");
+    const standalone = await db.findOrCreateTenantBySurface({
+      surface: "github", externalId: `owner2-${dep}`, name: dep,
+    });
+    assert(standalone.id !== viaSlack.id, "expected no deployment -> a fresh tenant per surface id");
+
     console.log(
       `[m0] tenant=${tenant.id} task=${task.id} audit_events=${auditCount}`,
     );
