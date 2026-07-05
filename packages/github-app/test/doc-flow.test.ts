@@ -180,8 +180,10 @@ describe("revise flow (§2b #16 — tool-driven)", () => {
     // The current doc rides in the untrusted context, not the instructions.
     expect(req.input).toContain("# old doc");
 
-    // Only revision-shaped writes count as "the revision landed".
-    expect(countCalls[0]).toEqual(["document.revise", "document.update"]);
+    // Only document.revise counts as "the revision landed": document.update
+    // writes to the revision TASK's own branch and can open a different PR,
+    // so its success must not be reported as a revision of THIS PR.
+    expect(countCalls[0]).toEqual(["document.revise"]);
 
     expect(delivered).toHaveLength(1);
     expect(delivered[0]!.summary).toContain("Tightened the limits section.");

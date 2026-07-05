@@ -99,8 +99,15 @@ function reviseContract(o: { repo: string; path: string; branch: string }): stri
   );
 }
 
-/** The governed tools whose success means "the revision actually landed". */
-const DOC_REVISE_TOOLS = ["document.revise", "document.update"];
+/**
+ * The governed tools whose success means "the revision actually landed" on
+ * the PR under revision. ONLY `document.revise` commits to an existing doc
+ * branch; `document.update` deliberately does NOT count — it writes to
+ * `docBranchForTask(<this task>, path)`, a fresh branch owned by the revision
+ * task, so it can open (or converge on) a DIFFERENT PR than the one this
+ * handler would then report as revised.
+ */
+const DOC_REVISE_TOOLS = ["document.revise"];
 
 /** Reply text (the turn's final message) + a deterministic outcome footer. */
 function withFooter(reply: string | undefined, footer: string): string {
