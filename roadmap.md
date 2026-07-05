@@ -870,12 +870,17 @@ Human prerequisites:
   `FakeSandbox` with the image path covered by the live smoke).
 
 Build (per design §29):
-- **Trigger + input (§29.1):** merge webhook → implementation task with `plan_ref`,
-  `base_sha` **pinned to the plan's merge commit**, and the
+- **Trigger + input (§29.1/§29.1a):** the doc PR merges into the **plans branch** (the
+  approval; the default branch is untouched) → implementation task with `plan_ref`
+  **pinned to that merge commit**, `base_sha` **pinned to the default-branch head at
+  approval** (the two are decoupled — different branches), and the
   `(repo, doc_path, merge_commit_sha, "implement")` idempotency key.
-- **Workspace lifecycle (§29.2):** host-side clone at `base_sha`, **remotes + credential
-  helpers stripped** before mounting; the merged plan is already in the tree at its doc path
-  (no side-channel plan delivery); teardown always destroys everything.
+  *(2026-07-04 decision, §29.1a / Track 18.)*
+- **Workspace lifecycle (§29.2):** host-side clone at `base_sha`, **the approved plan doc
+  materialized at its doc path** (fetched at `plan_ref.merge_commit_sha`, so it is in the
+  tree — no side-channel plan delivery — and rides the diff into the code PR),
+  **remotes + credential helpers stripped** before mounting; teardown always destroys
+  everything.
 - **`github.submit_code_changes` (§29.4):** the single governed handoff tool — the model
   passes title/summary/plan-ref/verification only; **the gateway reads the diff from the
   workspace** (`git diff base_sha..worktree`, host-side), then: size caps, protected-path

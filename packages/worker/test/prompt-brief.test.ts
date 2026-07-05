@@ -37,10 +37,15 @@ describe("renderImplementationBrief (Track 10)", () => {
     ],
   });
 
-  it("carries the merged plan, pinned base, and design PR", () => {
-    expect(brief).toContain("docs/Rate Limiting.md in o/r, merged as cafe1234deadbeef");
+  it("carries the approved plan, its materialized location, and the design PR", () => {
+    expect(brief).toContain("docs/Rate Limiting.md in o/r, approved as cafe1234deadbeef");
     expect(brief).toContain("(design PR #5)");
-    expect(brief).toContain("base_sha");
+    expect(brief).toContain("materialized at docs/Rate Limiting.md");
+  });
+
+  it("teaches the §29.1a plan lifecycle: commit the doc, amend on divergence", () => {
+    expect(brief).toContain("merges to the default branch WITH your code");
+    expect(brief).toContain("as-built plan");
   });
 
   it("suggests (but does not mandate) the branch", () => {

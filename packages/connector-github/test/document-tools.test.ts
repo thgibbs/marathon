@@ -8,6 +8,48 @@ const tool = (name: string, gh: FixturesGithubClient) =>
   makeDocumentTools(() => gh).find((t) => t.name === name)!;
 
 describe("document tools", () => {
+  it("a configured docBase (the plans branch, §29.1a) is authoritative over model input", async () => {
+    const gh = new FixturesGithubClient({});
+    const create = makeDocumentTools(() => gh, { docBase: "marathon-plans" }).find((t) => t.name === "document.create")!;
+    // The model tries to retarget the doc PR at main — the config wins.
+    await create.execute({ repo: "o/r", path: "docs/x.md", content: "# Hi", base: "main" }, ctx);
+    const pr = gh.writes.find((w) => w.op === "createPullRequest")!;
+    expect((pr.args as { base: string }).base).toBe("marathon-plans");
+  });
+
+  it("onDocumentPr fires with the PR info — on creation AND on a converged retry (§29.1a)", async () => {
+    const gh = new FixturesGithubClient({});
+    const events: Array<Record<string, unknown>> = [];
+    const create = makeDocumentTools(() => gh, {
+      docBase: "marathon-plans",
+      onDocumentPr: (ev) => void events.push(ev as never),
+    }).find((t) => t.name === "document.create")!;
+
+    await create.execute({ repo: "o/r", path: "docs/x.md", content: "# v1" }, ctx);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      taskId: "t1",
+      tenantId: "tn1",
+      repo: "o/r",
+      path: "docs/x.md",
+      prNumber: 1,
+      converged: false,
+    });
+
+    // A webhook/agent retry converges on the same PR — the hook still fires
+    // (the recorder is idempotent), so a lost first recording is repaired.
+    await create.execute({ repo: "o/r", path: "docs/x.md", content: "# v1 retried" }, ctx);
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({ prNumber: 1, converged: true });
+  });
+
+  it("without a configured docBase, input.base is honored (pre-§29.1a behavior)", async () => {
+    const gh = new FixturesGithubClient({});
+    await tool("document.create", gh).execute({ repo: "o/r", path: "docs/x.md", content: "# Hi", base: "develop" }, ctx);
+    const pr = gh.writes.find((w) => w.op === "createPullRequest")!;
+    expect((pr.args as { base: string }).base).toBe("develop");
+  });
+
   it("document.create opens a PR (branch + file + PR)", async () => {
     const gh = new FixturesGithubClient({});
     const res = await tool("document.create", gh).execute(

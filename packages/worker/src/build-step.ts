@@ -49,6 +49,15 @@ export interface BuildStepOptions {
    * fails the same check up front).
    */
   taskBudget?: BudgetPolicy;
+  /**
+   * Fetch the approved plan doc's content (§29.1a): the plan lives on the
+   * plans branch, not in the tree at `base_sha`, so fresh provisioning writes
+   * it into the workspace at its `doc_path` — the agent reads it with normal
+   * file tools AND it rides the diff into the code PR (main only carries
+   * shipped plans). Resumes restore it via the checkpointed diff instead, so
+   * agent amendments to the plan are never overwritten.
+   */
+  loadPlanDoc?: (task: Task, binding: { planRef: PlanRef; baseSha: string }) => Promise<{ path: string; content: string } | null>;
   /** PR base for the handoff; defaults to "main". */
   defaultBranch?: string;
   /** Redact secrets from stored findings/trace (on by default). */
@@ -124,7 +133,16 @@ export function makeBuildStepRunner(opts: BuildStepOptions) {
     const workspace = await CodeWorkspace.materialize({ source, baseSha });
     try {
       const priorDiff = await loadDiffSnapshot(checkpoint);
-      if (priorDiff) await workspace.applyDiff(priorDiff);
+      if (priorDiff) {
+        // Resume: the checkpointed diff restores everything beyond base_sha —
+        // including the materialized plan doc (and any agent amendments to it).
+        await workspace.applyDiff(priorDiff);
+      } else if (opts.loadPlanDoc) {
+        // Fresh provision (§29.1a): write the approved plan into the workspace
+        // so it is in the tree (readable, and part of the diff/code PR).
+        const plan = await opts.loadPlanDoc(task, { planRef, baseSha });
+        if (plan) await workspace.writeFile(plan.path, plan.content);
+      }
       opts.registry.set(taskId, {
         workspace,
         planRef,

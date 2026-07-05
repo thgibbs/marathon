@@ -237,9 +237,9 @@ Marathon should:
 For non-trivial work, the document *is* the workflow. A typical flow:
 
 1. A user asks an agent to do something substantial in Slack (e.g. "ship rate-limiting for the public API").
-2. The agent drafts a **design document** — a markdown file proposed as a pull request — describing the plan, scope, and risks.
+2. The agent drafts a **design document** — a markdown file proposed as a pull request **against the plans branch** (§29.1a, not the default branch) — describing the plan, scope, and risks.
 3. People review and comment on the PR; the agent revises in response.
-4. A human **approves by merging** the PR (the merge is the approval signal).
-5. The agent then executes the approved plan, posting progress back to the Slack thread and the PR, routing any high-risk step through a proposal (§7.9).
+4. A human **approves by merging** the PR into the plans branch (the merge is the approval signal; the default branch is untouched).
+5. The agent then executes the approved plan, posting progress back to the Slack thread and the PR, routing any high-risk step through a proposal (§7.9). The implementation's code PR **carries the plan doc with it**, so the plan reaches the default branch only when the work merges — an abandoned plan stays on the plans branch, and a plan doc on main always means the plan shipped.
 
 This makes the plan reviewable and auditable *before* execution, and keeps the durable record of intent in version control.

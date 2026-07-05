@@ -72,6 +72,20 @@ export interface AgentBudget {
 }
 
 /**
+ * The default plans branch (§29.1a): where design-doc PRs merge (the approval).
+ * Deliberately OUTSIDE the agent-owned `marathon/*` push namespace — rulesets
+ * are the final enforcement on the brokered push path, so the approval
+ * boundary must not live in the prefix agents push to.
+ */
+export const DEFAULT_PLANS_BRANCH = "marathon-plans";
+
+/** Plan-document settings (§29.1a): where doc PRs merge. */
+export interface AgentPlansConfig {
+  /** The plans branch; must NOT be under `marathon/` (the agent push namespace). */
+  branch: string;
+}
+
+/**
  * A YAML-defined agent (design §6.2 / §21.0; Track 14): identity +
  * instructions plus the full runtime config — harness, the ONE configured
  * repo, tool grants (including brokered `gh`/`git` command families), sandbox
@@ -91,6 +105,8 @@ export interface AgentSpec {
   tools: AgentToolGrant[];
   /** Sandbox settings; default internet-enabled ("bridge"), credential-free. */
   sandbox: AgentSandboxConfig;
+  /** Plans-branch settings (§29.1a); default `marathon-plans`. */
+  plans: AgentPlansConfig;
   /** Model routing; when omitted the deployment default policy applies. */
   models?: AgentModelPolicy;
   /** Hard spend cap; when omitted no budget is enforced. */
@@ -140,6 +156,7 @@ export function parseAgentSpec(value: unknown, source = "agent spec"): AgentSpec
     harness: "pi",
     tools: [],
     sandbox: { network: "bridge" },
+    plans: { branch: DEFAULT_PLANS_BRANCH },
   };
   if (typeof v.display_name === "string") spec.displayName = v.display_name;
   if (typeof v.description === "string") spec.description = v.description;
@@ -170,6 +187,27 @@ export function parseAgentSpec(value: unknown, source = "agent spec"): AgentSpec
         throw new Error(`${source}: 'sandbox.network' must be one of ${NETWORKS.join(" | ")}`);
       }
       spec.sandbox.network = s.network as AgentSandboxConfig["network"];
+    }
+  }
+  if (v.plans !== undefined) {
+    if (!v.plans || typeof v.plans !== "object") {
+      throw new Error(`${source}: 'plans' must be a mapping`);
+    }
+    const p = v.plans as Record<string, unknown>;
+    if (p.branch !== undefined) {
+      if (typeof p.branch !== "string" || !p.branch.trim()) {
+        throw new Error(`${source}: 'plans.branch' must be a non-empty branch name`);
+      }
+      const branch = p.branch.trim();
+      // §29.1a: the plans branch is an approval boundary — it must sit OUTSIDE
+      // the agent-owned push namespace, or rulesets that open marathon/* to
+      // agent pushes would open the approval boundary too. Refuse at boot.
+      if (branch === "marathon" || branch.startsWith("marathon/")) {
+        throw new Error(
+          `${source}: 'plans.branch' must not be under the agent push namespace 'marathon/' (got "${branch}") — §29.1a`,
+        );
+      }
+      spec.plans.branch = branch;
     }
   }
   if (v.models !== undefined) {

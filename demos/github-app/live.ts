@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PiAgentRuntime } from "@marathon/agent";
 import { EnvSecretStore, loadAgentSpecs, loadConfig, type AgentSpec } from "@marathon/config";
-import { GithubDelivery, HttpGithubClient, httpGithubClientFactory, makeDocumentTools } from "@marathon/connector-github";
+import { ensureBranch, GithubDelivery, HttpGithubClient, httpGithubClientFactory, makeDocumentTools } from "@marathon/connector-github";
 import { Database, migrate } from "@marathon/db";
 import { bootstrapGithubApp, handleWebhookRequest, makeBuildWiring, type GithubAppDeps } from "@marathon/github-app";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
@@ -58,6 +58,11 @@ async function main(): Promise<void> {
   const orchestrator = new Orchestrator(db, queue);
   const delivery = new GithubDelivery(client);
   const fanout = new DeliveryFanout({ github: delivery }, db);
+  // §29.1a: plan docs merge into the plans branch, never the default branch.
+  // Create it when missing; operators should branch-protect it like main
+  // (docs/quickstart.md §3) — it is an approval boundary.
+  const plansBranch = flagship.plans.branch;
+  if (flagship.repo) await ensureBranch(client, flagship.repo, plansBranch, "main");
   const deps: GithubAppDeps = {
     db,
     client,
@@ -65,7 +70,8 @@ async function main(): Promise<void> {
     router: new InvocationRouter(db, orchestrator),
     orchestrator,
     gateway: new ToolGateway({
-      registry: new ToolRegistry(makeDocumentTools(httpGithubClientFactory())),
+      // The configured plans branch is the AUTHORITATIVE doc-PR base (§29.1a).
+      registry: new ToolRegistry(makeDocumentTools(httpGithubClientFactory(), { docBase: plansBranch })),
       policy: toolPolicyFromSpec(flagship),
       secrets,
     }),
@@ -78,6 +84,8 @@ async function main(): Promise<void> {
     defaultAgent: boot.defaultAgent,
     // Model policy from the spec (Track 15) — no hardcoded fallback here.
     modelRef: resolveModelRef(flagship.models ?? DEFAULT_MODEL_POLICY),
+    plansBranch,
+    defaultBranch: "main",
   };
 
   // The BUILD side of the loop (Track 15): a worker that consumes the

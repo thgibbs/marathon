@@ -36,7 +36,10 @@ function makeDocTask(overrides: Partial<Task> = {}): Task {
 }
 
 // Stubs are `as never` at the test boundary (see AGENTS.md rule 1).
-function makeDeps(docTask: Task | null) {
+function makeDeps(
+  docTask: Task | null,
+  opts: { plansBranch?: string; defaultBranch?: string; defaultBranchHead?: string } = {},
+) {
   const transitions: Array<[string, string]> = [];
   const progress: Array<{ ref: Record<string, unknown>; message: string }> = [];
   const locationMerges: Array<{ id: string; patch: Record<string, unknown> }> = [];
@@ -63,6 +66,10 @@ function makeDeps(docTask: Task | null) {
     orchestrator: { submit },
     fanout: new DeliveryFanout({ slack: adapter, github: adapter }, new InMemoryIdempotencyStore()),
     tenantId: "tn1",
+    // §29.1a: base_sha comes from the default branch's head at approval.
+    client: { getRef: async () => ({ sha: opts.defaultBranchHead ?? "default-head" }) },
+    plansBranch: opts.plansBranch,
+    defaultBranch: opts.defaultBranch,
   } as never as GithubAppDeps;
   return { deps, submit, transitions, progress, locationMerges };
 }
@@ -88,7 +95,7 @@ describe("handleGithubMerge (K2 task chain)", () => {
     // Track 10: the brief carries the plan, base, suggested branch, targets,
     // and the delivery.report_pr contract.
     const brief = String(input.inputText);
-    expect(brief).toContain(`docs/plan.md in ${REPO}, merged as ${MERGE_SHA}`);
+    expect(brief).toContain(`docs/plan.md in ${REPO}, approved as ${MERGE_SHA}`);
     expect(brief).toContain("Suggested branch: marathon/docs-plan-");
     expect(brief).toContain("delivery.report_pr EXACTLY ONCE");
     expect(brief).toContain("git.exec");
@@ -124,5 +131,35 @@ describe("handleGithubMerge (K2 task chain)", () => {
     expect(await handleGithubMerge(makeDeps(null).deps, REPO, DOC_PR, MERGE_SHA)).toBe(false);
     const { deps } = makeDeps(makeDocTask());
     expect(await handleGithubMerge(deps, REPO, DOC_PR, undefined)).toBe(false);
+  });
+
+  it("§29.1a: only a merge INTO the plans branch is an approval", async () => {
+    // A doc PR merged into the default branch (or anywhere else) is ignored.
+    const wrongBase = makeDeps(makeDocTask());
+    expect(await handleGithubMerge(wrongBase.deps, REPO, DOC_PR, MERGE_SHA, "main")).toBe(false);
+    expect(wrongBase.submit).not.toHaveBeenCalled();
+
+    // Merged into the plans branch (default marathon-plans): approval.
+    const { deps, submit } = makeDeps(makeDocTask(), { defaultBranchHead: "main-head-9" });
+    expect(await handleGithubMerge(deps, REPO, DOC_PR, MERGE_SHA, "marathon-plans")).toBe(true);
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("§29.1a: plan_ref pins the plans-branch merge commit; base_sha pins the default-branch head", async () => {
+    const { deps, submit } = makeDeps(makeDocTask(), { defaultBranchHead: "main-head-9" });
+    await handleGithubMerge(deps, REPO, DOC_PR, MERGE_SHA, "marathon-plans");
+    const input = submit.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input.sourceRef).toMatchObject({
+      kind: "implementation",
+      baseSha: "main-head-9", // decoupled from the plan's merge commit
+      planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: MERGE_SHA },
+    });
+  });
+
+  it("compat: plans branch = default branch reproduces the coupled pre-§29.1a pin", async () => {
+    const { deps, submit } = makeDeps(makeDocTask(), { plansBranch: "main", defaultBranch: "main" });
+    await handleGithubMerge(deps, REPO, DOC_PR, MERGE_SHA, "main");
+    const input = submit.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input.sourceRef).toMatchObject({ baseSha: MERGE_SHA });
   });
 });

@@ -216,3 +216,34 @@ of the sub-agent's prompt (§7.18), not the instructions layer.
 whose precondition most Marathon tasks don't meet.
 
 **Refs.** §28.2, roadmap M11, [[fable]] M6.
+
+---
+
+## OQ-9 — Where do plan documents live? (merge-as-approval vs. a clean main)
+
+> **Resolved 2026-07-04 (design; implementation = code-migration Track 18).** **Plans branch
+> + plan-rides-the-code-PR** (§29.1a). Doc PRs target a long-lived plans branch (default
+> `marathon-plans` — deliberately OUTSIDE the agent-owned `marathon/*` push namespace, and
+> branch-protected like main, since rulesets are the final enforcement on the brokered push
+> path); merging **there** is the approval — same deliberate, sha-pinned, natively
+> attributable signal, same review UX/CODEOWNERS/branch protection, but the default branch is
+> untouched. The BUILD workspace materializes the approved plan at its `doc_path`, so the code
+> PR carries **code + plan as one unit** and the plan reaches main only when the work merges
+> (amended on the code branch if review forces divergence — main gets the **as-built** plan).
+> Abandoned plans stay on the plans branch. Invariant: **a plan doc on main means the plan
+> shipped.** Consequence: `plan_ref.merge_commit_sha` (plans branch) and `base_sha` (default-
+> branch head at approval) **decouple** — already separate fields (§10.19). Alternatives
+> rejected: merge-to-main + cleanup (churn), approve-without-merge (weaker ritual, review-state
+> machinery, no canonical merged plan), separate plans repo (fights K6 setup), ADR-log-on-main
+> (the litter being declined).
+
+**Question.** Merge-as-approval originally merged design docs into the default branch, which
+accretes plan documents on main that may never be implemented or may not match the final
+outcome. Where should plans live so the approval signal keeps its strength (deliberate,
+sha-bound, native, no new UI) without littering main?
+
+**Why it matters.** The doc PR merge is the kernel's only pre-BUILD approval (§0.4
+native-only); weakening it undermines the no-in-app-approvals stance. But a main branch full
+of stale intent documents erodes trust in the repo as the record of what shipped.
+
+**Refs.** §29.1/§29.1a, §0.1, §6.8, §7.9, code-migration Track 18.

@@ -239,6 +239,60 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
     expect(loaded).toContain("big.txt");
   });
 
+  it("materializes the plan doc on fresh provision; resumes restore it from the diff (§29.1a)", async () => {
+    const task = makeTask();
+    const { db } = makeDb(task);
+    let planLoads = 0;
+    const runtime = new ScriptedBuildRuntime({
+      turns: [
+        async ({ workspace }) => {
+          // The plan is in the tree (readable) and beyond base_sha (in the diff).
+          const plan = await readFile(join(workspace!.dir, "docs/plan.md"), "utf8");
+          if (!plan.includes("the approved plan")) throw new Error("plan not materialized");
+          // The agent amends the plan (as-built divergence) — the amendment
+          // must survive a resume.
+          await writeFile(join(workspace!.dir, "docs/plan.md"), `${plan}\n\nAmended.\n`);
+          return "read + amended plan";
+        },
+        async () => "second turn",
+      ],
+      crashAfterTurn: 0,
+    });
+    const opts = {
+      db,
+      runtime,
+      registry: new CodeTaskRegistry(),
+      source: origin,
+      modelRef: "fake:scripted",
+      loadPlanDoc: async () => {
+        planLoads++;
+        return { path: "docs/plan.md", content: "# Plan\n\nthe approved plan\n" };
+      },
+    };
+    await expect(makeBuildStepRunner(opts)({ taskId: task.id, checkpoint: emptyCheckpoint() })).rejects.toThrow(
+      /simulated crash/,
+    );
+    expect(planLoads).toBe(1);
+    const cp = parseCheckpoint(task.checkpoint);
+    expect(cp.workspaceDiff).toContain("docs/plan.md"); // the plan rides the diff into the code PR
+
+    // Resume: the diff restores the AMENDED plan; loadPlanDoc must not run
+    // again (it would overwrite the agent's amendment).
+    const resumed = new ScriptedBuildRuntime({
+      turns: [
+        async () => "never re-run",
+        async ({ workspace }) => {
+          const plan = await readFile(join(workspace!.dir, "docs/plan.md"), "utf8");
+          if (!plan.includes("Amended.")) throw new Error("amendment lost on resume");
+          return "amendment survived";
+        },
+      ],
+    });
+    const res = await makeBuildStepRunner({ ...opts, runtime: resumed })({ taskId: task.id, checkpoint: cp });
+    expect(res.done).toBe(true);
+    expect(planLoads).toBe(1);
+  });
+
   it("aborts a run at the turn boundary once the per-task budget is exceeded (Track 15)", async () => {
     const task = makeTask();
     const { db, steps } = makeDb(task);

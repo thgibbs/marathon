@@ -11,6 +11,7 @@ import { InMemorySourceLedger, ToolGateway, ToolRegistry, toolPolicyFromSpec } f
 import {
   InvocationRouter,
   makeAgentTaskStepRunner,
+  makeDocumentPrRecorder,
   makeWaitingNotifier,
   Orchestrator,
   Worker,
@@ -123,7 +124,18 @@ export async function startSlackApp(): Promise<void> {
   // Pi-visible tool list is derived from those same grants.
   const clientFactory = httpGithubClientFactory();
   const toolGateway = new ToolGateway({
-    registry: new ToolRegistry([...makeGithubReadTools(clientFactory), ...makeDocumentTools(clientFactory)]),
+    // Doc PRs target the configured plans branch (§29.1a) — authoritative,
+    // so the model cannot retarget them at the default branch. The recorder
+    // persists the DocumentArtifact + doc-PR delivery target the merge
+    // webhook needs — without it, a plan drafted from Slack would merge and
+    // be silently ignored (no artifact → no implementation task).
+    registry: new ToolRegistry([
+      ...makeGithubReadTools(clientFactory),
+      ...makeDocumentTools(clientFactory, {
+        docBase: flagship.plans.branch,
+        onDocumentPr: makeDocumentPrRecorder(db),
+      }),
+    ]),
     policy: toolPolicyFromSpec(flagship),
     secrets,
     recorder: dbToolRecorder(db),

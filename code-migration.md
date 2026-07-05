@@ -18,6 +18,24 @@ features.
 Progress against the tracks below, most recent first. The "Current mismatch" lists in each
 track describe the codebase *before* its work landed; completed tracks carry a status note.
 
+- **Track 18: plans branch — done (2026-07-05, §29.1a / OQ-9).** Plan docs no longer merge
+  into the default branch. `AgentSpec.plans.branch` (default `marathon-plans`; parse REFUSES
+  a branch under the agent push namespace `marathon/*` — the approval boundary cannot live
+  in the prefix rulesets leave open to agent pushes) drives everything: `makeDocumentTools`
+  gained an authoritative `docBase` (a model-supplied `base` cannot retarget doc PRs), both
+  live apps pass the spec's plans branch, and the live github-app `ensureBranch`es it at
+  boot. `classifyGithubEvent` merge actions carry `baseRef`; `handleGithubMerge` treats ONLY
+  a doc PR merged into the plans branch as the approval (a merge into main is ignored;
+  legacy callers without a baseRef keep the old behavior, as does `plans.branch` = default
+  branch — the compat mode) and pins the decoupled shas: `plan_ref` = the plans-branch merge
+  commit, `base_sha` = the default branch's head at approval (`client.getRef`). The BUILD
+  runner gained `loadPlanDoc` (wired in `makeBuildWiring` via `readFileWithSha` at the plan's
+  merge commit): fresh provisioning materializes the plan at its `doc_path` — in the tree
+  for the agent to read AND in the diff, so the code PR carries code + plan to main as one
+  unit — while resumes restore it from the checkpointed diff so agent amendments (the
+  as-built rule, taught by both briefs) are never overwritten. `demo-github-app` now proves
+  doc-PR-targets-plans-branch, merge-into-main-ignored, and the decoupled pins.
+
 - **Tracks 15–17: model/budget runtime, status + cost, kernel demos — done (2026-07-04).**
   - **Track 15 (model runtime, kernel scope):** model refs are spec-driven everywhere — the
     live GitHub app resolves from `spec.models` (hardcoded fallback gone), the BUILD stage
@@ -248,7 +266,7 @@ track describe the codebase *before* its work landed; completed tracks carry a s
   to the merge commit and inherited delivery targets; `packages/surface/src/fanout.ts`
   delivers to every target idempotently. `make demo-k1` proves the path.
 
-All tracks (1–17) have landed. Still open outside the track structure: the K5 meta-exit
+All tracks (1–18) have landed. Still open outside the track structure: the K5 meta-exit
 (first blood — a change merged to `main` **through the loop**), the K6 timed stranger
 test, `smoke-k1`, and the deferred list (§ Do Not Optimize Yet).
 
@@ -1254,6 +1272,74 @@ Required changes:
   - `make demo-kernel`: full loop umbrella.
 - Update `make demo` ordering to prioritize kernel demos.
 - Add live smoke `make smoke-k1` for a real small PR in a sandbox repo using `git`/`gh`.
+
+## Track 18: Plans Branch — Main Only Carries Shipped Plans
+
+> **Status (2026-07-05): implemented** — see "Completed Work" above. `plans.branch`
+> config (default `marathon-plans`, agent-namespace refusal at parse), authoritative
+> doc-PR base, plans-branch-filtered merge approval with the decoupled `base_sha`,
+> plan materialization into the BUILD workspace (restored by the resume diff so
+> agent amendments survive), briefs teaching the as-built rule, and
+> `ensureBranch` at live boot. Operators must branch-protect the plans branch
+> (quickstart §3).
+
+Design target:
+
+- `design/29-code-handoff.md` §29.1 / §29.1a (decision 2026-07-04)
+- `design/open-questions.md` OQ-9
+- `design/00-core-kernel.md` §0.1, `design/06-core-user-journeys.md` §6.8
+
+Design correction:
+
+- Merging plan docs into the default branch litters main with documents that may never be
+  implemented or may not match the final outcome.
+- Doc PRs should target a long-lived **plans branch** (default `marathon-plans` —
+  deliberately outside the agent-owned `marathon/*` push namespace, protected like main;
+  configurable); merging THERE is the approval — same sha-pinned native signal, main
+  untouched.
+- An implemented plan reaches main **with its implementation**: the BUILD workspace
+  materializes the approved plan doc at its `doc_path`, so the code PR carries code + plan
+  as one reviewable unit (and review-forced divergence is amended on the code branch — main
+  gets the as-built plan).
+- An abandoned plan just stays on the plans branch. Invariant: a plan doc on main means the
+  plan shipped.
+
+Current code (all still merge-into-main):
+
+- `packages/connector-github/src/document-tools.ts` — `document.create` targets `base`
+  (default `main`).
+- `packages/github-app/src/handlers.ts` — `handleGithubMention` passes `base: "main"`;
+  `handleGithubMerge` treats any doc-artifact PR merge as approval and pins
+  `base_sha = mergeCommitSha` (the coincidence §29.1a removes).
+- `packages/surface-github/src/parse.ts` — `classifyGithubEvent` merge action carries no
+  base-branch filter.
+- `packages/code-handoff/src/workspace.ts` — `CodeWorkspace.materialize` has no plan-doc
+  materialization step.
+- `packages/worker/src/prompt.ts` — `renderImplementationBrief` says the plan is in the
+  tree at the merge commit.
+- `packages/config/src/index.ts` — no `plans.branch` config.
+
+Required changes:
+
+- Add `plans.branch` config (agent YAML or repo `.marathon/config.yml`; default
+  `marathon-plans`); wiring REFUSES a plans branch under the agent push namespace
+  (`marathon/*`) — the approval boundary cannot live in the prefix rulesets leave open to
+  agent pushes (§29.1a); bootstrap creates the branch from the default branch when missing,
+  and the quickstart tells operators to branch-protect it like main.
+- `document.create`/`update` target the plans branch as the PR base.
+- Merge webhook: only a doc-artifact PR merged **into the plans branch** is an approval;
+  spawn the implementation task with `plan_ref` = plans-branch merge commit and
+  `base_sha` = **default-branch head captured at approval time** (they decouple; both are
+  already separate fields on the task/`CodeChange`).
+- `CodeWorkspace.materialize` writes the plan doc at its `doc_path` (content fetched at
+  `plan_ref.mergeCommitSha`) so it rides the diff into the code PR by construction.
+- `renderImplementationBrief`/`renderRevisionBrief`: the plan is materialized in the
+  workspace (not "in the tree at base"), and plan amendments during revisions happen on the
+  code branch.
+- Idempotency unchanged: `implementationTaskKey(repo, docPath, mergeCommitSha)`.
+- Update demos (`demo-github-app`, `demo-k3`) and the quickstart/README once the behavior
+  lands; keep a compatibility mode (plans branch = default branch reproduces today's
+  behavior) if migration needs it.
 
 ## Suggested Build Order
 

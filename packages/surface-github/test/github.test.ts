@@ -47,13 +47,13 @@ describe("classifyGithubEvent", () => {
     }
   });
 
-  it("detects a merged pull_request (approve-by-merge)", () => {
+  it("detects a merged pull_request (approve-by-merge), carrying the base ref (§29.1a)", () => {
     const a = classifyGithubEvent("pull_request", {
       action: "closed",
       repository: { full_name: "o/repo" },
-      pull_request: { number: 7, merged: true, merge_commit_sha: "abc123" },
+      pull_request: { number: 7, merged: true, merge_commit_sha: "abc123", base: { ref: "marathon-plans" } },
     });
-    expect(a).toMatchObject({ kind: "merge", repo: "o/repo", number: 7, mergeCommitSha: "abc123" });
+    expect(a).toMatchObject({ kind: "merge", repo: "o/repo", number: 7, mergeCommitSha: "abc123", baseRef: "marathon-plans" });
   });
 
   it("parses a push into changed paths (for watched docs)", () => {

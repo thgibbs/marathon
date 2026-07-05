@@ -130,9 +130,13 @@ export function renderImplementationBrief(brief: ImplementationBrief): string {
   return [
     `Implement the approved plan.`,
     ``,
-    `Plan: ${brief.planRef.docPath} in ${brief.planRef.repo}, merged as ${brief.planRef.mergeCommitSha}` +
+    `Plan: ${brief.planRef.docPath} in ${brief.planRef.repo}, approved as ${brief.planRef.mergeCommitSha}` +
       (brief.docPrNumber !== undefined ? ` (design PR #${brief.docPrNumber})` : "") +
-      `. Your workspace is checked out at that commit (base_sha) — read the plan file first.`,
+      `. Your workspace is checked out at the base your work builds on, with the approved plan ` +
+      `materialized at ${brief.planRef.docPath} — read the plan file first. The plan doc is part ` +
+      `of your change (it merges to the default branch WITH your code, §29.1a): commit it with ` +
+      `your work, and if you must diverge from the plan, amend the plan doc on your branch so ` +
+      `what merges is the as-built plan.`,
     ``,
     `Suggested branch: ${branch} (yours to change if the repo has a convention).`,
     ``,
@@ -171,6 +175,9 @@ export function renderRevisionBrief(brief: RevisionBrief): string {
     ``,
     `Address the feedback, keep verification green, and push to the SAME branch ` +
       `(git.exec { argv: ["push", "${brief.repo}", "HEAD:refs/heads/${brief.branch}"] }) so PR #${brief.prNumber} updates in place. ` +
+      `If the feedback makes you diverge from the approved plan, amend the plan doc ` +
+      `(${brief.planRef.docPath}) on this branch too — the doc that merges with the code must be ` +
+      `the as-built plan (§29.1a). ` +
       `Then call delivery.report_pr EXACTLY ONCE with the same PR URL and your verification results.`,
   ].join("\n");
 }
