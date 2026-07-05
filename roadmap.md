@@ -851,6 +851,17 @@ fold into M7–M9 sequencing as capacity allows.
     mirror Slack's "chatter while running" rule (an already-queued revision for the PR absorbs
     further triggers). Webhook: subscribe `pull_request_review`; classify on
     `review.submitted` with the same repo/PR anchoring as comment mentions.
+12. **Dev webhook proxy mode — no tunnel for local GitHub events** *(K6 friction; surfaced
+    2026-07-05 dogfooding: the loop went silent because webhooks were firing at a dead
+    tunnel URL).* GitHub webhooks are a push and need inbound reachability; Slack avoids
+    this with Socket Mode (outbound websocket), GitHub has no equivalent — so laptop dev
+    currently requires ngrok + re-syncing the App's webhook URL on every tunnel restart.
+    Build the Probot-style answer in: `MARATHON_WEBHOOK_PROXY=https://smee.io/<channel>`
+    makes the github-app SUBSCRIBE outbound to the channel and feed deliveries into the
+    same signature-verified `handleWebhookRequest` (verification path unchanged; the App's
+    webhook URL is set to the stable smee channel once, no URL churn). Production keeps the
+    plain receiver. Quickstart drops the tunnel step — a straight win for the ≤30-minute
+    stranger bar.
 
 ---
 
