@@ -10,6 +10,13 @@ export interface Config {
   secretKey: string | undefined;
   /** Directory of YAML agent definitions (Track 14; design §6.2), default `agents/`. */
   agentsDir: string;
+  /**
+   * Deployment tenant name (§2b #14). When set, every live app binds its
+   * surface (Slack team, GitHub owner) to this ONE tenant, so cross-surface
+   * lookups (doc artifacts, tasks, memory) see each other's work. Unset →
+   * each surface bootstraps its own tenant (demo/test behavior).
+   */
+  tenant: string | undefined;
 }
 
 const DEFAULT_DATABASE_URL = "postgres://marathon:marathon@localhost:5432/marathon";
@@ -19,6 +26,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     databaseUrl: env.DATABASE_URL ?? DEFAULT_DATABASE_URL,
     secretKey: env.MARATHON_SECRET_KEY,
     agentsDir: env.MARATHON_AGENTS_DIR ?? "agents",
+    tenant: env.MARATHON_TENANT?.trim() || undefined,
   };
 }
 

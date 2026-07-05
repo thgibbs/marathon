@@ -46,6 +46,33 @@ make demo-slack-app MARATHON_DB_PORT=55432
 Set `DATABASE_URL=postgres://marathon:marathon@localhost:55432/marathon` in `.env`
 for live app runs on that port.
 
+Also set `MARATHON_TENANT` in `.env` to one name for your deployment (e.g. your
+org). The Slack and GitHub apps each bind their surface to this ONE tenant, so
+the loop stays connected across surfaces — a doc PR drafted from a Slack ask is
+the same artifact the GitHub app revises when someone comments on it. Without
+it, each surface bootstraps an isolated tenant and cross-surface lookups miss.
+
+> **Upgrading an install that predates `MARATHON_TENANT`?** Your DB already
+> has one tenant per surface, and existing surface bindings deliberately win
+> over the deployment name — setting the variable does NOT merge them. Either
+> reset dev data (`docker compose down -v`, then re-run the boot steps) or do
+> a one-time merge before restarting: pick a survivor tenant, move the other
+> tenant's binding onto it, stamp the deployment marker, and re-point rows —
+>
+> ```sql
+> -- keep <SURVIVOR>, retire <OLD> (bindings are unique: remove before adding)
+> update tenant set settings = settings - 'github_owner' where id = '<OLD>';
+> update tenant set settings = settings
+>   || jsonb_build_object('github_owner', '<owner>', 'deployment', '<MARATHON_TENANT>')
+>   where id = '<SURVIVOR>';
+> update document_artifact set tenant_id = '<SURVIVOR>' where tenant_id = '<OLD>';
+> update code_change set tenant_id = '<SURVIVOR>' where tenant_id = '<OLD>';
+> ```
+>
+> (Swap the binding key if your survivor is the GitHub-bound tenant. The
+> artifact/code-change re-point is what lets the revision loop find PRs
+> drafted before the merge.)
+
 ## 2. Define your agent (YAML)
 
 Agents are YAML files in `agents/` (override with `MARATHON_AGENTS_DIR`); files

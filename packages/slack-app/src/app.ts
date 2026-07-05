@@ -113,7 +113,7 @@ export async function startSlackApp(): Promise<void> {
   const specs = await loadAgentSpecs(cfg.agentsDir);
   const flagship = specs[0]!;
   assertSupportedHarness(flagship);
-  const boot = await bootstrapSlackApp(db, { teamId, teamName: auth.team, specs });
+  const boot = await bootstrapSlackApp(db, { teamId, teamName: auth.team, tenantName: cfg.tenant, specs });
 
   const modelRef = resolveModelRef(flagship.models ?? DEFAULT_MODEL_POLICY);
   const memory = new PgVectorMemoryStore(cfg.databaseUrl, new OpenAIEmbedder(secrets));
