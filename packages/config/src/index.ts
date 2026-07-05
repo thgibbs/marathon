@@ -1,6 +1,7 @@
 /** Configuration + a minimal secret-store abstraction (env-backed for dev). */
+import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 export interface Config {
@@ -261,12 +262,33 @@ export async function loadAgentSpec(path: string): Promise<AgentSpec> {
 }
 
 /**
+ * Resolve the agents directory. Absolute paths are used as-is; a relative
+ * path (the `MARATHON_AGENTS_DIR=agents` default) is searched UPWARD from
+ * `from` — the live entrypoints run with a package directory as their cwd
+ * (`pnpm --filter … live`), so "agents" must find the repo root's directory,
+ * not `demos/<app>/agents`. Falls back to plain cwd resolution when nothing
+ * is found, so the caller's readdir error names the path that was tried.
+ */
+export function resolveAgentsDir(dir: string, from = process.cwd()): string {
+  if (isAbsolute(dir)) return dir;
+  let cur = resolve(from);
+  for (;;) {
+    const candidate = join(cur, dir);
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(cur);
+    if (parent === cur) return resolve(from, dir);
+    cur = parent;
+  }
+}
+
+/**
  * Load every agent spec in a directory (`*.yaml` / `*.yml`, sorted by
  * filename — the first file is the deployment's default agent). This is how
  * the Slack/GitHub apps read their configured agents (Track 14): written by
  * the operator, versioned in git, applied by restart.
  */
 export async function loadAgentSpecs(dir: string): Promise<AgentSpec[]> {
+  dir = resolveAgentsDir(dir);
   const entries = await readdir(dir);
   const files = entries.filter((f) => /\.ya?ml$/.test(f)).sort();
   if (files.length === 0) throw new Error(`${dir}: no agent YAML files found`);

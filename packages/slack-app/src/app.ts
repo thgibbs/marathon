@@ -1,6 +1,8 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { EnvSecretStore, loadAgentSpecs, loadConfig, type AgentSpec } from "@marathon/config";
 import { PiAgentRuntime } from "@marathon/agent";
-import { httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
+import { ensureBranch, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
@@ -116,6 +118,14 @@ export async function startSlackApp(): Promise<void> {
   const modelRef = resolveModelRef(flagship.models ?? DEFAULT_MODEL_POLICY);
   const memory = new PgVectorMemoryStore(cfg.databaseUrl, new OpenAIEmbedder(secrets));
 
+  // §29.1a: doc PRs branch FROM the plans branch — this app can draft plans
+  // without the GitHub app running, so it must ensure the branch exists too
+  // (operators should branch-protect it like main; see docs/quickstart.md §3).
+  const ghToken = await secrets.get("secret/github");
+  if (flagship.repo && ghToken) {
+    await ensureBranch(new HttpGithubClient(ghToken), flagship.repo, flagship.plans.branch, "main");
+  }
+
   // Governed tools, exposed to the agent through the Tool Gateway (policy +
   // credential injection + source ledger + audit + redaction). GitHub reads
   // ground answers; document tools make the kernel's first step — a design-doc
@@ -146,6 +156,11 @@ export async function startSlackApp(): Promise<void> {
     .filter((d): d is NonNullable<typeof d> => d !== undefined);
   const runtime = new PiAgentRuntime({
     secrets,
+    // Durable per-task sessions (Track 12/K4): a resumed turn — answering a
+    // clarifying question, a later turn — re-opens the SAME session, so the
+    // agent keeps its context. Without this, sessions are in-memory and every
+    // turn starts amnesiac.
+    sessionDir: join(tmpdir(), "marathon-sessions"),
     // Track 12: the agent may ask ONE clarifying question and park the task.
     clarification: true,
     governed: { gateway: toolGateway, tools: governedTools },

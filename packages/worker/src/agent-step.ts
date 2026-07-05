@@ -10,7 +10,10 @@ import { buildAgentPrompt } from "./prompt";
 /**
  * Fold a turn's wait state into the checkpoint + step result (Track 12,
  * §11.6): an asked question is recorded (`pendingQuestion`), a consumed answer
- * is cleared, and `waiting` propagates so the worker parks the task.
+ * is cleared, and `waiting` propagates so the worker parks the task. The
+ * turn's session pointer is persisted too — it is what lets the NEXT turn
+ * (a durable-wait resume, a later turn) re-open the same harness session
+ * instead of starting an amnesiac fresh one.
  */
 function withWaitState(
   base: Checkpoint,
@@ -18,6 +21,8 @@ function withWaitState(
 ): { checkpoint: Checkpoint; waiting?: StepResult["waiting"]; done: boolean } {
   // The staged answer (if any) was handed to this turn — consumed either way.
   const { pendingUserInput: _consumed, pendingQuestion: _stale, ...rest } = base;
+  if (turn.sessionRef !== undefined) rest.sessionRef = turn.sessionRef;
+  if (turn.turnIndex !== undefined) rest.turnIndex = turn.turnIndex;
   if (turn.waiting) {
     return {
       checkpoint: { ...rest, pendingQuestion: turn.waiting.question },
