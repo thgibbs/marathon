@@ -125,7 +125,8 @@ demo-slack-app: db-up migrate
 slack-app: db-up migrate
 	set -a; . ./.env; set +a; pnpm --filter @marathon/demo-slack-app live
 
-# Run the LIVE GitHub document app (webhook receiver; needs a tunnel + keys).
+# Run the LIVE GitHub document app (webhook receiver; needs keys + either
+# MARATHON_WEBHOOK_PROXY=smee channel or a public tunnel).
 github-app: db-up migrate
 	set -a; . ./.env; set +a; pnpm --filter @marathon/demo-github-app live
 

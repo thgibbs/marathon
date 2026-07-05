@@ -114,10 +114,17 @@ Setup:
    don't open the approval boundary. An abandoned plan just stays there; an
    implemented plan reaches main with its code PR.
 4. For the document surface webhooks: create a GitHub App, subscribe to
-   `issue_comment`, `pull_request_review_comment`, and `pull_request`, point it
-   at your tunnel + `GITHUB_WEBHOOK_SECRET`, and install it on the repo.
-5. Set `GITHUB_OWNER` to the repository owner used for this Marathon tenant,
-   then run `make github-app` behind your dev tunnel.
+   `issue_comment`, `pull_request_review_comment`, and `pull_request`, set a
+   webhook secret → `GITHUB_WEBHOOK_SECRET`, and install it on the repo. For
+   the webhook URL, create a channel at [smee.io/new](https://smee.io/new) and
+   use it — no tunnel needed, and the URL is set once (the channel is stable
+   across restarts).
+5. Set `GITHUB_OWNER` to the repository owner used for this Marathon tenant
+   and `MARATHON_WEBHOOK_PROXY` to the same smee channel URL, then run
+   `make github-app` — it subscribes outbound to the channel and feeds each
+   delivery through the same signature-verified receiver. (Production shape:
+   leave `MARATHON_WEBHOOK_PROXY` unset and point the App's webhook URL at a
+   public URL/tunnel to this host's `/webhooks/github`.)
 
 `make github-app` runs both halves of the GitHub side: the webhook receiver
 (mention → doc PR, comment → revision, merge → implementation task) **and the
