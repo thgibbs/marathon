@@ -123,7 +123,12 @@ export async function startSlackApp(): Promise<void> {
   // Pi-visible tool list is derived from those same grants.
   const clientFactory = httpGithubClientFactory();
   const toolGateway = new ToolGateway({
-    registry: new ToolRegistry([...makeGithubReadTools(clientFactory), ...makeDocumentTools(clientFactory)]),
+    // Doc PRs target the configured plans branch (§29.1a) — authoritative,
+    // so the model cannot retarget them at the default branch.
+    registry: new ToolRegistry([
+      ...makeGithubReadTools(clientFactory),
+      ...makeDocumentTools(clientFactory, { docBase: flagship.plans.branch }),
+    ]),
     policy: toolPolicyFromSpec(flagship),
     secrets,
     recorder: dbToolRecorder(db),

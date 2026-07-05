@@ -9,20 +9,22 @@ sandboxed code work -> verified code PR -> links back to Slack and the doc PR
 ```
 
 You `@marathon` an ask in Slack. The agent drafts a **design document as a markdown
-PR**; you review and iterate in the PR; **merging it is the approval**. Marathon then
-implements the merged plan in a **credential-free sandbox** (normal git, internet for
-installs, the repo's own verification), pushes through a **credentialed broker**, opens
-a code PR, and delivers the links back to the thread and the doc PR. Tasks are durable: a
-clarifying question parks the task until you reply; a killed worker resumes mid-BUILD
-without repeating work.
+PR** against a dedicated **plans branch**; you review and iterate in the PR; **merging
+it is the approval** — and main stays untouched. Marathon then implements the merged
+plan in a **credential-free sandbox** (normal git, internet for installs, the repo's
+own verification), pushes through a **credentialed broker**, and opens a code PR
+**carrying code + plan together** — a plan doc reaches main only when its work merges
+(§29.1a: abandoned plans just stay on the plans branch), and the links land back in the
+thread and the doc PR. Tasks are durable: a clarifying question parks the task until
+you reply; a killed worker resumes mid-BUILD without repeating work.
 
 > **Status:** the kernel loop is functionally complete (roadmap K1–K5, migration
-> tracks 1–17): durable spine, both surfaces, brokered `gh`/`git` delivery, per-turn
+> tracks 1–18): durable spine, both surfaces, brokered `gh`/`git` delivery, per-turn
 > checkpoint/resume, durable clarifying questions, YAML agent config, spec-driven
-> models + hard per-task budgets, `@agent status` + cost footers, and the
-> `make demo-kernel` regression umbrella. Remaining: the K6 timed stranger test and
-> the K7 Claude Code harness (non-blocking); the "first blood" ratchet — a change to
-> Marathon merged through its own loop — is the live bar (design §0.6).
+> models + hard per-task budgets, `@agent status` + cost footers, the plans-branch
+> approval flow, and the `make demo-kernel` regression umbrella. Remaining: the K6
+> timed stranger test and the K7 Claude Code harness (non-blocking); the "first blood"
+> ratchet — a change to Marathon merged through its own loop — is the live bar (§0.6).
 >
 > **Talk to it:** `make slack-app` runs the live listener — `@marathon …` in a channel
 > the bot is in gets a real, threaded, durable agent reply. Replies in the thread
@@ -73,6 +75,8 @@ tools:
   - tool: git.exec            # brokered network git on the BUILD workspace
     families: ["push", "fetch"]
   - delivery.report_pr        # the narrow final step
+plans: { branch: marathon-plans } # where doc PRs merge (the approval) — outside marathon/*,
+                              # branch-protected; plans reach main only WITH their code PR
 sandbox: { network: bridge }  # internet for installs; NEVER any credentials
                               # ("none" from YAML, env, or code wins — strictness composes)
 models: { default: openai:gpt-4o-mini }   # roles route models, e.g. build: openai:gpt-4o

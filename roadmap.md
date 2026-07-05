@@ -875,7 +875,7 @@ Build (per design §29):
   **pinned to that merge commit**, `base_sha` **pinned to the default-branch head at
   approval** (the two are decoupled — different branches), and the
   `(repo, doc_path, merge_commit_sha, "implement")` idempotency key.
-  *(2026-07-04 decision, §29.1a / Track 18 — as-built code still merges plans into main.)*
+  *(2026-07-04 decision, §29.1a / Track 18.)*
 - **Workspace lifecycle (§29.2):** host-side clone at `base_sha`, **the approved plan doc
   materialized at its doc path** (fetched at `plan_ref.merge_commit_sha`, so it is in the
   tree — no side-channel plan delivery — and rides the diff into the code PR),

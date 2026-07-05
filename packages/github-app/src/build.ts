@@ -177,6 +177,14 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
     instructions: spec.instructions,
     // Hard per-task cost cap from the YAML (fails closed — Track 15).
     taskBudget: spec.budget,
+    // §29.1a: the plan lives on the plans branch, not in the tree at base_sha —
+    // fresh provisioning materializes it at its doc_path so it is readable AND
+    // rides the diff into the code PR (main only carries shipped plans).
+    loadPlanDoc: async (task, { planRef }) => {
+      const client = await opts.getClient({ taskId: task.id, tenantId: task.tenantId, secrets });
+      const file = await client.readFileWithSha(planRef.repo, planRef.docPath, planRef.mergeCommitSha);
+      return { path: planRef.docPath, content: file.content };
+    },
     defaultBranch: opts.defaultBranch,
     diffDir: opts.diffDir,
   });

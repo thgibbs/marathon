@@ -616,3 +616,28 @@ export class FixturesGithubClient implements GithubClient {
     }
   }
 }
+
+/**
+ * Ensure a long-lived branch exists (§29.1a: the plans branch), creating it
+ * from `from`'s head when missing. Concurrent creation converges (422 from a
+ * racing create is treated as success).
+ */
+export async function ensureBranch(
+  client: GithubClient,
+  repo: string,
+  branch: string,
+  from = "main",
+): Promise<void> {
+  try {
+    await client.getRef(repo, `heads/${branch}`);
+    return;
+  } catch {
+    // missing — create below
+  }
+  const { sha } = await client.getRef(repo, `heads/${from}`);
+  try {
+    await client.createBranch(repo, branch, sha);
+  } catch (e) {
+    if (!/422|already exists/i.test(String(e))) throw e;
+  }
+}

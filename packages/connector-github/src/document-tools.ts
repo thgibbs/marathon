@@ -70,13 +70,26 @@ async function upsertDocPr(
   return { number: pr.number, url: pr.url, converged: false };
 }
 
+export interface DocumentToolsOptions {
+  /**
+   * The configured base branch for document PRs — the plans branch (§29.1a).
+   * When set it is AUTHORITATIVE (enforcement by construction, §7.8): a
+   * model-supplied `base` cannot retarget doc PRs at another branch. When
+   * unset, `input.base` is honored (default "main") — the pre-§29.1a behavior.
+   */
+  docBase?: string;
+}
+
 /**
  * Document tools backed by GitHub markdown (design.md §7.17, §14.6). Producing
  * or revising a document = working a PR, so create/update/revise are
  * **native review** (§7.8): the call runs, and the human's merge is the
  * approval. Updating re-validates the file's git SHA (stale-SHA rejection).
+ * Doc PRs target the plans branch (§29.1a) when one is configured.
  */
-export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
+export function makeDocumentTools(getClient: GithubClientFactory, opts: DocumentToolsOptions = {}): Tool[] {
+  const docBase = (input: Record<string, unknown>): string =>
+    opts.docBase ?? (typeof input.base === "string" ? input.base : "main");
   const readRegion: Tool = {
     name: "document.read_region",
     description: "Read a markdown file (optionally a line range) from a repo.",
@@ -114,7 +127,7 @@ export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
       const client = await getClient(ctx);
       const repo = String(input.repo);
       const path = String(input.path);
-      const base = typeof input.base === "string" ? input.base : "main";
+      const base = docBase(input);
       const title = typeof input.title === "string" ? input.title : `Add ${path}`;
       // Deterministic per (task, path) so webhook retries converge (Track 10).
       const branch = docBranchForTask(ctx.taskId, path);
@@ -156,7 +169,7 @@ export function makeDocumentTools(getClient: GithubClientFactory): Tool[] {
       const client = await getClient(ctx);
       const repo = String(input.repo);
       const path = String(input.path);
-      const base = typeof input.base === "string" ? input.base : "main";
+      const base = docBase(input);
       const branch = docBranchForTask(ctx.taskId, path);
       const pr = await upsertDocPr(client, {
         repo,

@@ -37,6 +37,11 @@ tools:
 sandbox:
   network: bridge # internet-enabled for installs/docs; NEVER any company secrets
 
+plans:
+  branch: marathon-plans # where design-doc PRs merge (the approval, §29.1a) — must be
+  # OUTSIDE the agent push namespace (marathon/*) and branch-protected like main;
+  # the plan doc reaches main only WITH its implementation's code PR
+
 models:
   default: openai:gpt-4o-mini
   reasoning: openai:gpt-4o

@@ -16,6 +16,7 @@ function makeSpec(overrides: Partial<AgentSpec> = {}): AgentSpec {
       { tool: "delivery.report_pr" },
     ],
     sandbox: { network: "bridge" },
+    plans: { branch: "marathon-plans" },
     models: { default: "openai:gpt-4o-mini" },
     budget: { limitUsd: 5 },
     ...overrides,

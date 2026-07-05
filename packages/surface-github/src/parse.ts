@@ -2,7 +2,7 @@ import type { NormalizedInvocation } from "@marathon/surface";
 
 export type GithubAction =
   | { kind: "mention"; invocation: NormalizedInvocation }
-  | { kind: "merge"; repo: string; number: number; mergeCommitSha?: string }
+  | { kind: "merge"; repo: string; number: number; mergeCommitSha?: string; baseRef?: string }
   | { kind: "push"; repo: string; after?: string; paths: string[] }
   | { kind: "ignore" };
 
@@ -81,6 +81,9 @@ export function classifyGithubEvent(eventType: string, payload: any, opts: Parse
       repo: payload.repository?.full_name,
       number: payload.pull_request?.number,
       mergeCommitSha: payload.pull_request?.merge_commit_sha,
+      // §29.1a: which branch the PR merged INTO — only a merge into the plans
+      // branch is a plan approval.
+      baseRef: payload.pull_request?.base?.ref,
     };
   }
 

@@ -8,6 +8,22 @@ const tool = (name: string, gh: FixturesGithubClient) =>
   makeDocumentTools(() => gh).find((t) => t.name === name)!;
 
 describe("document tools", () => {
+  it("a configured docBase (the plans branch, §29.1a) is authoritative over model input", async () => {
+    const gh = new FixturesGithubClient({});
+    const create = makeDocumentTools(() => gh, { docBase: "marathon-plans" }).find((t) => t.name === "document.create")!;
+    // The model tries to retarget the doc PR at main — the config wins.
+    await create.execute({ repo: "o/r", path: "docs/x.md", content: "# Hi", base: "main" }, ctx);
+    const pr = gh.writes.find((w) => w.op === "createPullRequest")!;
+    expect((pr.args as { base: string }).base).toBe("marathon-plans");
+  });
+
+  it("without a configured docBase, input.base is honored (pre-§29.1a behavior)", async () => {
+    const gh = new FixturesGithubClient({});
+    await tool("document.create", gh).execute({ repo: "o/r", path: "docs/x.md", content: "# Hi", base: "develop" }, ctx);
+    const pr = gh.writes.find((w) => w.op === "createPullRequest")!;
+    expect((pr.args as { base: string }).base).toBe("develop");
+  });
+
   it("document.create opens a PR (branch + file + PR)", async () => {
     const gh = new FixturesGithubClient({});
     const res = await tool("document.create", gh).execute(

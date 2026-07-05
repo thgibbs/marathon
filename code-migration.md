@@ -18,6 +18,24 @@ features.
 Progress against the tracks below, most recent first. The "Current mismatch" lists in each
 track describe the codebase *before* its work landed; completed tracks carry a status note.
 
+- **Track 18: plans branch — done (2026-07-05, §29.1a / OQ-9).** Plan docs no longer merge
+  into the default branch. `AgentSpec.plans.branch` (default `marathon-plans`; parse REFUSES
+  a branch under the agent push namespace `marathon/*` — the approval boundary cannot live
+  in the prefix rulesets leave open to agent pushes) drives everything: `makeDocumentTools`
+  gained an authoritative `docBase` (a model-supplied `base` cannot retarget doc PRs), both
+  live apps pass the spec's plans branch, and the live github-app `ensureBranch`es it at
+  boot. `classifyGithubEvent` merge actions carry `baseRef`; `handleGithubMerge` treats ONLY
+  a doc PR merged into the plans branch as the approval (a merge into main is ignored;
+  legacy callers without a baseRef keep the old behavior, as does `plans.branch` = default
+  branch — the compat mode) and pins the decoupled shas: `plan_ref` = the plans-branch merge
+  commit, `base_sha` = the default branch's head at approval (`client.getRef`). The BUILD
+  runner gained `loadPlanDoc` (wired in `makeBuildWiring` via `readFileWithSha` at the plan's
+  merge commit): fresh provisioning materializes the plan at its `doc_path` — in the tree
+  for the agent to read AND in the diff, so the code PR carries code + plan to main as one
+  unit — while resumes restore it from the checkpointed diff so agent amendments (the
+  as-built rule, taught by both briefs) are never overwritten. `demo-github-app` now proves
+  doc-PR-targets-plans-branch, merge-into-main-ignored, and the decoupled pins.
+
 - **Tracks 15–17: model/budget runtime, status + cost, kernel demos — done (2026-07-04).**
   - **Track 15 (model runtime, kernel scope):** model refs are spec-driven everywhere — the
     live GitHub app resolves from `spec.models` (hardcoded fallback gone), the BUILD stage
@@ -248,10 +266,9 @@ track describe the codebase *before* its work landed; completed tracks carry a s
   to the merge commit and inherited delivery targets; `packages/surface/src/fanout.ts`
   delivers to every target idempotently. `make demo-k1` proves the path.
 
-Tracks 1–17 have landed. Not started: Track 18 (plans branch — the 2026-07-04 design
-change, §29.1a). Still open outside the track structure: the K5 meta-exit (first blood —
-a change merged to `main` **through the loop**), the K6 timed stranger test, `smoke-k1`,
-and the deferred list (§ Do Not Optimize Yet).
+All tracks (1–18) have landed. Still open outside the track structure: the K5 meta-exit
+(first blood — a change merged to `main` **through the loop**), the K6 timed stranger
+test, `smoke-k1`, and the deferred list (§ Do Not Optimize Yet).
 
 New design correction after Tracks 1–5: the original `github.submit_code_changes`
 contract is probably too heavy. Marathon should not replace normal `git` and `gh`
@@ -1257,6 +1274,14 @@ Required changes:
 - Add live smoke `make smoke-k1` for a real small PR in a sandbox repo using `git`/`gh`.
 
 ## Track 18: Plans Branch — Main Only Carries Shipped Plans
+
+> **Status (2026-07-05): implemented** — see "Completed Work" above. `plans.branch`
+> config (default `marathon-plans`, agent-namespace refusal at parse), authoritative
+> doc-PR base, plans-branch-filtered merge approval with the decoupled `base_sha`,
+> plan materialization into the BUILD workspace (restored by the resume diff so
+> agent amendments survive), briefs teaching the as-built rule, and
+> `ensureBranch` at live boot. Operators must branch-protect the plans branch
+> (quickstart §3).
 
 Design target:
 

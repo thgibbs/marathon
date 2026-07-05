@@ -14,7 +14,19 @@ describe("parseAgentSpec (Tracks 12 + 14)", () => {
       harness: "pi",
       tools: [],
       sandbox: { network: "bridge" },
+      plans: { branch: "marathon-plans" },
     });
+  });
+
+  it("parses plans.branch and refuses the agent push namespace (§29.1a)", () => {
+    const spec = parseAgentSpec({ name: "forge", instructions: "x", plans: { branch: "design-plans" } });
+    expect(spec.plans).toEqual({ branch: "design-plans" });
+    // The plans branch is an approval boundary — it cannot live in the prefix
+    // rulesets leave open to agent pushes.
+    expect(() => parseAgentSpec({ name: "forge", instructions: "x", plans: { branch: "marathon/plans" } })).toThrow(
+      /push namespace/,
+    );
+    expect(() => parseAgentSpec({ name: "forge", instructions: "x", plans: { branch: "  " } })).toThrow(/plans.branch/);
   });
 
   it("carries display_name and description through", () => {

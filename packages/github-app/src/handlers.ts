@@ -1,4 +1,5 @@
 import type { AgentRuntime } from "@marathon/agent";
+import { DEFAULT_PLANS_BRANCH } from "@marathon/config";
 import { getRepoAccess, type GithubClient, type GithubDelivery } from "@marathon/connector-github";
 import {
   emptyCheckpoint,
@@ -45,6 +46,14 @@ export interface GithubAppDeps {
   defaultAgent?: string;
   docBasePath?: string;
   modelRef?: string;
+  /**
+   * The plans branch (§29.1a): doc PRs target it, and only a doc PR merged
+   * INTO it is an approval. Default `marathon-plans`. Setting it to the
+   * default branch reproduces the pre-§29.1a merge-into-main behavior.
+   */
+  plansBranch?: string;
+  /** The branch implementations build on and code PRs target; default "main". */
+  defaultBranch?: string;
 }
 
 const DRAFT_PERSONA = "You are a documentation agent. Draft a concise markdown design document that fulfills the request.";
@@ -145,7 +154,12 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
   });
 
   const path = `${deps.docBasePath ?? "docs"}/${slug(invocation.text)}.md`;
-  const created = await deps.gateway.run("document.create", { repo, path, content: turn.text, base: "main", title: `Design: ${invocation.text.slice(0, 60)}` }, ctx);
+  // §29.1a: the doc PR targets the plans branch, never the default branch.
+  const created = await deps.gateway.run(
+    "document.create",
+    { repo, path, content: turn.text, base: deps.plansBranch ?? DEFAULT_PLANS_BRANCH, title: `Design: ${invocation.text.slice(0, 60)}` },
+    ctx,
+  );
   const details = created.details as { number: number; branch?: string };
   const prNumber = Number(details.number);
 
@@ -254,17 +268,25 @@ export async function handleCodePrRevision(
 }
 
 /**
- * A merged design-doc PR is the approval (§0.1 stage 4): complete the doc task
- * and spawn a *new* implementation task (§29.1), chained to it —
- * `plan_ref`/`base_sha` pinned to the merge commit, delivery targets inherited,
- * idempotent per merged plan version.
+ * A design-doc PR merged INTO THE PLANS BRANCH is the approval (§0.1 stage 4,
+ * §29.1a): complete the doc task and spawn a *new* implementation task
+ * (§29.1), chained to it — `plan_ref` pinned to the plans-branch merge commit,
+ * `base_sha` pinned to the default branch's head at approval (they decouple),
+ * delivery targets inherited, idempotent per merged plan version.
  */
 export async function handleGithubMerge(
   deps: GithubAppDeps,
   repo: string,
   prNumber: number,
   mergeCommitSha?: string,
+  baseRef?: string,
 ): Promise<boolean> {
+  const plansBranch = deps.plansBranch ?? DEFAULT_PLANS_BRANCH;
+  // §29.1a: a doc PR merged anywhere else (e.g. the default branch) is NOT an
+  // approval. Real webhooks always carry base.ref; an absent baseRef means a
+  // legacy caller — kept as the pre-§29.1a behavior (approve on artifact).
+  if (baseRef !== undefined && baseRef !== plansBranch) return false;
+
   const artifact = await deps.db.findDocumentArtifactByPr(deps.tenantId, repo, prNumber);
   if (!artifact?.owningTaskId) return false;
   const loc = artifact.location as { path?: string };
@@ -272,6 +294,15 @@ export async function handleGithubMerge(
   if (!docTask || !loc.path || !mergeCommitSha) return false;
 
   const planRef: PlanRef = { repo, docPath: loc.path, mergeCommitSha };
+  // §29.1a: the work builds on the DEFAULT branch, pinned once at approval;
+  // the plan itself is pinned separately by plan_ref (plans branch). When the
+  // plans branch IS the default branch (compat mode) or the caller is legacy,
+  // the two coincide at the merge commit — the pre-§29.1a behavior.
+  const defaultBranch = deps.defaultBranch ?? "main";
+  const baseSha =
+    baseRef === undefined || plansBranch === defaultBranch
+      ? mergeCommitSha
+      : (await deps.client.getRef(repo, `heads/${defaultBranch}`)).sha;
   const docPrTarget: DeliveryTarget = { surfaceType: "github", ref: { repo, number: prNumber, kind: "pr" } };
   const deliveryTargets = addTargets(docTask.deliveryTargets, docPrTarget);
 
@@ -293,7 +324,7 @@ export async function handleGithubMerge(
       repo,
       docPrNumber: prNumber,
       planRef: { repo, docPath: planRef.docPath, mergeCommitSha },
-      baseSha: mergeCommitSha,
+      baseSha,
     },
     deliveryTargets,
     // Track 10: the brief carries the merged plan, pinned base, suggested
@@ -361,6 +392,6 @@ export async function dispatchGithubEvent(
 ): Promise<void> {
   const action = classifyGithubEvent(eventType, payload, { knownAgents: deps.agents.map((a) => a.name) });
   if (action.kind === "mention") await handleGithubMention(deps, action.invocation);
-  else if (action.kind === "merge") await handleGithubMerge(deps, action.repo, action.number, action.mergeCommitSha);
+  else if (action.kind === "merge") await handleGithubMerge(deps, action.repo, action.number, action.mergeCommitSha, action.baseRef);
   else if (action.kind === "push") await handleGithubPush(deps, action.repo, action.after, action.paths);
 }

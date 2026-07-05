@@ -6,11 +6,12 @@ GitHub App → first loop` on your own repo, in under ~30 minutes.
 The loop you are setting up (design §0.1):
 
 ```text
-Slack ask -> design-doc PR -> iterate -> merge-as-approval -> sandboxed code work ->
-verified code PR -> deliver links back to Slack and the doc PR
+Slack ask -> design-doc PR (against the plans branch) -> iterate ->
+merge-as-approval (into the plans branch; main untouched) -> sandboxed code work ->
+verified code PR carrying code + plan -> deliver links back to Slack and the doc PR
 ```
 
-> **Status.** The migration tracks (1–17) have all landed: the loop is proven
+> **Status.** The migration tracks (1–18) have all landed: the loop is proven
 > end-to-end by **`make demo-kernel`** (the K1–K5 umbrella: brokered delivery,
 > sandbox network reality, fan-out, iteration continuity, kill/resume,
 > status + cost). The remaining K6 item is the timed stranger test — this
@@ -73,6 +74,7 @@ The full config shape (design §6.2 / §21.0):
 | `harness` | `pi` (default) — `claude-code` arrives with K7 |
 | `repo` | the ONE target repo; scopes every GitHub grant by construction |
 | `tools` | grants, incl. brokered command families (`github.exec: pr view, pr create, …`; `git.exec: push, fetch`) |
+| `plans.branch` | where design-doc PRs merge — the approval (§29.1a); default `marathon-plans`, refused if under `marathon/*` (the agent push namespace); the plan doc reaches main only WITH its implementation's code PR |
 | `sandbox.network` | BUILD container network: `bridge` (internet, default) or `none` — `none` from the YAML, `MARATHON_SANDBOX_NETWORK`, or code wins (strictness composes) |
 | `models` | role → `provider:model` routing (`default`, `reasoning`, `cheap`; a `build` role routes the BUILD stage) |
 | `budget` | hard spend cap in USD (`limit_usd`, fails closed) + `warn_ratio` — enforced per agent AND per task, at every turn boundary |
@@ -104,10 +106,17 @@ Setup:
    fields in `.env.example`; the broker model is the same.
 2. Protect your default branch (Marathon only pushes `marathon/*` branches;
    branch protection makes that structural).
-3. For the document surface webhooks: create a GitHub App, subscribe to
+3. **Protect the plans branch too** (`marathon-plans` by default — created at
+   boot when missing). It is an approval boundary (§29.1a): design-doc PRs
+   merge into it, and that merge is what triggers implementation — so it must
+   accept changes only via reviewed PRs, never direct pushes. It deliberately
+   sits outside `marathon/*` so rulesets that open that prefix to agent pushes
+   don't open the approval boundary. An abandoned plan just stays there; an
+   implemented plan reaches main with its code PR.
+4. For the document surface webhooks: create a GitHub App, subscribe to
    `issue_comment`, `pull_request_review_comment`, and `pull_request`, point it
    at your tunnel + `GITHUB_WEBHOOK_SECRET`, and install it on the repo.
-4. Set `GITHUB_OWNER` to the repository owner used for this Marathon tenant,
+5. Set `GITHUB_OWNER` to the repository owner used for this Marathon tenant,
    then run `make github-app` behind your dev tunnel.
 
 `make github-app` runs both halves of the GitHub side: the webhook receiver
