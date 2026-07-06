@@ -7,3 +7,8 @@ node_modules/
 
 # Local reference (third-party copyrighted blog) — do not commit
 design/Meta-harness.md
+
+# Per-developer agent overrides (e.g. a dogfood `repo:`) — never shipped.
+# A `<agent>.local.yaml` replaces the committed spec of the same name at load.
+agents/*.local.yaml
+agents/*.local.yml

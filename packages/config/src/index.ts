@@ -293,26 +293,45 @@ export function resolveAgentsDir(dir: string, from = process.cwd()): string {
   }
 }
 
+/** A per-developer local override file (git-ignored): `<agent>.local.yaml` / `.local.yml`. */
+function isLocalOverride(file: string): boolean {
+  return /\.local\.ya?ml$/.test(file);
+}
+
 /**
  * Load every agent spec in a directory (`*.yaml` / `*.yml`, sorted by
  * filename — the first file is the deployment's default agent). This is how
  * the Slack/GitHub apps read their configured agents (Track 14): written by
  * the operator, versioned in git, applied by restart.
+ *
+ * **Local overrides.** A `<name>.local.yaml` is a per-developer override (add
+ * `agents/*.local.yaml` to `.gitignore`): it is loaded LAST and, being a full
+ * agent spec, replaces the committed spec of the same `name` in place — the
+ * shipped `forge.yaml` stays repo-agnostic while a developer's `forge.local.yaml`
+ * pins their dogfood `repo:` without ever touching a commit. A `.local.yaml`
+ * whose name matches no committed spec is simply an extra local-only agent.
  */
 export async function loadAgentSpecs(dir: string): Promise<AgentSpec[]> {
   dir = resolveAgentsDir(dir);
   const entries = await readdir(dir);
   const files = entries.filter((f) => /\.ya?ml$/.test(f)).sort();
   if (files.length === 0) throw new Error(`${dir}: no agent YAML files found`);
-  const specs: AgentSpec[] = [];
-  const seen = new Set<string>();
-  for (const f of files) {
+  // Committed specs first (duplicate names still error), then local overrides
+  // replace by name — a Map keeps each agent's original position (the first
+  // committed file stays the default) while letting a `.local.yaml` win.
+  const byName = new Map<string, AgentSpec>();
+  const committed = files.filter((f) => !isLocalOverride(f));
+  const local = files.filter(isLocalOverride);
+  for (const f of committed) {
     const spec = await loadAgentSpec(join(dir, f));
-    if (seen.has(spec.name)) throw new Error(`${dir}: duplicate agent name '${spec.name}' (${f})`);
-    seen.add(spec.name);
-    specs.push(spec);
+    if (byName.has(spec.name)) throw new Error(`${dir}: duplicate agent name '${spec.name}' (${f})`);
+    byName.set(spec.name, spec);
   }
-  return specs;
+  for (const f of local) {
+    const spec = await loadAgentSpec(join(dir, f));
+    byName.set(spec.name, spec); // override the committed spec of the same name, else add a local-only agent
+  }
+  return [...byName.values()];
 }
 
 /** The command families granted to `tool` in a spec (e.g. for `github.exec`). */
