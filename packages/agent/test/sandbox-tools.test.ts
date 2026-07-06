@@ -9,6 +9,7 @@ import {
   dockerReadOperations,
   dockerWriteOperations,
   GUEST_WORKSPACE,
+  resolveWithinWorkspace,
 } from "../src/sandbox-tools";
 
 type ExecCall = { argv: string[]; opts: Record<string, unknown> };
@@ -27,6 +28,23 @@ function fakeContainer(
   } as unknown as DockerContainer;
   return { container, calls };
 }
+
+describe("resolveWithinWorkspace (workspace containment, review §2b #2)", () => {
+  const ws = "/workspace";
+  it("resolves relative paths under the workspace", () => {
+    expect(resolveWithinWorkspace(ws, ".")).toBe("/workspace");
+    expect(resolveWithinWorkspace(ws, "src")).toBe("/workspace/src");
+    expect(resolveWithinWorkspace(ws, "src/../lib")).toBe("/workspace/lib");
+    expect(resolveWithinWorkspace(ws, "/workspace/src")).toBe("/workspace/src");
+  });
+  it("refuses absolute escapes and `../` traversal", () => {
+    expect(() => resolveWithinWorkspace(ws, "/etc/passwd")).toThrow(/escapes the workspace/);
+    expect(() => resolveWithinWorkspace(ws, "../../etc")).toThrow(/escapes the workspace/);
+    expect(() => resolveWithinWorkspace(ws, "src/../../etc")).toThrow(/escapes the workspace/);
+    // A sibling that merely shares the prefix is not "under" the workspace.
+    expect(() => resolveWithinWorkspace(ws, "/workspace-evil")).toThrow(/escapes the workspace/);
+  });
+});
 
 describe("dockerReadOperations", () => {
   it("reads a file via `cat` and returns its bytes", async () => {
@@ -128,6 +146,15 @@ describe("dockerLsOperations (§2b #2)", () => {
     const ops = dockerLsOperations(container);
     await expect(ops.readdir("/workspace/nope")).rejects.toThrow(/ls failed/);
   });
+
+  it("refuses paths that escape the workspace before touching the container", async () => {
+    const { container, calls } = fakeContainer(() => ({ exitCode: 0 }));
+    const ops = dockerLsOperations(container);
+    await expect(ops.exists("/etc")).rejects.toThrow(/escapes the workspace/);
+    await expect(ops.stat("/etc/passwd")).rejects.toThrow(/escapes the workspace/);
+    await expect(ops.readdir("/workspace/../../etc")).rejects.toThrow(/escapes the workspace/);
+    expect(calls).toHaveLength(0); // rejected before any exec
+  });
 });
 
 describe("dockerFindOperations (§2b #2)", () => {
@@ -166,6 +193,14 @@ describe("dockerFindOperations (§2b #2)", () => {
     await expect(dockerFindOperations(container).glob("*", "/workspace", { ignore: [], limit: 5 })).rejects.toThrow(
       /find failed/,
     );
+  });
+
+  it("refuses a search root that escapes the workspace", async () => {
+    const { container, calls } = fakeContainer(() => ({ exitCode: 0 }));
+    const ops = dockerFindOperations(container);
+    await expect(ops.glob("*", "/etc", { ignore: [], limit: 5 })).rejects.toThrow(/escapes the workspace/);
+    await expect(ops.exists("/etc")).rejects.toThrow(/escapes the workspace/);
+    expect(calls).toHaveLength(0);
   });
 });
 
@@ -207,6 +242,16 @@ describe("buildSandboxGrepTool (§2b #2)", () => {
     expect(argv).toContain("*.ts");
     expect(argv).toContain("--context");
     expect(argv[argv.length - 1]).toBe("/workspace/src");
+  });
+
+  it("refuses an absolute or `../`-escaping search path (never spawns rg)", async () => {
+    const abs = grepToolWith(() => ({ exitCode: 0, stdout: "secret" }));
+    await expect(abs.def.execute("id", { pattern: "x", path: "/etc/passwd" })).rejects.toThrow(/escapes the workspace/);
+    expect(abs.calls).toHaveLength(0);
+
+    const trav = grepToolWith(() => ({ exitCode: 0, stdout: "secret" }));
+    await expect(trav.def.execute("id", { pattern: "x", path: "../../etc" })).rejects.toThrow(/escapes the workspace/);
+    expect(trav.calls).toHaveLength(0);
   });
 
   it("exit 1 means no matches; other failures throw", async () => {

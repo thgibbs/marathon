@@ -30,6 +30,23 @@ import type { DockerContainer } from "@marathon/tools";
  */
 export const GUEST_WORKSPACE = "/workspace";
 
+/**
+ * Resolve a model-supplied search path against the guest workspace and REFUSE
+ * anything that escapes it. The container's filesystem isolation is the floor,
+ * but the workspace is the *data* boundary (§12.6) — an absolute path
+ * (`/etc/...`) or `../` traversal (`path.posix.join('/workspace', '../../etc')`
+ * normalizes to `/etc`) must not let the model search outside the mount. Both
+ * are contained here: resolve within `ws`, then require the result to be `ws`
+ * or under `ws + '/'`.
+ */
+export function resolveWithinWorkspace(ws: string, p: string): string {
+  const target = path.posix.resolve(ws, p);
+  if (target !== ws && !target.startsWith(`${ws}/`)) {
+    throw new Error(`path escapes the workspace (${ws}): ${p}`);
+  }
+  return target;
+}
+
 function decode(buf: Buffer): string {
   return buf.toString("utf8");
 }
@@ -99,7 +116,7 @@ export function dockerBashOperations(container: DockerContainer, shellPath = "/b
 }
 
 /** `ls` ops backed by one listing exec per directory (§2b #2). */
-export function dockerLsOperations(container: DockerContainer): LsOperations {
+export function dockerLsOperations(container: DockerContainer, ws = GUEST_WORKSPACE): LsOperations {
   // Pi's ls tool stats EVERY entry it lists; a naive per-entry `test -d`
   // would cost one docker-exec round-trip per file. Fetch each directory in
   // ONE exec (names, with a trailing "/" marking directories) and serve the
@@ -129,9 +146,13 @@ export function dockerLsOperations(container: DockerContainer): LsOperations {
     return entries;
   };
   return {
-    exists: async (absolutePath) =>
-      (await container.execStream(["test", "-e", absolutePath], { timeoutMs: 5_000 })).exitCode === 0,
+    // Contain the model-supplied path to the workspace before touching the FS.
+    exists: async (absolutePath) => {
+      resolveWithinWorkspace(ws, absolutePath);
+      return (await container.execStream(["test", "-e", absolutePath], { timeoutMs: 5_000 })).exitCode === 0;
+    },
     stat: async (absolutePath) => {
+      resolveWithinWorkspace(ws, absolutePath);
       const fromListing = listings.get(path.posix.dirname(absolutePath))?.get(path.posix.basename(absolutePath));
       if (fromListing !== undefined) return { isDirectory: () => fromListing };
       const r = await container.execStream(
@@ -142,7 +163,7 @@ export function dockerLsOperations(container: DockerContainer): LsOperations {
       const isDir = decode(r.stdout).trim() === "d";
       return { isDirectory: () => isDir };
     },
-    readdir: async (absolutePath) => [...(await list(absolutePath)).keys()],
+    readdir: async (absolutePath) => [...(await list(resolveWithinWorkspace(ws, absolutePath))).keys()],
   };
 }
 
@@ -152,11 +173,15 @@ export function dockerLsOperations(container: DockerContainer): LsOperations {
  * relativize step (`p.startsWith(searchPath)`) works — a relative return
  * would be resolved against the HOST cwd.
  */
-export function dockerFindOperations(container: DockerContainer): FindOperations {
+export function dockerFindOperations(container: DockerContainer, ws = GUEST_WORKSPACE): FindOperations {
   return {
-    exists: async (absolutePath) =>
-      (await container.execStream(["test", "-e", absolutePath], { timeoutMs: 5_000 })).exitCode === 0,
+    exists: async (absolutePath) => {
+      resolveWithinWorkspace(ws, absolutePath);
+      return (await container.execStream(["test", "-e", absolutePath], { timeoutMs: 5_000 })).exitCode === 0;
+    },
     glob: async (pattern, cwd, { ignore, limit }) => {
+      // The search root comes from the model's `path`; refuse escapes.
+      resolveWithinWorkspace(ws, cwd);
       const argv = ["rg", "--files", "--hidden", "--glob", pattern];
       for (const ig of ignore) argv.push("--glob", `!${ig}`);
       const r = await container.execStream(argv, { cwd, timeoutMs: 30_000 });
@@ -211,7 +236,9 @@ export function buildSandboxGrepTool(pi: any, container: DockerContainer, ws: st
     execute: async (_id: string, params: any) => {
       const pattern = String(params?.pattern ?? "");
       const searchDir = typeof params?.path === "string" && params.path ? params.path : ".";
-      const target = path.posix.isAbsolute(searchDir) ? searchDir : path.posix.join(ws, searchDir);
+      // Contain the search to the workspace: an absolute path or `../` traversal
+      // is refused rather than searching arbitrary container files (review §2b #2).
+      const target = resolveWithinWorkspace(ws, searchDir);
       const limit = typeof params?.limit === "number" && params.limit > 0 ? params.limit : GREP_DEFAULT_LIMIT;
       const argv = ["rg", "--line-number", "--no-heading", "--color=never", "--hidden"];
       if (params?.ignoreCase) argv.push("--ignore-case");
@@ -279,8 +306,8 @@ export function buildDockerSandboxTools(pi: any, container: DockerContainer, opt
     // on the HOST, so routing it via operations alone would search the wrong
     // filesystem. find/ls are fully pluggable and use Pi's factories.
     buildSandboxGrepTool(pi, container, ws),
-    pi.createFindToolDefinition(ws, { operations: dockerFindOperations(container) }),
-    pi.createLsToolDefinition(ws, { operations: dockerLsOperations(container) }),
+    pi.createFindToolDefinition(ws, { operations: dockerFindOperations(container, ws) }),
+    pi.createLsToolDefinition(ws, { operations: dockerLsOperations(container, ws) }),
   ];
   return { tools, names: ["bash", "read", "write", "edit", "grep", "find", "ls"] };
 }

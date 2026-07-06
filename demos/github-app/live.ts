@@ -59,6 +59,17 @@ async function main(): Promise<void> {
   // become the gateway policy below — editing the YAML narrows the surface.
   const specs = await loadAgentSpecs(cfg.agentsDir);
   const flagship = specs[0]!;
+  // Fail closed BEFORE building any runtime (same guard as makeBuildWiring and
+  // the Slack app): locked-down claude-code needs an internal Docker network
+  // whose sole reachable endpoint is the model proxy. `network: none` severs
+  // the proxy too, so the model call cannot exit — the doc/chat runtime built
+  // below would spin up a `--network none` container and hang at runtime even
+  // though the config validated. Refuse until the internal-proxy spike lands (§7.1).
+  if (flagship.harness === "claude-code" && flagship.sandbox.network === "none") {
+    throw new Error(
+      `agent '${flagship.name}': locked-down claude-code (sandbox.network: none) needs the internal-network model-proxy wiring (K7 spike, §7.1) — not yet available; use 'bridge'`,
+    );
+  }
   const boot = await bootstrapGithubApp(db, { owner, tenantName: cfg.tenant, specs });
   // Dynamic auth keeps this long-running client valid across the ~1h
   // installation-token expiry (it refreshes per request + retries on 401).
