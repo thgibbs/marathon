@@ -2,7 +2,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EnvSecretStore, loadAgentSpecs, loadConfig, warnUnknownMarathonEnv } from "@marathon/config";
 import { makeAgentRuntime, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
-import { ensureBranch, githubAuthFromEnv, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
+import { ensureBranch, githubAuthFromEnv, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools, makeUserRepoAccessChecker } from "@marathon/connector-github";
+import { CodeWorkspace } from "@marathon/code-handoff";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
@@ -14,9 +15,11 @@ import {
   InvocationRouter,
   makeAgentTaskStepRunner,
   makeDocumentPrRecorder,
+  makeRepoChatWorkspaceProvider,
   makeWaitingNotifier,
   Orchestrator,
   Worker,
+  type RepoAccessResult,
 } from "@marathon/worker";
 import { bootstrapSlackApp } from "./bootstrap";
 import { dispatchEnvelope, type AppDeps } from "./handlers";
@@ -133,7 +136,13 @@ export async function startSlackApp(): Promise<void> {
       // with governed tools only): the per-task container factory, the
       // container-reachable proxy (required — undefined fails closed), the
       // image's managed settings, and the mid-invocation budget kill (§4.3).
-      sandbox: flagship.harness === "claude-code" ? workspaceSandboxFromSpec(flagship) : undefined,
+      // The chat surface is read-only by construction (chat-repo.md §3.4): the
+      // repo checkout is mounted `:ro` and the built-in file/shell tools are
+      // disallowed, so grounding can never mutate the repo (governed doc/read
+      // tools still flow over the broker). Changes go through the BUILD path.
+      sandbox:
+        flagship.harness === "claude-code" ? workspaceSandboxFromSpec(flagship, { readonlyWorkspace: true }) : undefined,
+      readOnly: flagship.harness === "claude-code",
       proxy: flagship.harness === "claude-code" ? (chatProxyUrl ? { baseUrl: chatProxyUrl } : undefined) : undefined,
       lockedDownEgress: flagship.sandbox.network === "none",
       cli: { settingsPath: "/etc/marathon/claude-settings.json" },
@@ -145,10 +154,52 @@ export async function startSlackApp(): Promise<void> {
   );
   const delivery = new SlackDelivery(new RealSlackClient(botToken));
   const fanout = new DeliveryFanout({ slack: delivery }, db);
+
+  // Chat-surface repo grounding (chat-repo.md): a claude-code chat task gets a
+  // read-only checkout of the agent's repo, gated by the invoking user's access
+  // (§2b #10) + the task's audience. Only wired for claude-code (Pi chat has no
+  // read tools yet — §3.5), only when the agent opts in AND we can clone. When
+  // identity linking isn't configured, `checkAccess` returns "no_link" so
+  // grounding degrades safely to ungrounded (with the link CTA).
+  const groundingEnabled =
+    flagship.harness === "claude-code" && flagship.chat.groundOnRepo && Boolean(flagship.repo) && Boolean(ghToken);
+  const checkAccess: (t: string, u: string, r: string) => Promise<RepoAccessResult> = cfg.secretKey
+    ? makeUserRepoAccessChecker({ db, masterSecret: cfg.secretKey })
+    : async () => "no_link";
+  const visibilityClient = ghToken ? new HttpGithubClient(ghAuth.tokenSource ?? ghToken) : undefined;
+  const resolveWorkspace = groundingEnabled
+    ? makeRepoChatWorkspaceProvider({
+        repo: flagship.repo,
+        enabled: flagship.chat.groundOnRepo,
+        groundRef: flagship.chat.groundRef,
+        source: async (repo) => `https://x-access-token:${await secrets.get("secret/github")}@github.com/${repo}.git`,
+        checkAccess,
+        repoVisibility: async (repo) => ((await visibilityClient!.getRepo(repo))?.private ? "private" : "public"),
+        materialize: async (source, ref) => {
+          const { workspace, sha } = await CodeWorkspace.materializeReadonly({ source, ref });
+          return { workspace: { dir: workspace.dir, baseSha: sha }, sha, dispose: () => workspace.dispose() };
+        },
+        claimOnce: (key) => db.claim(key),
+        onDenied: (task, reason) =>
+          delivery.postProgress(
+            task.sourceRef,
+            reason === "no_access"
+              ? `I can't ground on \`${flagship.repo}\` for you — you don't appear to have access.`
+              : "Run `/marathon link github` to connect your GitHub account so I can ground answers on the repo with your access.",
+          ),
+      })
+    : undefined;
+  console.log(
+    resolveWorkspace
+      ? `[slack-app] chat grounding: ${flagship.repo} (claude-code, read-only)`
+      : `[slack-app] chat grounding: off (${flagship.harness !== "claude-code" ? "pi harness" : !flagship.chat.groundOnRepo ? "disabled" : "no repo/token"})`,
+  );
+
   const worker = new Worker(queue, db, {
     stepRunner: makeAgentTaskStepRunner(db, runtime, {
       modelRef,
       memory,
+      resolveWorkspace,
       // Persona comes from the seeded AgentVersion (the YAML instructions);
       // this is only the fallback for tasks without an agent.
       instructions: flagship.instructions,

@@ -70,6 +70,50 @@ describe("CodeWorkspace.materialize", () => {
   });
 });
 
+describe("CodeWorkspace.materializeReadonly (chat-repo.md §3.3)", () => {
+  it("shallow-clones the default branch, returns the exact head sha, and strips remotes/creds", async () => {
+    const { workspace: ws, sha } = await CodeWorkspace.materializeReadonly({ source: originDir });
+    try {
+      expect(sha).toBe(headSha); // the resolved HEAD, for pinning + the source ledger
+      expect(ws.baseSha).toBe(headSha);
+      expect(existsSync(ws.path("README.md"))).toBe(true);
+      expect(existsSync(ws.path("later.txt"))).toBe(true);
+      // (`--depth 1` keeps real HTTPS clones shallow; git ignores it for a
+      // local-path source, so shallowness isn't asserted against the fixture.)
+      // Same seal as materialize: no remotes, no real credential helper.
+      expect(await ws.remotes()).toEqual([]);
+      expect((await ws.credentialHelpers()).filter(Boolean)).toEqual([]);
+    } finally {
+      await ws.dispose();
+    }
+  });
+
+  it("pins to an exact commit sha (multi-turn reproducibility, §3.3)", async () => {
+    const { workspace: ws, sha } = await CodeWorkspace.materializeReadonly({ source: originDir, ref: baseSha });
+    try {
+      expect(sha).toBe(baseSha);
+      expect(ws.baseSha).toBe(baseSha);
+      // The pinned older commit — the later file must NOT be present.
+      expect(existsSync(ws.path("later.txt"))).toBe(false);
+      expect(existsSync(ws.path("README.md"))).toBe(true);
+    } finally {
+      await ws.dispose();
+    }
+  });
+
+  it("dispose destroys the read-only workspace", async () => {
+    const { workspace: ws } = await CodeWorkspace.materializeReadonly({ source: originDir });
+    await ws.dispose();
+    expect(existsSync(ws.dir)).toBe(false);
+  });
+
+  it("cleans up and throws when the clone source is bad", async () => {
+    await expect(
+      CodeWorkspace.materializeReadonly({ source: join(originDir, "does-not-exist") }),
+    ).rejects.toThrow();
+  });
+});
+
 describe("diff capture and tree hash", () => {
   it("captures edits, new files, and deletions relative to base_sha", async () => {
     const ws = await CodeWorkspace.materialize({ source: originDir, baseSha });

@@ -35,6 +35,8 @@ export interface MakeAgentRuntimeDeps {
   maxTurnsPerInvocation?: number;
   /** Claude Code: locked-down egress posture disallows `WebFetch` (§3.3). */
   lockedDownEgress?: boolean;
+  /** Claude Code: read-only tool surface for chat grounding (chat-repo.md §3.4). */
+  readOnly?: boolean;
   /** Claude Code: CLI/shim overrides. */
   cli?: ClaudeCodeAgentOptions["cli"];
   /** Claude Code: host dir for per-task broker sockets. */
@@ -61,6 +63,7 @@ export function makeAgentRuntime(spec: AgentSpec, deps: MakeAgentRuntimeDeps): A
       maxTurnsPerInvocation: deps.maxTurnsPerInvocation,
       clarification: deps.clarification,
       lockedDownEgress: deps.lockedDownEgress,
+      readOnly: deps.readOnly,
       cli: deps.cli,
       socketDir: deps.socketDir,
       getRemainingBudgetUsd: deps.getRemainingBudgetUsd,

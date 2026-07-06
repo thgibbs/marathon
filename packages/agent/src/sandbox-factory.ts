@@ -1,5 +1,7 @@
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { AgentSandboxConfig } from "@marathon/config";
-import { type ContainerMount, DockerContainer, type DockerContainerOptions } from "@marathon/tools";
+import { type ContainerMount, DockerContainer, type DockerContainerOptions, GUEST_HOME_DIRNAME } from "@marathon/tools";
 import type { PiAgentOptions } from "./pi";
 import type { AgentRequest, AgentWorkspaceBinding } from "./types";
 
@@ -46,6 +48,11 @@ export interface WorkspaceSandboxOptions {
   dockerPath?: string;
   /** Shell for the sandboxed bash tool (the toolchain image ships bash). */
   shellPath?: string;
+  /**
+   * Mount the workspace read-only (chat-repo.md §3.4) — chat-surface repo
+   * grounding. The harness home stays writable; the repo checkout does not.
+   */
+  readonlyWorkspace?: boolean;
 }
 
 /** Real code work (installs, builds, tests) needs more than the CLI-tool defaults. */
@@ -71,6 +78,7 @@ export function workspaceContainerOptions(
     cpus: opts.cpus ?? DEFAULT_CPUS,
     pidsLimit: opts.pidsLimit ?? DEFAULT_PIDS,
     dockerPath: opts.dockerPath,
+    readonlyWorkspace: opts.readonlyWorkspace,
     mounts,
   };
 }
@@ -125,6 +133,11 @@ export function workspaceSandbox(
         throw new Error(
           "workspaceSandbox: no workspace binding for this task — BUILD containers are created from task workspace state (Track 11)",
         );
+      }
+      // Read-only grounding layers a writable home over the :ro workspace mount;
+      // the host source dir must exist first, or Docker creates it root-owned.
+      if (opts.readonlyWorkspace) {
+        mkdirSync(join(workspace.dir, GUEST_HOME_DIRNAME), { recursive: true });
       }
       return new DockerContainer(workspaceContainerOptions(workspace, opts, env, extra?.mounts));
     },

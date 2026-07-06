@@ -161,27 +161,34 @@ describe("handleIdentityRequest routing", () => {
 
 describe("makeUserRepoAccessChecker (§7.20 — ask GitHub as the user)", () => {
   const cred = encryptSecret("ghu_tok", SECRET);
+  // The checker now lives in connector-github and takes `{ db, masterSecret, api }`;
+  // adapt the IdentityLinkDeps fixture (which carries the fake fetch on `oauth`).
+  const accessDeps = (deps: IdentityLinkDeps) => ({
+    db: deps.db,
+    masterSecret: SECRET,
+    api: { fetchImpl: deps.oauth.fetchImpl },
+  });
 
   it("answers ok / no_access from the live check", async () => {
     const ok = makeDeps({ identityByUser: identityRow({ credentialRef: cred }) }, { repoStatus: 200 });
-    expect(await makeUserRepoAccessChecker(ok.deps)("tn1", "u1", "o/r")).toBe("ok");
+    expect(await makeUserRepoAccessChecker(accessDeps(ok.deps))("tn1", "u1", "o/r")).toBe("ok");
 
     const denied = makeDeps({ identityByUser: identityRow({ credentialRef: cred }) }, { repoStatus: 404 });
-    expect(await makeUserRepoAccessChecker(denied.deps)("tn1", "u1", "o/r")).toBe("no_access");
+    expect(await makeUserRepoAccessChecker(accessDeps(denied.deps))("tn1", "u1", "o/r")).toBe("no_access");
   });
 
   it("marks the link stale (audited) on a dead token and denies", async () => {
     const { deps, statusChanges, audits } = makeDeps({ identityByUser: identityRow({ credentialRef: cred }) }, { repoStatus: 401 });
-    expect(await makeUserRepoAccessChecker(deps)("tn1", "u1", "o/r")).toBe("stale");
+    expect(await makeUserRepoAccessChecker(accessDeps(deps))("tn1", "u1", "o/r")).toBe("stale");
     expect(statusChanges).toEqual([["ident-1", "stale"]]);
     expect(audits[0]!.eventType).toBe("identity.stale");
   });
 
   it("denies with no_link when the user has no verified link, stale when already stale", async () => {
     const none = makeDeps({ identityByUser: null });
-    expect(await makeUserRepoAccessChecker(none.deps)("tn1", "u1", "o/r")).toBe("no_link");
+    expect(await makeUserRepoAccessChecker(accessDeps(none.deps))("tn1", "u1", "o/r")).toBe("no_link");
 
     const stale = makeDeps({ identityByUser: identityRow({ status: "stale", credentialRef: "enc:v1:x:y:z" }) });
-    expect(await makeUserRepoAccessChecker(stale.deps)("tn1", "u1", "o/r")).toBe("stale");
+    expect(await makeUserRepoAccessChecker(accessDeps(stale.deps))("tn1", "u1", "o/r")).toBe("stale");
   });
 });

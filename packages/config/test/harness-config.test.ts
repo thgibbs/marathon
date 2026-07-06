@@ -9,6 +9,7 @@ function spec(overrides: Partial<AgentSpec>): AgentSpec {
     tools: [],
     sandbox: { network: "bridge" },
     plans: { branch: "marathon-plans" },
+    chat: { groundOnRepo: false, groundRef: "pinned" },
     ...overrides,
   };
 }

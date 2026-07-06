@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@marathon/agent": "workspace:*",
+    "@marathon/code-handoff": "workspace:*",
     "@marathon/config": "workspace:*",
     "@marathon/connector-github": "workspace:*",
     "@marathon/core": "workspace:*",
