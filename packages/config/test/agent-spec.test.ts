@@ -1,3 +1,5 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -114,6 +116,31 @@ describe("agents/forge.yaml (design §21.0)", () => {
     const specs = await loadAgentSpecs(join(repoRoot, "agents"));
     expect(specs.length).toBeGreaterThan(0);
     expect(specs.map((s) => s.name)).toContain("forge");
+  });
+
+  it("a <name>.local.yaml overrides the committed spec of the same name, keeping its position", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agents-"));
+    const base = (name: string, extra = "") =>
+      `name: ${name}\ninstructions: base ${name}\nrepo: acme/shipped\n${extra}`;
+    writeFileSync(join(dir, "forge.yaml"), base("forge"));
+    writeFileSync(join(dir, "zed.yaml"), base("zed")); // sorts after forge → forge stays default
+    // The developer's git-ignored override pins a different repo for the same agent.
+    writeFileSync(join(dir, "forge.local.yaml"), "name: forge\ninstructions: local forge\nrepo: me/dogfood");
+
+    const specs = await loadAgentSpecs(dir);
+    expect(specs.map((s) => s.name)).toEqual(["forge", "zed"]); // forge still first (default)
+    const forge = specs.find((s) => s.name === "forge");
+    expect(forge?.repo).toBe("me/dogfood"); // override won
+    expect(forge?.instructions).toBe("local forge");
+    expect(specs.find((s) => s.name === "zed")?.repo).toBe("acme/shipped"); // untouched
+  });
+
+  it("a .local.yaml with an unmatched name adds a local-only agent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agents-"));
+    writeFileSync(join(dir, "forge.yaml"), "name: forge\ninstructions: base");
+    writeFileSync(join(dir, "scratch.local.yaml"), "name: scratch\ninstructions: local only");
+    const names = (await loadAgentSpecs(dir)).map((s) => s.name);
+    expect(names).toEqual(["forge", "scratch"]);
   });
 
   it("resolveAgentsDir finds a relative dir by walking UP (live apps run from package cwds)", () => {
