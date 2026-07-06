@@ -1170,9 +1170,13 @@ Build (per `claude-code-impl.md`):
   async-proposal shape for waits, §11.6).
 - **Config:** deployment default + per-agent `harness:` override in the agent YAML (§6.2 —
   the enum already exists); **fail-closed cross-validation at load**: `claude-code` requires
-  an Anthropic model policy + a configured proxy (§13.1). Wire the harness branch at the
-  two `new PiAgentRuntime` sites via a shared factory; the worker step runners are
-  untouched — the seam holds.
+  an Anthropic model policy + a configured proxy (§13.1). Wire the harness branch via a
+  shared `makeAgentRuntime` factory; in this slice it lands at the **BUILD** site only
+  (`claude-code` runs inside a per-task code container, which only BUILD provides), and the
+  chat surface stays on Pi. The worker step runners are untouched — the seam holds. BUILD
+  wiring fails closed when a `claude-code` agent lacks a container-reachable proxy URL or
+  runs the locked-down `network: none` posture (its internal-network proxy wiring is the
+  spike below).
 - **Spike (early, de-risks the transport):** unix-socket bind-mount behavior on the
   deployment Docker (macOS Docker Desktop caveat) + the `claude-code-impl.md` §10
   **verify-on-pin checklist** (deny-rules-under-bypass, `total_cost_usd` resume semantics,

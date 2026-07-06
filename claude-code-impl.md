@@ -332,11 +332,17 @@ Unit-testable seams, mirroring how `pi.ts` and `sandbox.ts` are tested: pure
 duplex; snapshot/restore path logic.
 
 **Wiring** — branch on `spec.harness` (already parsed and validated,
-`packages/config/src/index.ts:52,110`) at the two instantiation sites:
-`packages/github-app/src/build.ts:158` (BUILD) and `packages/slack-app/src/app.ts:104`
-(chat). A shared `makeAgentRuntime(spec, deps)` factory keeps the sites identical. The
-worker step runners (`packages/worker/src/agent-step.ts:46,105`) need **no changes** — the
-seam holds.
+`packages/config/src/index.ts`) via a shared `makeAgentRuntime(spec, deps)` factory. In the
+K7 slice this is wired at the **BUILD** site only (`packages/github-app/src/build.ts`):
+Claude Code runs its whole loop *inside a per-task code container*, so it needs the
+workspace binding, the container factory, and the model proxy — all of which the BUILD
+stage provides. The **chat/general-agent surface** (`packages/slack-app/src/app.ts`) has no
+code workspace, so it stays on Pi and rejects `claude-code` (`assertSupportedHarness`);
+general-chat container binding is a follow-on. The worker step runners
+(`packages/worker/src/agent-step.ts`) need **no changes** — the seam holds. BUILD wiring
+**fails closed** when a `claude-code` agent lacks a container-reachable proxy URL, when its
+model policy is non-Anthropic (§4.3), or under the locked-down `network: none` posture whose
+internal-network proxy wiring is a pending spike (§7.1).
 
 ---
 

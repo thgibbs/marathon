@@ -3,7 +3,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { newId } from "@marathon/core";
 import type { SecretStore } from "@marathon/config";
-import { AnthropicKeyProxy, ModelRegistry, parseModelRef, resolveApiKey } from "@marathon/model-gateway";
+import { ModelRegistry, parseModelRef } from "@marathon/model-gateway";
 import { type ContainerMount, serveToolBroker, type ToolGateway } from "@marathon/tools";
 import type { GovernedToolsConfig } from "./pi";
 import {
@@ -61,7 +61,7 @@ export const GUEST_MCP_CONFIG = "/workspace/.marathon-home/mcp.json";
 export const CONTINUATION_PROMPT = "Continue with the task.";
 
 export interface ClaudeCodeAgentOptions {
-  /** Resolved host-side; feeds the model proxy, never the container env. */
+  /** Host-side secret store (kept for parity with the Pi options; never placed in the container env). */
   secrets: SecretStore;
   registry?: ModelRegistry;
   /** Per-task session snapshots (as {@link PiAgentOptions.sessionDir}). */
@@ -77,11 +77,14 @@ export interface ClaudeCodeAgentOptions {
   /** Governed tools, served via broker + MCP shim (same spec list as Pi). */
   governed?: GovernedToolsConfig;
   /**
-   * The model proxy (§4.1). `baseUrl` points the container at a pre-existing
-   * proxy on the internal network; omit it to start a per-task
-   * {@link AnthropicKeyProxy} bound to the tenant key resolved host-side.
+   * The model proxy (§4.1). `baseUrl` MUST be an endpoint the *container* can
+   * reach (a host-visible address under `network: bridge`, or the internal
+   * network's proxy alias under the locked-down posture) — NOT a host-loopback
+   * address, which resolves to the container itself. The proxy is a separate,
+   * long-lived deployment component (`AnthropicKeyProxy`) that injects the
+   * per-tenant key host-side; the runtime never provisions one on loopback.
    */
-  proxy?: { baseUrl?: string; upstreamBase?: string };
+  proxy?: { baseUrl?: string };
   /** Checkpoint cadence (§2.1); default 10. */
   maxTurnsPerInvocation?: number;
   /** Expose `ask_user` over MCP (§2.3). */
@@ -254,9 +257,16 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       question.value = q;
     });
 
-    // Model proxy (§4.1): keys never enter the container. Point at a provided
-    // endpoint, or start a per-task key-injecting proxy from the secret store.
-    const proxy = await this.resolveProxy(provider);
+    // Model proxy (§4.1): keys never enter the container; the CLI's model call
+    // exits only through this endpoint. Fail closed if no container-reachable
+    // proxy is wired — a missing proxy must not silently degrade to a direct,
+    // key-bearing call or an unreachable loopback address.
+    const proxyBaseUrl = this.opts.proxy?.baseUrl;
+    if (!proxyBaseUrl) {
+      throw new Error(
+        "claude-code harness requires a container-reachable model proxy (proxy.baseUrl / MARATHON_MODEL_PROXY_URL); none is wired (§4.1)",
+      );
+    }
 
     // MCP config into the workspace home (host-visible → readable in-container).
     const mcpHostPath = join(workspace.dir, ".marathon-home", "mcp.json");
@@ -318,7 +328,7 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       };
 
       const env: Record<string, string> = {
-        ANTHROPIC_BASE_URL: proxy.baseUrl,
+        ANTHROPIC_BASE_URL: proxyBaseUrl,
         ANTHROPIC_API_KEY: "marathon-proxy", // placeholder; the proxy discards it (§4.1)
         CLAUDE_CONFIG_DIR: GUEST_CONFIG_DIR,
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
@@ -374,7 +384,6 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       };
     } finally {
       broker.close();
-      await proxy.close();
       await container.stop().catch(() => {});
     }
   }
@@ -424,16 +433,6 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
         }
       },
     };
-  }
-
-  private async resolveProxy(provider: string): Promise<{ baseUrl: string; close: () => Promise<void> }> {
-    if (this.opts.proxy?.baseUrl) {
-      return { baseUrl: this.opts.proxy.baseUrl, close: async () => {} };
-    }
-    const apiKey = (await resolveApiKey(this.opts.secrets, provider)) ?? "";
-    const proxy = new AnthropicKeyProxy({ apiKey, upstreamBase: this.opts.proxy?.upstreamBase });
-    const baseUrl = await proxy.listen();
-    return { baseUrl, close: () => proxy.close() };
   }
 }
 

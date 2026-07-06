@@ -229,6 +229,30 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
     expect(restoredAtStart).not.toContain("PARTIAL-GARBAGE");
   });
 
+  it("fails closed when no container-reachable model proxy is wired (§4.1)", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+    const script: CliScript = async () => ({ exitCode: 0 });
+    const { sandbox } = fakeSandbox(script, ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({}),
+      registry,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+      // no proxy wired
+    });
+    await expect(
+      runtime.nextTurn({
+        request: { taskId: "task0", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+        checkpoint: { completedSteps: [], findings: [] } as never,
+        workspace: ws,
+        onTurnCheckpoint: () => {},
+      }),
+    ).rejects.toThrow(/requires a container-reachable model proxy/);
+  });
+
   it("kills the invocation when streamed usage breaches the remaining budget (§4.3)", async () => {
     const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
     const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));

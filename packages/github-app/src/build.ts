@@ -92,10 +92,10 @@ export interface BuildWiringOptions {
   /** Container overrides (image, limits); network comes from the spec. */
   sandbox?: WorkspaceSandboxOptions;
   /**
-   * Claude Code harness (K7): the model proxy endpoint (`ANTHROPIC_BASE_URL`).
-   * When the agent's `harness: claude-code` and this is omitted, the runtime
-   * provisions a per-task key-injecting proxy from the secret store (§4.1). The
-   * value defaults to `MARATHON_MODEL_PROXY_URL`.
+   * Claude Code harness (K7): the model proxy endpoint (`ANTHROPIC_BASE_URL`),
+   * which MUST be reachable from inside the sandbox container (§4.1) — not a
+   * host-loopback address. Required when the agent's `harness: claude-code`;
+   * wiring fails closed if it is missing (defaults to `MARATHON_MODEL_PROXY_URL`).
    */
   modelProxyUrl?: string;
   defaultBranch?: string;
@@ -166,6 +166,14 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
   // runs the whole CLI inside it. The factory cross-validates `claude-code` fail
   // closed (Anthropic model + proxy, §13.1) before building a runtime.
   const proxyUrl = opts.modelProxyUrl ?? process.env.MARATHON_MODEL_PROXY_URL;
+  if (spec.harness === "claude-code" && spec.sandbox.network === "none") {
+    // Locked-down claude-code needs an internal Docker network whose sole
+    // reachable endpoint is the proxy (§7.1). `network: none` severs the proxy
+    // too, so the model call cannot exit — fail closed until that spike lands.
+    throw new Error(
+      `agent '${spec.name}': locked-down claude-code (sandbox.network: none) needs the internal-network model-proxy wiring (K7 spike, §7.1) — not yet available; use 'bridge'`,
+    );
+  }
   const runtime = makeAgentRuntime(spec, {
     secrets,
     sessionDir: opts.sessionDir,
@@ -173,10 +181,11 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
     // note); containers stay credential-free by construction.
     sandbox: workspaceSandboxFromSpec(spec, opts.sandbox),
     governed: { gateway, tools: governedTools },
-    // Claude Code only (ignored by Pi): proxy endpoint, locked-down egress
-    // posture from the YAML network mode, the image's managed settings, and a
+    // Claude Code only (ignored by Pi): the container-reachable proxy endpoint
+    // (required — undefined fails validation closed), locked-down egress posture
+    // from the YAML network mode, the image's managed settings, and a
     // mid-invocation budget kill against this task's accrued spend (§4.3).
-    proxy: spec.harness === "claude-code" ? (proxyUrl ? { baseUrl: proxyUrl } : {}) : undefined,
+    proxy: spec.harness === "claude-code" ? (proxyUrl ? { baseUrl: proxyUrl } : undefined) : undefined,
     lockedDownEgress: spec.sandbox.network === "none",
     cli: { settingsPath: "/etc/marathon/claude-settings.json" },
     getRemainingBudgetUsd: spec.budget
