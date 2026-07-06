@@ -21,6 +21,42 @@ export type ToolBrokerResponse =
   | { status: "requires_proposal"; reason: string }
   | { status: "error"; error: string };
 
+/**
+ * A governed tool as advertised across the broker boundary (the MCP shim's
+ * `tools/list`). Carries no credentials — name, description, and JSON-schema
+ * parameters only, resolved host-side per task.
+ */
+export interface BrokerToolSpec {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/**
+ * Model-facing tool names must match `^[A-Za-z0-9_-]+$` (no dots): Marathon
+ * tool names like `github.read_file` are sanitized to `github_read_file` for
+ * the model, and mapped back to the real name host-side before the gateway
+ * runs (mirrors the Pi custom-tool path, `pi.ts`). The mapping lives on the
+ * host so the sandboxed shim stays zero-config.
+ */
+export function sanitizeToolName(name: string): string {
+  return name.replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
+/** Render a broker response as the text handed back to the model (typed-refusal preserving). */
+export function brokerResponseText(resp: ToolBrokerResponse): string {
+  switch (resp.status) {
+    case "ok":
+      return resp.content;
+    case "denied":
+      return `[blocked] ${resp.reason}`;
+    case "requires_proposal":
+      return `[requires proposal] ${resp.reason}`;
+    case "error":
+      return `[error] ${resp.error}`;
+  }
+}
+
 /** Run one brokered tool request through the gateway; never throws. */
 export async function handleToolRequest(
   gateway: ToolGateway,

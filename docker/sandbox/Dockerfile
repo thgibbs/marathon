@@ -15,7 +15,7 @@
 # Debian packages ride the pinned base snapshot; for byte-identical rebuilds,
 # publish the built image and pin consumers to its digest — that, not a
 # rebuild, is the production distribution path.
-ARG SANDBOX_VERSION=1
+ARG SANDBOX_VERSION=2
 FROM node:22.12.0-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -46,6 +46,22 @@ RUN arch="$(dpkg --print-architecture)" \
 # fails signature verification.
 RUN npm install -g pnpm@10.6.1 && npm cache clean --force
 
+# Claude Code (headless) — the second Marathon harness (K7, claude-code-impl.md §8.1).
+# EXACT-VERSION-PINNED, autoupdater disabled so the pin holds; re-verify the
+# `claude-code-impl.md` §10 checklist against this version before relying on it.
+# The CLI holds NO credentials in the image: the model call exits only through the
+# host-side proxy (ANTHROPIC_BASE_URL), governed tools go through the broker socket.
+ARG CLAUDE_CODE_VERSION=1.0.44
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && npm cache clean --force
+ENV DISABLE_AUTOUPDATER=1 \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+# The governed-tool MCP shim (stdio → per-task broker socket) and the
+# Marathon-managed settings.json (deny rules, no hooks — defense-in-depth only, §3.3).
+COPY marathon-mcp-shim.mjs /usr/local/bin/marathon-mcp-shim
+COPY claude-settings.json /etc/marathon/claude-settings.json
+RUN chmod +x /usr/local/bin/marathon-mcp-shim
+
 # Toolchain manifest: what this build actually contains, so a rebuilt image
 # that drifted is detectable at a glance.
 ARG SANDBOX_VERSION
@@ -55,6 +71,7 @@ RUN mkdir -p /etc/marathon-sandbox && { \
         echo "pnpm: $(pnpm --version)"; \
         echo "git: $(git --version)"; \
         echo "gh: $(gh --version | head -1)"; \
+        echo "claude: $(claude --version 2>/dev/null || echo unknown)"; \
     } > /etc/marathon-sandbox/toolchain.txt
 LABEL org.opencontainers.image.title="marathon-sandbox" \
       org.opencontainers.image.description="Marathon kernel BUILD sandbox toolchain" \

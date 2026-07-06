@@ -3,5 +3,8 @@ export * from "./fake";
 export * from "./scripted";
 export * from "./governed";
 export * from "./pi";
+export * from "./claude-stream";
+export * from "./claude-code";
+export * from "./runtime-factory";
 export * from "./sandbox-tools";
 export * from "./sandbox-factory";

@@ -77,6 +77,33 @@ describe("makeBuildWiring (Track 15 — the coherent BUILD loop from one spec)",
     );
   });
 
+  describe("claude-code harness wiring (K7 fail-closed)", () => {
+    const claudeSpec = (o: Partial<AgentSpec> = {}) =>
+      makeSpec({ harness: "claude-code", models: { default: "anthropic:claude-sonnet-4-6" }, ...o });
+
+    it("wires when a container-reachable proxy URL is configured", () => {
+      expect(() =>
+        makeBuildWiring({ db: fakeDb, spec: claudeSpec(), secrets, getClient: () => ({}) as never, source: "/x", modelProxyUrl: "http://marathon-proxy:8080" }),
+      ).not.toThrow();
+    });
+
+    it("fails closed when no model proxy is wired (§4.1)", () => {
+      expect(() => wire(claudeSpec())).toThrow(/requires a configured model proxy/);
+    });
+
+    it("fails closed on the locked-down posture (sandbox.network: none) until the internal-network spike lands (§7.1)", () => {
+      expect(() =>
+        makeBuildWiring({ db: fakeDb, spec: claudeSpec({ sandbox: { network: "none" } }), secrets, getClient: () => ({}) as never, source: "/x", modelProxyUrl: "http://marathon-proxy:8080" }),
+      ).toThrow(/internal-network model-proxy wiring/);
+    });
+
+    it("rejects a non-Anthropic model policy (§13.1)", () => {
+      expect(() =>
+        makeBuildWiring({ db: fakeDb, spec: claudeSpec({ models: { default: "openai:gpt-4o" } }), secrets, getClient: () => ({}) as never, source: "/x", modelProxyUrl: "http://marathon-proxy:8080" }),
+      ).toThrow(/requires Anthropic models/);
+    });
+  });
+
   it("has a Pi-facing definition for every BUILD tool it can register", () => {
     for (const name of ["github.exec", "git.exec", "delivery.report_pr"]) {
       expect(BUILD_TOOL_DEFS[name]?.name).toBe(name);

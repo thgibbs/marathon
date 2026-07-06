@@ -230,8 +230,11 @@ override (`harness: pi | claude-code` in the agent YAML, §6.2):
 * **Pi** (`@earendil-works/pi-coding-agent`), embedded **in-process** in the worker via its
   SDK — see `pi-details.md` for the full integration reference.
 * **Claude Code (headless)** — the `claude` CLI in print mode (`claude -p --output-format
-  stream-json`), run as a **subprocess inside the sandbox** and resumed between turns via
-  `--resume` (roadmap **K7**).
+  stream-json`), run as a **subprocess inside the sandbox** (roadmap **K7**) — see
+  `claude-code-impl.md` for the full integration reference. **One harness turn = one
+  print-mode invocation**, resumed between turns via `--resume <session-id>`; each
+  invocation is bounded with `--max-turns` so long BUILD runs checkpoint on a fixed cadence
+  rather than running unbounded (the K4 contract, §11.2).
 
 The harness owns the in-task agent loop — prompting, tool calling, step sequencing, progress
 emission; Marathon owns everything around it.
@@ -251,19 +254,34 @@ Requirements:
   inside a sandboxed workspace (§12.6); the `tool_call` hook remains the path to fully govern
   them when running Pi-in-sandbox (see §7.8, §12.6, `pi-details.md` §3 As-built).
 * **Claude Code maps to the same chokepoint over MCP.** Marathon's governed tools are served
-  to the harness as an **MCP server backed by `gateway.run`** (over the host broker); its
-  built-in file/bash tools are naturally contained because the whole process runs inside the
-  sandbox (Pattern 1, §12.6); other built-ins are constrained with the harness's allow/deny
-  tool lists; the model call exits the sandbox only through a **host-side key-injecting
-  proxy** (`ANTHROPIC_BASE_URL`), so no API key enters the container.
+  to the harness as **one stdio MCP server (`marathon-mcp-shim`) that forwards every call to
+  the host broker** — a per-task unix socket served by `serveToolBroker` and backed by
+  `gateway.run` — so validate → policy → ledger → egress → credential-injected execute →
+  redact → audit all run host-side, and tool results enter the container (and therefore the
+  session JSONL) **already redacted**. The MCP config is passed with `--strict-mcp-config`
+  so a checked-in `.mcp.json` in the untrusted workspace can never add servers. Built-in
+  file/bash tools are naturally contained because the whole process runs inside the sandbox
+  (Pattern 1, §12.6); sub-agents are disabled via the harness's allow/deny lists and a
+  Marathon-managed settings file, and network built-ins follow the agent's egress posture
+  (`sandbox.network`, §12.6 — `WebFetch` only under `bridge`; `WebSearch` executes
+  server-side through the model API, so it works in either posture) — all
+  **defense-in-depth, never the boundary** (§12.6). The model call exits the sandbox only
+  through a **host-side key-injecting proxy** (`ANTHROPIC_BASE_URL`), so no API key enters
+  the container.
 * **The harness session (a resumable JSONL — Pi session or Claude Code session) is the
   durable agent checkpoint and the full trace.** Persist it per task; it powers crash-resume,
-  the inspectability dashboard, and replay (see §11, §16).
+  the inspectability dashboard, and replay (see §11, §16). Under Claude Code the live JSONL
+  is written **inside the workspace home** (`CLAUDE_CONFIG_DIR` under
+  `/workspace/.marathon-home`, which the workspace manager already excludes from the repo's
+  git view) — host-visible for per-turn snapshots, and structurally unable to ride the diff
+  into a PR (§29.4 reads only the repo view).
 * Pi provides model-call **logging, retries, and redaction**, plus per-model **cost metadata**,
   which keeps Marathon's Model Gateway minimal (see §9.2, §13). *As-built:* per-call cost is
   read from the turn's assistant message (`usage.cost.total`); budgets are enforced from
   actuals in the step runner (M8). Claude Code reports cost/usage in its `stream-json` result
-  event, captured into the same `ModelInvocation` records.
+  event, captured into the same `ModelInvocation` records; because one of its harness turns
+  can span many internal model turns, the runtime also accumulates streamed per-message
+  usage and kills the run on budget breach mid-invocation (§13.3).
 * **Neither harness sandboxes itself** — Marathon supplies OS-level isolation (§12.6):
   **Pattern 2** for Pi (tool execution routed into the container) and **Pattern 1** for
   Claude Code (the harness itself runs in the container).

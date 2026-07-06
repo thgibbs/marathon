@@ -61,11 +61,17 @@ mid-code-writing. The contract:
 
 * **Checkpoint unit = one harness turn.** After each completed turn, persist: the session
   JSONL, the **workspace diff vs `base_sha`**, and the turn index. Turns are atomic.
+  What a "turn" is depends on the harness: for **Pi** it is one prompt→response cycle; for
+  **Claude Code** it is one `claude -p` invocation, **bounded with `--max-turns`** so the
+  checkpoint cadence is a configuration knob, not the model's mood — an unbounded
+  invocation would be one giant uncheckpointable turn (`claude-code-impl.md` §2).
 * **Crash mid-turn → replay the turn, never splice it.** Partial tool results from an
   interrupted turn are untrustworthy; resume discards the incomplete turn and replays from
   the last completed checkpoint. Tool calls inside the replayed turn re-execute — safe
   because governed effects are idempotent (§11.3, §29.4) and the workspace is restored to
-  turn-start state.
+  turn-start state. Under Claude Code, "discard" is mechanical: the checkpointed session
+  snapshot is restored **over** whatever partial JSONL the crashed invocation left, then
+  the invocation reruns via `--resume`.
 * **Containers are never recovered.** Resume always re-provisions a fresh sandbox and
   re-materializes the workspace (clone at `base_sha` + apply the checkpointed diff). A shell
   command in flight at crash time is simply gone; it reruns with its turn.

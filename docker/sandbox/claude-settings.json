@@ -1,0 +1,9 @@
+{
+  "$comment": "Marathon-managed Claude Code settings (K7, claude-code-impl.md §3.3). DEFENSE-IN-DEPTH ONLY — the security boundary is the container + host-side gateway + model proxy, never these rules (design §12). Pins the same denies the run flags do, declaratively; no hooks.",
+  "permissions": {
+    "deny": ["Task"]
+  },
+  "enableAllProjectMcpServers": false,
+  "enabledMcpjsonServers": [],
+  "disabledMcpjsonServers": []
+}

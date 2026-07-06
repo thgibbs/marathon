@@ -1,7 +1,21 @@
 import type { AgentSandboxConfig } from "@marathon/config";
-import { DockerContainer, type DockerContainerOptions } from "@marathon/tools";
+import { type ContainerMount, DockerContainer, type DockerContainerOptions } from "@marathon/tools";
 import type { PiAgentOptions } from "./pi";
-import type { AgentWorkspaceBinding } from "./types";
+import type { AgentRequest, AgentWorkspaceBinding } from "./types";
+
+/**
+ * The workspace-derived container factory shared by both harnesses. The optional
+ * third arg carries extra bind mounts (K7: the broker unix socket, §3.1); the Pi
+ * path calls with two args, the Claude path with three.
+ */
+export interface WorkspaceContainerFactory {
+  createContainer: (
+    req: AgentRequest,
+    workspace?: AgentWorkspaceBinding,
+    extra?: { mounts?: ContainerMount[] },
+  ) => DockerContainer;
+  shellPath?: string;
+}
 
 /**
  * BUILD-stage sandbox wiring (code-migration.md Track 11): the container is a
@@ -47,6 +61,7 @@ export function workspaceContainerOptions(
   workspace: AgentWorkspaceBinding,
   opts: WorkspaceSandboxOptions = {},
   env: NodeJS.ProcessEnv = process.env,
+  mounts?: ContainerMount[],
 ): DockerContainerOptions {
   return {
     workspaceDir: workspace.dir,
@@ -56,6 +71,7 @@ export function workspaceContainerOptions(
     cpus: opts.cpus ?? DEFAULT_CPUS,
     pidsLimit: opts.pidsLimit ?? DEFAULT_PIDS,
     dockerPath: opts.dockerPath,
+    mounts,
   };
 }
 
@@ -86,7 +102,7 @@ export function workspaceSandboxFromSpec(
   spec: { sandbox: AgentSandboxConfig },
   opts: WorkspaceSandboxOptions = {},
   env: NodeJS.ProcessEnv = process.env,
-): NonNullable<PiAgentOptions["sandbox"]> {
+): WorkspaceContainerFactory {
   return workspaceSandbox({ ...opts, network: resolveSandboxNetwork(spec.sandbox, opts, env) }, env);
 }
 
@@ -97,15 +113,20 @@ export function workspaceSandboxFromSpec(
  * Refuses to run without a workspace binding — a BUILD sandbox with no
  * workspace is a wiring bug, not a fallback.
  */
-export function workspaceSandbox(opts: WorkspaceSandboxOptions = {}, env: NodeJS.ProcessEnv = process.env): NonNullable<PiAgentOptions["sandbox"]> {
+export function workspaceSandbox(
+  opts: WorkspaceSandboxOptions = {},
+  env: NodeJS.ProcessEnv = process.env,
+): WorkspaceContainerFactory {
   return {
-    createContainer: (_req, workspace) => {
+    // The optional third arg carries extra bind mounts (K7: the broker unix
+    // socket, `claude-code-impl.md` §3.1); the Pi path calls with two args.
+    createContainer: (_req, workspace, extra) => {
       if (!workspace) {
         throw new Error(
           "workspaceSandbox: no workspace binding for this task — BUILD containers are created from task workspace state (Track 11)",
         );
       }
-      return new DockerContainer(workspaceContainerOptions(workspace, opts, env));
+      return new DockerContainer(workspaceContainerOptions(workspace, opts, env, extra?.mounts));
     },
     shellPath: opts.shellPath,
   };

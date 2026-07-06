@@ -1,0 +1,14 @@
+{
+  "name": "@marathon/mcp-shim",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "bin": { "marathon-mcp-shim": "./src/bin.ts" },
+  "scripts": {
+    "shim": "tsx src/bin.ts"
+  },
+  "dependencies": {
+    "@marathon/tools": "workspace:*"
+  }
+}

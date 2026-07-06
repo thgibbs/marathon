@@ -1,7 +1,8 @@
 # Marathon Design Guide
 
 Marathon is an open-source platform for **durable AI agents that work where teams already
-work** — Slack and GitHub-backed markdown documents — built on the **Pi** agent harness.
+work** — Slack and GitHub-backed markdown documents — built on a replaceable agent harness
+(**Pi** today; **Claude Code headless** with K7) behind the `AgentRuntime` seam.
 Agents are summoned by `@mention`, run as durable background tasks, use governed tools, act
 autonomously for reversible, audience-bounded work — while high-risk effects go through
 **propose → review → execute** (§7.9) — and report back in-thread or as document
@@ -10,8 +11,9 @@ comments / pull requests.
 This guide is the canonical product + architecture design. It was split from a single
 `design.md` into this directory (an Obsidian vault); each numbered section is its own note.
 The build-ordered implementation plan is in [`roadmap.md`](../roadmap.md); the architecture
-diagram is in [`diagram.md`](../diagram.md); the Pi harness reference is in
-[`pi-details.md`](../pi-details.md).
+diagram is in [`diagram.md`](../diagram.md); the harness integration references are in
+[`pi-details.md`](../pi-details.md) (Pi) and [`claude-code-impl.md`](../claude-code-impl.md)
+(Claude Code headless — roadmap K7).
 
 > **Reading order.** New here? Start with **[[00-core-kernel]]** — the prioritization lens
 > over everything else: the one loop that must work correctly for the first customers, what

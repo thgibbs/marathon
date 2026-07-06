@@ -34,7 +34,7 @@ providers:
 
 The **current default model is `openai:gpt-4o-mini`** (`DEFAULT_MODEL_POLICY`); Claude/OpenRouter are configurable per tenant/agent.
 
-Much of this interface is provided by the harness and the provider SDKs; Marathon's own model layer stays minimal (see §9.2). Pi exposes per-model **cost metadata** (price per 1M tokens) and session cost/token stats that Marathon reads for budgets; per-tenant keys are injected at runtime (`setRuntimeApiKey`), and OpenRouter is registered as an OpenAI-compatible provider (see `pi-details.md` §4). Under the **Claude Code harness**, per-tenant keys are injected by the **host-side model proxy** (`ANTHROPIC_BASE_URL`) instead — the key never enters the sandbox (§12.6) — and cost/usage is read from the run's `stream-json` result. Note the coupling: **harness choice constrains provider choice** — Claude Code runs Anthropic models, while Pi is provider-agnostic (Claude, ChatGPT, OpenRouter).
+Much of this interface is provided by the harness and the provider SDKs; Marathon's own model layer stays minimal (see §9.2). Pi exposes per-model **cost metadata** (price per 1M tokens) and session cost/token stats that Marathon reads for budgets; per-tenant keys are injected at runtime (`setRuntimeApiKey`), and OpenRouter is registered as an OpenAI-compatible provider (see `pi-details.md` §4). Under the **Claude Code harness**, per-tenant keys are injected by the **host-side model proxy** (`ANTHROPIC_BASE_URL`) instead — the key never enters the sandbox (§12.6) — and cost/usage is read from the run's `stream-json` result event into the same `ModelInvocation` records, with the proxy metering request/response tokens as a **backstop** independent of what the agent-side CLI reports. Note the coupling: **harness choice constrains provider choice** — Claude Code runs Anthropic models, while Pi is provider-agnostic (Claude, ChatGPT, OpenRouter). This is enforced **fail-closed at config load**: `harness: claude-code` paired with a non-Anthropic model policy refuses to wire, rather than failing at run time (`claude-code-impl.md` §4.3, §8.2).
 
 ---
 
@@ -90,3 +90,13 @@ Required:
 * Surface cost mid-task only on threshold breach or when the user/admin explicitly asks.
 
 Budgets are enforced from the accumulating actual cost, not from an upfront estimate.
+
+**Enforcement granularity per harness.** The step runner's budget check runs **between
+harness turns** from recorded actuals. Under Pi a turn is one model call, so that check is
+tight. Under Claude Code one harness turn is a whole `claude -p` invocation (many internal
+model turns), so between-turn checks alone would let a runaway invocation blow through the
+cap: the runtime therefore (a) bounds every invocation with `--max-turns`, and (b)
+accumulates the streamed per-message usage **during** the invocation and kills the process
+on breach — the interrupted turn is discarded per §11.2 and the task fails with the budget
+error. The CLI's own budget flag is passed as belt-and-suspenders only; Marathon's
+enforcement never depends on it (`claude-code-impl.md` §4.3).

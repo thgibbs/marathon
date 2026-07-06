@@ -945,6 +945,22 @@ fold into M7–M9 sequencing as capacity allows.
     `makeAgentTaskStepRunner`, and a Slack mention carries no deterministic doc-task
     signal to key them on. Add that contract/evidence mode when Slack drafting grows a
     recognizable doc-task shape.
+17. **Claude Code harness for chat/general-agent tasks** *(harness parity; surfaced
+    2026-07-06 in K7 review — the `harness: pi | claude-code` selector currently lands at
+    the BUILD site only).* Claude Code (Pattern 1, §12.6) runs its whole agent loop *inside*
+    a container, so `ClaudeCodeAgentRuntime` requires a workspace/container binding — which
+    only BUILD tasks provision today. Chat/general-agent tasks (Q&A, Slack-initiated doc
+    drafting) have no code workspace, so the live chat surface stays on Pi and
+    `assertSupportedHarness` rejects `claude-code` there. This is a **provisioning gap, not a
+    capability limit**: governed tools (`github.read_file`, `document.create`, …) already flow
+    over the MCP broker identically on either harness. To close it, provision a container +
+    workspace for chat tasks (an ephemeral scratch dir, or the configured repo checkout so
+    grounding has local files) and wire the chat step runner (`makeAgentTaskStepRunner` /
+    slack-app) through the shared `makeAgentRuntime` factory with that workspace + the model
+    proxy — reusing the BUILD path's proxy/settings/budget-kill wiring and the same
+    fail-closed cross-validation (Anthropic model + container-reachable proxy, §4.1/§13.1).
+    Then `harness: claude-code` is genuinely selectable per deployment across BOTH surfaces
+    (the §28 organ #1 "harnesses are replaceable" claim, fully realized). Pairs with K7.
 
 ---
 
@@ -1124,37 +1140,75 @@ Exit criteria:
 deployment with a per-agent override (design §7.5) — with identical governance, durability,
 and delivery. Same gateway chokepoint, same session-JSONL checkpoint, same between-turn
 resume. **Non-blocking:** this milestone does not gate the §0.6 bar — sequence it alongside
-or after first blood.
+or after first blood. Full integration reference: **`claude-code-impl.md`** (the
+counterpart of `pi-details.md`; the build items below are specified there with seam
+pointers into the codebase).
 
 Human prerequisites:
 - An **Anthropic API key** (billing + spend cap) in the secret store.
-- Approve adding the `claude` CLI to the **pinned sandbox toolchain image** (K1's image).
-- Approve the sandbox **egress-allowlist entry** for the host-side model proxy (the only
-  network exit besides the broker).
+- Approve adding the `claude` CLI — **exact-version-pinned, autoupdater disabled** — plus
+  the `marathon-mcp-shim` and the Marathon-managed `claude-settings.json` to the pinned
+  sandbox toolchain image (K1's image; bump `SANDBOX_VERSION` + the toolchain manifest).
+- Egress: the kernel default stays `sandbox.network: bridge` (Track 8 — credential-free
+  outbound for installs/docs/`WebFetch`; already approved, nothing new). **For locked-down
+  deployments only,** approve the harness's locked-down shape: an **internal-only Docker
+  network** whose sole reachable endpoint is the host-side model proxy (`--network none`
+  would sever the model call too; the broker stays a unix-socket mount, not a network
+  endpoint; `WebSearch` still works — it executes server-side through the proxy — §12.6).
 
-Build:
-- **`ClaudeCodeAgentRuntime`:** spawn `claude -p --output-format stream-json` **inside the
-  sandbox** (Pattern 1, §12.6); parse the event stream onto `TaskStep`s / progress; capture
-  cost + usage from the result event into `ModelInvocation`.
-- **Governed tools over MCP:** an MCP server backed by `gateway.run`, served over the host
-  broker socket — same validate → ledger → egress-route → inject → execute → redact → audit
-  path as Pi's custom tools. Constrain built-ins via the harness allow/deny tool lists;
+Build (per `claude-code-impl.md`):
+- **`ClaudeCodeAgentRuntime`** (`packages/agent/`, sibling of `pi.ts`): **one harness turn =
+  one `claude -p --output-format stream-json` invocation** inside the task's container,
+  **bounded with `--max-turns`** so the checkpoint cadence is a config knob (§11.2); parse
+  the event stream onto progress events; capture cost + usage from the result event into
+  `ModelInvocation`, plus **streamed per-message usage for mid-invocation budget kill**
+  (§13.3 — between-turn checks alone can't stop a runaway invocation).
+- **Governed tools over MCP:** a stdio **MCP shim** in the container (`tools/list` +
+  `tools/call`, zero config, zero secrets) forwarding to `serveToolBroker` on a per-task
+  unix socket, backed by `gateway.run` — same validate → ledger → egress-route → inject →
+  execute → redact → audit path as Pi's custom tools; results cross back pre-redacted, so
+  the session JSONL is clean by construction. `--strict-mcp-config` so the untrusted
+  workspace can't register servers; constrain built-ins via allow/deny lists +
+  `--permission-mode bypassPermissions` (**defense-in-depth, never the boundary**);
   file/bash tools are contained by construction (the process lives in the container, seeing
   only the workspace).
-- **Model proxy:** host-side key-injecting proxy (`ANTHROPIC_BASE_URL`); per-tenant Anthropic
-  keys stay host-side; no key material in the container image, FS, or env.
-- **Checkpoint/resume:** persist the Claude Code session JSONL + session id per task;
-  between-turn resume via `--resume <id>` (the same async-proposal shape, §11.6).
-- **Config:** deployment default + per-agent `harness:` override in the agent YAML (§6.2).
+- **Model proxy:** host-side key-injecting proxy (`ANTHROPIC_BASE_URL`), used in **both**
+  egress postures — key hygiene is independent of network mode; per-tenant Anthropic keys
+  stay host-side (container gets a placeholder); proxy allowlists Anthropic API paths and
+  **meters usage as a backstop**; no key material in the container image, FS, or env.
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` makes the proxy the CLI's only required
+  network dependency.
+- **Checkpoint/resume:** session lives under `CLAUDE_CONFIG_DIR` in the **workspace home**
+  (`/workspace/.marathon-home` — host-visible, already excluded from the repo's git view,
+  so the trace can never ride the §29.4 diff); per-turn JSONL snapshot + `--session-id`
+  pinning; resume = fresh container + re-materialized workspace + **snapshot restored over
+  any partial JSONL** + `claude -p --resume <id>` (§11.2 turn atomicity; same
+  async-proposal shape for waits, §11.6).
+- **Config:** deployment default + per-agent `harness:` override in the agent YAML (§6.2 —
+  the enum already exists); **fail-closed cross-validation at load**: `claude-code` requires
+  an Anthropic model policy + a configured proxy (§13.1). Wire the harness branch via a
+  shared `makeAgentRuntime` factory; in this slice it lands at the **BUILD** site only
+  (`claude-code` runs inside a per-task code container, which only BUILD provides), and the
+  chat surface stays on Pi. The worker step runners are untouched — the seam holds. BUILD
+  wiring fails closed when a `claude-code` agent lacks a container-reachable proxy URL or
+  runs the locked-down `network: none` posture (its internal-network proxy wiring is the
+  spike below).
+- **Spike (early, de-risks the transport):** unix-socket bind-mount behavior on the
+  deployment Docker (macOS Docker Desktop caveat) + the `claude-code-impl.md` §10
+  **verify-on-pin checklist** (deny-rules-under-bypass, `total_cost_usd` resume semantics,
+  flag spellings) against the pinned CLI version.
 
 Depends on: K1 (the code path it must reproduce), M9 broker (built). Can proceed **in
 parallel** with K2–K4.
 Exit criteria:
-- *Unit tests:* stream-json event parsing → TaskStep mapping; MCP↔gateway bridging (audit,
-  redaction, egress routing preserved); proxy key injection (assert **no key in the container
-  env**); session-id checkpoint/resume mapping.
-- *Automated demo* (`make demo-k7`): a recorded/fake Claude Code run drives the same task
-  pipeline green — threaded reply, tool calls audited, cost captured.
+- *Unit tests:* stream-json reducer → turn/progress/usage mapping (incl. `error_max_turns`
+  → continue, `is_error` results); MCP-shim↔broker bridging (audit, redaction, egress
+  routing, typed errors preserved); proxy key injection (assert **no key in the container
+  env**) + path allowlist; session snapshot/resume mapping incl. restore-over-partial;
+  budget kill mid-invocation; config cross-validation fails closed.
+- *Automated demo* (`make demo-k7`): a recorded/fake `claude` CLI (canned stream-json
+  script) drives the same task pipeline green through the **real** broker, gateway, and
+  container — threaded reply, tool calls audited, cost captured, kill-and-resume mid-run.
 - *Live smoke + the real bar:* **re-run the K1–K4 demos and `make demo-kernel` green with
   `harness=claude-code`** — the loop works identically on either harness, which is what
   "harnesses are replaceable" (§28 organ #1) means in practice.

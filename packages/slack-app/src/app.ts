@@ -21,10 +21,14 @@ import {
 import { bootstrapSlackApp } from "./bootstrap";
 import { dispatchEnvelope, type AppDeps } from "./handlers";
 
-/** The kernel runs the Pi harness; `claude-code` is a config value reserved for K7. */
+/**
+ * The chat/general-agent surface runs the Pi harness only. The Claude Code
+ * harness (K7) is wired for BUILD tasks (github-app), which have a per-task code
+ * container; chat tasks have no such workspace, so `claude-code` is rejected here.
+ */
 function assertSupportedHarness(spec: AgentSpec): void {
   if (spec.harness !== "pi") {
-    throw new Error(`agent '${spec.name}': harness '${spec.harness}' is not available yet (K7) — use 'pi'`);
+    throw new Error(`agent '${spec.name}': harness '${spec.harness}' is not supported on the chat surface — chat runs 'pi' (claude-code is BUILD-only, K7)`);
   }
 }
 
@@ -101,6 +105,10 @@ export async function startSlackApp(): Promise<void> {
     sourceLedger: new InMemorySourceLedger(),
   });
   const governedTools = governedToolDefsFor(flagship.tools.map((t) => t.tool));
+  // Chat/general-agent tasks run on Pi. The Claude Code harness (K7) is wired
+  // only for BUILD tasks (github-app), since it runs its whole loop inside a
+  // per-task code container and chat tasks have no such workspace binding;
+  // `assertSupportedHarness` above rejects `claude-code` on this surface.
   const runtime = new PiAgentRuntime({
     secrets,
     // Durable per-task sessions (Track 12/K4): a resumed turn — answering a
