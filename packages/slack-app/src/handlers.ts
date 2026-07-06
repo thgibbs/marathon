@@ -1,4 +1,5 @@
-import { parseCheckpoint, surfaceEventKey, type DeliveryTarget } from "@marathon/core";
+import { randomUUID } from "node:crypto";
+import { mintLinkToken, parseCheckpoint, surfaceEventKey, type DeliveryTarget } from "@marathon/core";
 import { Database } from "@marathon/db";
 import { getTaskStatus, renderStatusText } from "@marathon/observability";
 import { Queue } from "@marathon/queue";
@@ -38,16 +39,55 @@ export interface AppDeps {
   agents: AgentDescriptor[];
   agentIdByName: Record<string, string>;
   defaultAgent?: string;
+  /**
+   * Identity linking (§7.20 / §2b #10): lets `/marathon link github` mint the
+   * single-use signed URL. `signingKey` is the deployment master secret
+   * (`MARATHON_SECRET_KEY` — the GitHub app verifies with the same key);
+   * `baseUrl` is the public base of the GitHub app's HTTP server
+   * (`MARATHON_LINK_BASE_URL`), which hosts the OAuth start/callback routes.
+   * Unset → the command replies that linking isn't configured.
+   */
+  identityLink?: { signingKey: string; baseUrl: string };
+  /** Test seam for the response_url POST; default global fetch. */
+  fetchImpl?: typeof fetch;
+}
+
+/** A slash-command invocation (`/marathon …`), as delivered over Socket Mode. */
+export interface SlackSlashCommand {
+  command: string;
+  text: string;
+  user_id: string;
+  team_id?: string;
+  channel_id?: string;
+  /** POST here to reply (ephemeral by default) — Socket Mode ACKs are bare. */
+  response_url?: string;
 }
 
 export type EnvelopeAction =
   | { kind: "mention"; event: SlackAppMentionEvent; eventId?: string }
   | { kind: "reply"; event: SlackMessageEvent; eventId?: string }
   | { kind: "reaction"; event: SlackReactionEvent }
+  | { kind: "command"; command: SlackSlashCommand }
   | { kind: "ignore" };
 
 /** Pure classification of a Socket Mode envelope into an action. */
 export function classifyEnvelope(envelope: SocketEnvelope): EnvelopeAction {
+  // §2b #10: slash commands arrive as their own envelope type.
+  if (envelope.type === "slash_commands") {
+    const p = envelope.payload ?? {};
+    if (typeof p.command !== "string" || typeof p.user_id !== "string") return { kind: "ignore" };
+    return {
+      kind: "command",
+      command: {
+        command: p.command,
+        text: String(p.text ?? ""),
+        user_id: p.user_id,
+        team_id: p.team_id,
+        channel_id: p.channel_id,
+        response_url: p.response_url,
+      },
+    };
+  }
   if (envelope.type !== "events_api") return { kind: "ignore" };
   const payload = envelope.payload ?? {};
   const event = payload.event;
@@ -94,6 +134,18 @@ export function isStatusAsk(text: string): boolean {
 }
 
 /**
+ * The deterministic doc-task shape for Slack drafting (§2b #16): a mention
+ * whose ask STARTS with the verb "draft" ("@marathon draft a plan for …" —
+ * the kernel's canonical opening move). A leading keyword, not a content
+ * classifier: no interpretation decides whether the doc contract + no-op
+ * evidence check apply. Everything else stays a general agent task (which can
+ * still call document.create — this shape only adds the contract/evidence).
+ */
+export function isDocDraftAsk(text: string): boolean {
+  return /^draft\b/i.test(text.trim());
+}
+
+/**
  * `@agent status` in a task's thread (Track 16, §15.3): reply with what the
  * task is doing, what it finished, what it waits on, and cost so far. Read-only
  * — never routes a task.
@@ -135,6 +187,14 @@ export async function handleMention(
   if (isStatusAsk(invocation.text)) {
     await handleStatusAsk(deps, event, invocation.sourceRef);
     return;
+  }
+
+  // Doc-task shape (§2b #16): "@marathon draft …" marks the task so the step
+  // runner applies the doc-tool contract + the post-turn evidence check. The
+  // marker rides in the source ref (the GitHub app's kind-discriminator
+  // pattern); the thread anchor keys (channel/thread_ts) are untouched.
+  if (isDocDraftAsk(invocation.text)) {
+    invocation.sourceRef = { ...invocation.sourceRef, kind: "doc_draft" };
   }
 
   await deps.delivery.acknowledge(invocation.sourceRef);
@@ -203,6 +263,64 @@ export async function handleThreadReply(
   await runAndReport(deps, continuation.id, invocation.sourceRef);
 }
 
+/**
+ * `/marathon link github` (§7.20 / §2b #10): reply ephemerally with a
+ * single-use signed URL bound to (tenant, slack_user_id, nonce, expiry). The
+ * Slack identity is PROVEN by this authenticated interaction — the token
+ * carries that proof to the GitHub OAuth callback, which writes the verified
+ * `UserIdentity`. Identities are proven, never typed.
+ */
+export async function handleSlashCommand(deps: AppDeps, cmd: SlackSlashCommand): Promise<void> {
+  const respond = async (text: string): Promise<void> => {
+    if (!cmd.response_url) return;
+    const f = deps.fetchImpl ?? fetch;
+    await f(cmd.response_url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ response_type: "ephemeral", text }),
+    });
+  };
+
+  const sub = cmd.text.trim().toLowerCase();
+  if (sub !== "link github") {
+    await respond("Usage: `/marathon link github` — link your GitHub account so Marathon can act with your access.");
+    return;
+  }
+  if (!deps.identityLink) {
+    await respond(
+      "Identity linking isn't configured on this deployment (MARATHON_LINK_BASE_URL + MARATHON_SECRET_KEY + the GitHub App's OAuth credentials are required).",
+    );
+    return;
+  }
+  const token = mintLinkToken(
+    {
+      tenantId: deps.tenantId,
+      slackUserId: cmd.user_id,
+      nonce: randomUUID(),
+      expiresAt: Date.now() + LINK_TOKEN_TTL_MS,
+    },
+    deps.identityLink.signingKey,
+  );
+  const url = `${deps.identityLink.baseUrl.replace(/\/$/, "")}/auth/github/start?token=${encodeURIComponent(token)}`;
+  await respond(
+    `To link your GitHub account, open this link (valid ${Math.round(LINK_TOKEN_TTL_MS / 60_000)} minutes, single-use):\n${url}`,
+  );
+}
+
+/** Link URLs are short-lived: the click should follow the ask. */
+const LINK_TOKEN_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * The "link your GitHub" call-to-action (§7.20): the second entry point to
+ * identity linking. When an on-behalf-of action is denied because the user
+ * has no verified GitHub link, the denial should carry this — "the moment the
+ * user hits the wall is the moment to offer the fix". A reusable string so
+ * whichever denial path adds on-behalf-of enforcement can append it.
+ */
+export function linkGithubCta(): string {
+  return "Run `/marathon link github` to connect your GitHub account so I can act with your access.";
+}
+
 export async function handleReaction(deps: AppDeps, event: SlackReactionEvent): Promise<void> {
   const fb = parseReactionFeedback(event);
   if (!fb) return;
@@ -216,4 +334,5 @@ export async function dispatchEnvelope(deps: AppDeps, envelope: SocketEnvelope):
   if (action.kind === "mention") await handleMention(deps, action.event, action.eventId);
   else if (action.kind === "reply") await handleThreadReply(deps, action.event, action.eventId);
   else if (action.kind === "reaction") await handleReaction(deps, action.event);
+  else if (action.kind === "command") await handleSlashCommand(deps, action.command);
 }

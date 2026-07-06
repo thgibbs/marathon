@@ -70,8 +70,8 @@ export interface PiAgentOptions {
    */
   builtinTools?: string[];
   /**
-   * Route Pi's `bash`/`read`/`write`/`edit` tools into a hardened sandbox container
-   * (§12.6, Pattern 2). When set, those tools execute inside a fresh {@link DockerContainer}
+   * Route Pi's `bash`/`read`/`write`/`edit`/`grep`/`find`/`ls` tools into a hardened
+   * sandbox container (§12.6, Pattern 2). When set, those tools execute inside a fresh {@link DockerContainer}
    * (no host credentials; outbound internet allowed) against a bind-mounted workspace, while governed
    * tools stay host-side. `createContainer` returns a *not-yet-started* container bound to
    * this task's workspace; the runtime owns `start()`/`stop()` for the call. Containers

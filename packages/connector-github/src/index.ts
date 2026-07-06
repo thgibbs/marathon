@@ -1,4 +1,6 @@
+export * from "./app-auth";
 export * from "./client";
+export * from "./user-oauth";
 export * from "./tools";
 export * from "./document-tools";
 export * from "./tool-defs";

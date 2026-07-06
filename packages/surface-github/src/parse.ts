@@ -4,6 +4,18 @@ export type GithubAction =
   | { kind: "mention"; invocation: NormalizedInvocation }
   | { kind: "merge"; repo: string; number: number; mergeCommitSha?: string; baseRef?: string }
   | { kind: "push"; repo: string; after?: string; paths: string[] }
+  | {
+      /** A submitted PR review (§2b #11) — GitHub's batched "now act" signal. */
+      kind: "review";
+      repo: string;
+      number: number;
+      reviewId: number;
+      /** Lowercased review state: "changes_requested" | "commented". */
+      state: string;
+      body: string;
+      author: string;
+      eventId: string;
+    }
   | { kind: "ignore" };
 
 export interface ParseGithubOptions {
@@ -72,6 +84,31 @@ export function classifyGithubEvent(eventType: string, payload: any, opts: Parse
         text: mt.text,
         eventId: `prc-${payload.comment?.id}`,
       },
+    };
+  }
+
+  // §2b #11: a SUBMITTED review is GitHub's native batched "I'm done
+  // commenting, now act" signal — it triggers WITHOUT an @marathon mention
+  // (plain unbatched comments above stay mention-gated: PR threads are
+  // mixed-audience). Whether the PR is Marathon-owned is the handler's check.
+  if (eventType === "pull_request_review" && payload?.action === "submitted") {
+    const review = payload.review;
+    // Bot authors never trigger runs (CI bots; and Marathon's own review
+    // posts, structurally, once it authors as <app-slug>[bot] — §2b #15).
+    if (review?.user?.type === "Bot") return { kind: "ignore" };
+    const state = String(review?.state ?? "").toLowerCase();
+    // An approval is handled by the merge (merge-as-approval), never as a
+    // revision request; only changes_requested / commented reviews act.
+    if (state !== "changes_requested" && state !== "commented") return { kind: "ignore" };
+    return {
+      kind: "review",
+      repo: payload.repository?.full_name,
+      number: payload.pull_request?.number,
+      reviewId: Number(review?.id),
+      state,
+      body: String(review?.body ?? ""),
+      author: String(review?.user?.login ?? payload.sender?.login ?? "unknown"),
+      eventId: `rev-${review?.id}`,
     };
   }
 

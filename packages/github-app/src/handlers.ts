@@ -16,6 +16,9 @@ import { DeliveryFanout, type AgentDescriptor, type NormalizedInvocation } from 
 import { classifyGithubEvent } from "@marathon/surface-github";
 import {
   buildAgentPrompt,
+  docDraftContract,
+  docPathSlug,
+  docReviseContract,
   InvocationRouter,
   Orchestrator,
   renderImplementationBrief,
@@ -68,36 +71,8 @@ export interface GithubAppDeps {
 const DRAFT_PERSONA = "You are a documentation agent. Draft a concise markdown design document that fulfills the request.";
 const REVISE_PERSONA = "You are a documentation agent. Revise the document in <context> per the request.";
 
-/**
- * The doc-task tool contracts (§2b #16), mirroring the BUILD contract (§29.4):
- * the document body is delivered ONLY as a `document.*` tool argument through
- * the Tool Gateway — the turn's text is just the in-thread reply and is never
- * committed. Tool names use the model-facing form (dots → underscores).
- */
-function draftContract(o: { repo: string; path: string }): string {
-  return (
-    `This task delivers a design document. Submit it by calling the document_create tool ` +
-    `exactly once, with repo "${o.repo}", path "${o.path}", a concise "title" for the pull ` +
-    `request, and the COMPLETE markdown document as the "content" argument. The document ` +
-    `reaches review ONLY through that tool call — text in your reply is never committed ` +
-    `anywhere. After the tool call, finish with a short reply for the requester's thread ` +
-    `(a sentence or two on what you drafted); never include the document body in the reply. ` +
-    `If you cannot produce a document, make no document tool call and explain why in your reply.`
-  );
-}
-
-function reviseContract(o: { repo: string; path: string; branch: string }): string {
-  return (
-    `This task revises the existing document ${o.path}, under review on pull-request branch ` +
-    `"${o.branch}" (its current content is in the untrusted context). Apply the requested ` +
-    `changes and submit the COMPLETE revised markdown by calling the document_revise tool ` +
-    `exactly once, with repo "${o.repo}", path "${o.path}", branch "${o.branch}", and the full ` +
-    `revised document as the "content" argument. The revision lands ONLY through that tool ` +
-    `call — text in your reply is never committed anywhere. After the tool call, finish with a ` +
-    `short reply for the PR thread; never include the document body in the reply. If no change ` +
-    `is warranted, make no document tool call and explain why in your reply.`
-  );
-}
+// The doc-task tool contracts (§2b #16) are shared with the Slack doc-draft
+// path — see docDraftContract / docReviseContract in @marathon/worker.
 
 /**
  * The governed tools whose success means "the revision actually landed" on
@@ -117,10 +92,6 @@ function withFooter(reply: string | undefined, footer: string): string {
 
 function fanoutOf(deps: GithubAppDeps): DeliveryFanout {
   return deps.fanout ?? new DeliveryFanout({ github: deps.delivery }, deps.db);
-}
-
-function slug(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "doc";
 }
 
 /** Mention on a PR/issue: revise the existing draft doc, or draft a new design-doc PR. */
@@ -168,7 +139,7 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
     const current = await deps.client.readFileWithSha(repo, loc.path, loc.branch).catch(() => ({ content: "", sha: "" }));
     const prompt = await buildAgentPrompt({ db: deps.db, memory: deps.memory }, task, {
       basePersona: REVISE_PERSONA,
-      contract: reviseContract({ repo, path: loc.path, branch: loc.branch }),
+      contract: docReviseContract({ repo, path: loc.path, branch: loc.branch }),
       documents: [{ path: loc.path, content: current.content }],
       context,
     });
@@ -212,10 +183,10 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
   // base applies, §29.1a, and its onDocumentPr recorder persists the
   // DocumentArtifact + doc-PR delivery target). The handler suggests the path;
   // it never commits the model's turn text.
-  const path = `${deps.docBasePath ?? "docs"}/${slug(invocation.text)}.md`;
+  const path = `${deps.docBasePath ?? "docs"}/${docPathSlug(invocation.text)}.md`;
   const prompt = await buildAgentPrompt({ db: deps.db, memory: deps.memory }, task, {
     basePersona: DRAFT_PERSONA,
-    contract: draftContract({ repo, path }),
+    contract: docDraftContract({ repo, path }),
     context,
   });
   const turn = await deps.runtime.nextTurn({
@@ -336,6 +307,86 @@ export async function handleCodePrRevision(
       "revision_queued",
     );
   }
+  return true;
+}
+
+/** The review + its inline comments as one revision request (§2b #11). */
+export function renderReviewRequest(
+  review: { state: string; body: string; author: string },
+  comments: Array<{ author: string; body: string; path: string; line: number | null }>,
+): string {
+  const stateLabel = review.state === "changes_requested" ? "requesting changes" : "with comments";
+  const parts = [`A pull-request review was submitted by ${review.author} (${stateLabel}).`];
+  if (review.body.trim()) parts.push(review.body.trim());
+  if (comments.length > 0) {
+    parts.push(
+      "Inline comments:\n" +
+        comments
+          .map((c) => `- ${c.path}${c.line !== null ? `:${c.line}` : ""} — ${c.body.trim()}`)
+          .join("\n"),
+    );
+  }
+  // A review with no body and no comments carries nothing to act on.
+  if (parts.length === 1) return "";
+  return parts.join("\n\n");
+}
+
+/**
+ * A submitted review on a Marathon-owned PR (§2b #11): GitHub's native
+ * batched "I'm done commenting, now act" signal spawns ONE revision task
+ * carrying the review body + all its inline comments — no @marathon mention
+ * needed (the explicit mention keeps working everywhere as the deliberate
+ * summon). Reviews on PRs Marathon does not own are ignored, and an
+ * already-active revision for the PR absorbs further triggers (the Slack
+ * "chatter while running" rule). Returns true when the review was consumed
+ * (including absorbed), false when the PR is not Marathon-owned.
+ */
+export async function handleGithubReview(
+  deps: GithubAppDeps,
+  review: { repo: string; number: number; reviewId: number; state: string; body: string; author: string; eventId: string },
+): Promise<boolean> {
+  const { repo, number } = review;
+
+  // Marathon-owned only: a code PR (CodeChange) or a drafted doc PR
+  // (DocumentArtifact with a live branch). Anything else is other people's
+  // review traffic — never a trigger.
+  const change = await deps.db.findCodeChangeByPr(deps.tenantId, repo, number);
+  const ownsCode = Boolean(change?.prNumber);
+  const artifact = ownsCode ? null : await deps.db.findDocumentArtifactByPr(deps.tenantId, repo, number);
+  const artifactLoc = (artifact?.location ?? {}) as { path?: string; branch?: string };
+  const ownsDoc = Boolean(artifact && artifactLoc.path && artifactLoc.branch);
+  if (!ownsCode && !ownsDoc) return false;
+
+  // Repo-permission gate (§7.17) — but SILENT on failure: the reviewer did
+  // not summon the bot, so an unauthorized drive-by review gets no reply.
+  const access = await getRepoAccess(deps.client, repo, review.author);
+  if (!access.agentOk || !access.userOk) return true;
+
+  // ONE task per review: body + all its inline comments, never one per comment.
+  const comments = (await deps.client.listReviewComments(repo, number, review.reviewId).catch(() => []))
+    // A reviewer can't submit someone else's comments, but be strict anyway.
+    .filter((c) => c.author === review.author);
+  const text = renderReviewRequest(review, comments);
+  if (!text) return true; // empty review — nothing to act on
+
+  // Absorb while a revision is already queued/running for this PR.
+  if (ownsCode && (await deps.db.findActiveRevisionTask(deps.tenantId, repo, number))) return true;
+
+  const invocation: NormalizedInvocation = {
+    surfaceType: "github",
+    sourceRef: { repo, number, kind: "pr" },
+    userExternalId: review.author,
+    teamExternalId: repo.split("/")[0],
+    agentName: null,
+    text,
+    eventId: review.eventId,
+  };
+  if (ownsCode) return handleCodePrRevision(deps, invocation);
+
+  // Doc PR: run the same tool-driven revise flow a mention takes (it re-finds
+  // the artifact and lands `document.revise` on the draft branch). The draft
+  // fallthrough is unreachable — ownsDoc verified the artifact + branch above.
+  await handleGithubMention(deps, invocation);
   return true;
 }
 
@@ -464,6 +515,7 @@ export async function dispatchGithubEvent(
 ): Promise<void> {
   const action = classifyGithubEvent(eventType, payload, { knownAgents: deps.agents.map((a) => a.name) });
   if (action.kind === "mention") await handleGithubMention(deps, action.invocation);
+  else if (action.kind === "review") await handleGithubReview(deps, action);
   else if (action.kind === "merge") await handleGithubMerge(deps, action.repo, action.number, action.mergeCommitSha, action.baseRef);
   else if (action.kind === "push") await handleGithubPush(deps, action.repo, action.after, action.paths);
 }

@@ -5,6 +5,7 @@ import type { MemoryStore } from "@marathon/memory";
 import { assertWithinBudget, assertWithinTaskBudget, type BudgetPolicy } from "@marathon/observability";
 import type { AgentRequest, AgentRuntime, AgentTurn } from "@marathon/agent";
 import type { SurfaceMessage } from "@marathon/surface";
+import { docDraftContract, docPathSlug } from "./documents";
 import { buildAgentPrompt } from "./prompt";
 
 /**
@@ -95,6 +96,27 @@ export interface AgentTaskStepOptions {
    * The result is fenced as untrusted in the prompt.
    */
   loadContext?: (task: Task) => Promise<SurfaceMessage[] | undefined> | SurfaceMessage[] | undefined;
+  /**
+   * Doc-task mode (§2b #16, the Slack remainder): when set, a task whose
+   * source ref carries `kind: "doc_draft"` (the deterministic doc-task shape —
+   * see `isDocDraftAsk`) gets the shared doc-tool CONTRACT in its trusted
+   * instructions, and its final reply carries a deterministic outcome footer:
+   * the drafted PR (evidence = the gateway-recorded DocumentArtifact) or an
+   * explicit "nothing was committed" no-op. Requires the runtime to expose the
+   * governed `document.create` tool and the gateway to be wired with
+   * `makeDocumentPrRecorder` — same load-bearing wiring as the GitHub app.
+   */
+  docTasks?: {
+    /** The ONE configured repo the doc PR targets. */
+    repo: string;
+    /** Directory drafted docs land in; default "docs". */
+    docBasePath?: string;
+  };
+}
+
+/** Is this task in the deterministic doc-draft shape (§2b #16)? */
+function isDocDraftTask(task: Task | null): task is Task {
+  return (task?.sourceRef as { kind?: string } | null | undefined)?.kind === "doc_draft";
 }
 
 /**
@@ -115,11 +137,22 @@ export function makeAgentTaskStepRunner(db: Database, runtime: AgentRuntime, opt
       );
     }
     if (opts.taskBudget) await assertWithinTaskBudget(db, taskId, opts.taskBudget);
+    // Doc-task mode (§2b #16): the deterministic doc-task shape gets the
+    // shared doc-tool contract in the TRUSTED instructions, exactly like the
+    // GitHub draft flow — the doc body only ever lands via document.create.
+    const docDraft = opts.docTasks && isDocDraftTask(task);
+    const contract = docDraft
+      ? docDraftContract({
+          repo: opts.docTasks!.repo,
+          path: `${opts.docTasks!.docBasePath ?? "docs"}/${docPathSlug(task.inputText ?? "")}.md`,
+        })
+      : undefined;
     // Assemble instructions (persona) + recalled memory + surface context +
     // the ask (design §7.18) — every non-persona block fenced as untrusted.
     const parts = task
       ? await buildAgentPrompt({ db, memory: opts.memory }, task, {
           basePersona: opts.instructions,
+          contract,
           context: (await opts.loadContext?.(task)) ?? undefined,
         })
       : { instructions: opts.instructions ?? "You are Marathon, a concise engineering assistant.", input: "" };
@@ -137,7 +170,21 @@ export function makeAgentTaskStepRunner(db: Database, runtime: AgentRuntime, opt
     };
     const turnIndex = checkpoint.completedSteps.length;
     const turn = await runtime.nextTurn({ request, checkpoint });
-    const text = redactSecrets(turn.text ?? "", { enabled: opts.redactTrace !== false });
+    let text = redactSecrets(turn.text ?? "", { enabled: opts.redactTrace !== false });
+    // Deterministic post-turn evidence check (§2b #16): the doc exists only if
+    // the agent's own document.create left an artifact (written by the
+    // gateway's onDocumentPr recorder). No artifact → the reply must report a
+    // visible no-op instead of pretending a draft exists; text alone is never
+    // treated as evidence.
+    if (docDraft && turn.done && !turn.waiting) {
+      const artifact = await db.findDocumentArtifactByTask(task.tenantId, taskId);
+      const loc = (artifact?.location ?? {}) as { prNumber?: number };
+      const footer =
+        typeof loc.prNumber === "number"
+          ? `Drafted design doc: PR #${loc.prNumber} — comment to revise, merge to execute.`
+          : "No design document was produced by this run — nothing was committed. Mention me again to retry.";
+      text = text.trim() ? `${text.trim()}\n\n${footer}` : footer;
+    }
     const wait = withWaitState(
       {
         ...checkpoint,

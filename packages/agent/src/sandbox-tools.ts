@@ -5,6 +5,8 @@ import path from "node:path";
 import type {
   BashOperations,
   EditOperations,
+  FindOperations,
+  LsOperations,
   ReadOperations,
   WriteOperations,
 } from "@earendil-works/pi-coding-agent";
@@ -27,6 +29,23 @@ import type { DockerContainer } from "@marathon/tools";
  * even if a path is malformed.
  */
 export const GUEST_WORKSPACE = "/workspace";
+
+/**
+ * Resolve a model-supplied search path against the guest workspace and REFUSE
+ * anything that escapes it. The container's filesystem isolation is the floor,
+ * but the workspace is the *data* boundary (§12.6) — an absolute path
+ * (`/etc/...`) or `../` traversal (`path.posix.join('/workspace', '../../etc')`
+ * normalizes to `/etc`) must not let the model search outside the mount. Both
+ * are contained here: resolve within `ws`, then require the result to be `ws`
+ * or under `ws + '/'`.
+ */
+export function resolveWithinWorkspace(ws: string, p: string): string {
+  const target = path.posix.resolve(ws, p);
+  if (target !== ws && !target.startsWith(`${ws}/`)) {
+    throw new Error(`path escapes the workspace (${ws}): ${p}`);
+  }
+  return target;
+}
 
 function decode(buf: Buffer): string {
   return buf.toString("utf8");
@@ -96,6 +115,170 @@ export function dockerBashOperations(container: DockerContainer, shellPath = "/b
   };
 }
 
+/** `ls` ops backed by one listing exec per directory (§2b #2). */
+export function dockerLsOperations(container: DockerContainer, ws = GUEST_WORKSPACE): LsOperations {
+  // Pi's ls tool stats EVERY entry it lists; a naive per-entry `test -d`
+  // would cost one docker-exec round-trip per file. Fetch each directory in
+  // ONE exec (names, with a trailing "/" marking directories) and serve the
+  // per-entry stats from that cache.
+  const listings = new Map<string, Map<string, boolean>>();
+  const list = async (dir: string): Promise<Map<string, boolean>> => {
+    const cached = listings.get(dir);
+    if (cached) return cached;
+    const r = await container.execStream(
+      [
+        "sh",
+        "-c",
+        'cd -- "$1" || exit 2; ls -1A | while IFS= read -r f; do if [ -d "$f" ]; then printf "%s/\\n" "$f"; else printf "%s\\n" "$f"; fi; done',
+        "sh",
+        dir,
+      ],
+      { timeoutMs: 10_000 },
+    );
+    if (r.exitCode !== 0) throw new Error(`ls failed (exit ${r.exitCode}): ${decode(r.stderr).trim()}`);
+    const entries = new Map<string, boolean>();
+    for (const line of decode(r.stdout).split("\n")) {
+      if (!line) continue;
+      const isDir = line.endsWith("/");
+      entries.set(isDir ? line.slice(0, -1) : line, isDir);
+    }
+    listings.set(dir, entries);
+    return entries;
+  };
+  return {
+    // Contain the model-supplied path to the workspace before touching the FS.
+    exists: async (absolutePath) => {
+      resolveWithinWorkspace(ws, absolutePath);
+      return (await container.execStream(["test", "-e", absolutePath], { timeoutMs: 5_000 })).exitCode === 0;
+    },
+    stat: async (absolutePath) => {
+      resolveWithinWorkspace(ws, absolutePath);
+      const fromListing = listings.get(path.posix.dirname(absolutePath))?.get(path.posix.basename(absolutePath));
+      if (fromListing !== undefined) return { isDirectory: () => fromListing };
+      const r = await container.execStream(
+        ["sh", "-c", 'if [ -d "$1" ]; then echo d; elif [ -e "$1" ]; then echo f; else exit 2; fi', "sh", absolutePath],
+        { timeoutMs: 5_000 },
+      );
+      if (r.exitCode !== 0) throw new Error(`not found in sandbox: ${absolutePath}`);
+      const isDir = decode(r.stdout).trim() === "d";
+      return { isDirectory: () => isDir };
+    },
+    readdir: async (absolutePath) => [...(await list(resolveWithinWorkspace(ws, absolutePath))).keys()],
+  };
+}
+
+/**
+ * `find` ops: the glob runs as `rg --files --glob` INSIDE the container (the
+ * toolchain image ships ripgrep). Returns absolute guest paths so Pi's
+ * relativize step (`p.startsWith(searchPath)`) works — a relative return
+ * would be resolved against the HOST cwd.
+ */
+export function dockerFindOperations(container: DockerContainer, ws = GUEST_WORKSPACE): FindOperations {
+  return {
+    exists: async (absolutePath) => {
+      resolveWithinWorkspace(ws, absolutePath);
+      return (await container.execStream(["test", "-e", absolutePath], { timeoutMs: 5_000 })).exitCode === 0;
+    },
+    glob: async (pattern, cwd, { ignore, limit }) => {
+      // The search root comes from the model's `path`; refuse escapes.
+      resolveWithinWorkspace(ws, cwd);
+      const argv = ["rg", "--files", "--hidden", "--glob", pattern];
+      for (const ig of ignore) argv.push("--glob", `!${ig}`);
+      const r = await container.execStream(argv, { cwd, timeoutMs: 30_000 });
+      // rg exits 1 when nothing matched — that's an empty result, not an error.
+      if (r.exitCode !== 0 && r.exitCode !== 1) {
+        throw new Error(`find failed (exit ${r.exitCode}): ${decode(r.stderr).trim() || "is ripgrep in the sandbox image?"}`);
+      }
+      return decode(r.stdout)
+        .split("\n")
+        .filter((l) => l.length > 0)
+        .slice(0, limit)
+        .map((l) => path.posix.join(cwd, l));
+    },
+  };
+}
+
+/** Match lines look like `path:12:text`; context lines use `-` separators. */
+const GREP_MATCH_LINE = /^.+?:\d+:/;
+const GREP_DEFAULT_LIMIT = 100;
+const GREP_MAX_BYTES = 64 * 1024;
+
+/**
+ * A sandboxed `grep` tool. Pi's own grep factory cannot be routed with
+ * operations alone — it ALWAYS spawns ripgrep on the host against the search
+ * path (the custom operations only serve `isDirectory` + context-line reads),
+ * which would search the host filesystem. So the whole search runs as `rg`
+ * inside the container instead. Exported for tests.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function buildSandboxGrepTool(pi: any, container: DockerContainer, ws: string): unknown {
+  return pi.defineTool({
+    name: "grep",
+    label: "grep",
+    description:
+      "Search file contents in the workspace for a pattern (regex by default). " +
+      "Returns matching lines as path:line: text. Respects .gitignore. " +
+      `Output is truncated to ${GREP_DEFAULT_LIMIT} matches (override with limit) or ${GREP_MAX_BYTES / 1024}KB.`,
+    parameters: {
+      type: "object",
+      properties: {
+        pattern: { type: "string", description: "Search pattern (regex or literal string)" },
+        path: { type: "string", description: "Directory or file to search (default: workspace root)" },
+        glob: { type: "string", description: "Filter files by glob pattern, e.g. '*.ts'" },
+        ignoreCase: { type: "boolean", description: "Case-insensitive search (default: false)" },
+        literal: { type: "boolean", description: "Treat pattern as a literal string instead of a regex" },
+        context: { type: "number", description: "Lines of context before/after each match (default: 0)" },
+        limit: { type: "number", description: `Maximum matches to return (default: ${GREP_DEFAULT_LIMIT})` },
+      },
+      required: ["pattern"],
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    execute: async (_id: string, params: any) => {
+      const pattern = String(params?.pattern ?? "");
+      const searchDir = typeof params?.path === "string" && params.path ? params.path : ".";
+      // Contain the search to the workspace: an absolute path or `../` traversal
+      // is refused rather than searching arbitrary container files (review §2b #2).
+      const target = resolveWithinWorkspace(ws, searchDir);
+      const limit = typeof params?.limit === "number" && params.limit > 0 ? params.limit : GREP_DEFAULT_LIMIT;
+      const argv = ["rg", "--line-number", "--no-heading", "--color=never", "--hidden"];
+      if (params?.ignoreCase) argv.push("--ignore-case");
+      if (params?.literal) argv.push("--fixed-strings");
+      if (typeof params?.glob === "string" && params.glob) argv.push("--glob", params.glob);
+      if (typeof params?.context === "number" && params.context > 0) argv.push("--context", String(params.context));
+      argv.push("--", pattern, target);
+      const r = await container.execStream(argv, { timeoutMs: 30_000 });
+      if (r.exitCode === 1) return { content: [{ type: "text", text: "No matches found" }], details: {} };
+      if (r.exitCode !== 0) {
+        throw new Error(`grep failed (exit ${r.exitCode}): ${decode(r.stderr).trim() || "is ripgrep in the sandbox image?"}`);
+      }
+      // Truncate by match count (context lines ride along with their match)
+      // and byte size, whichever bites first.
+      const out: string[] = [];
+      let matches = 0;
+      let bytes = 0;
+      let truncated = false;
+      for (const line of decode(r.stdout).split("\n")) {
+        if (GREP_MATCH_LINE.test(line)) {
+          if (matches >= limit) {
+            truncated = true;
+            break;
+          }
+          matches++;
+        }
+        bytes += line.length + 1;
+        if (bytes > GREP_MAX_BYTES) {
+          truncated = true;
+          break;
+        }
+        out.push(line);
+      }
+      let text = out.join("\n").trimEnd() || "No matches found";
+      if (truncated) text += `\n\n[Truncated: ${limit} matches or ${GREP_MAX_BYTES / 1024}KB limit]`;
+      return { content: [{ type: "text", text }], details: {} };
+    },
+  });
+}
+
 export interface DockerSandboxTools {
   /** Pi ToolDefinitions to add to `customTools`. */
   tools: unknown[];
@@ -104,9 +287,11 @@ export interface DockerSandboxTools {
 }
 
 /**
- * Build the sandboxed `bash`/`read`/`write`/`edit` tool definitions, routed into
- * `container`. `pi` is the dynamically-imported `@earendil-works/pi-coding-agent`
- * module (kept loose to stay decoupled from Pi's internal types).
+ * Build the sandboxed `bash`/`read`/`write`/`edit`/`grep`/`find`/`ls` tool
+ * definitions, all routed into `container` (§2b #2 — no built-in escapes to
+ * the host filesystem). `pi` is the dynamically-imported
+ * `@earendil-works/pi-coding-agent` module (kept loose to stay decoupled from
+ * Pi's internal types).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function buildDockerSandboxTools(pi: any, container: DockerContainer, opts: { shellPath?: string } = {}): DockerSandboxTools {
@@ -117,6 +302,12 @@ export function buildDockerSandboxTools(pi: any, container: DockerContainer, opt
     pi.createReadToolDefinition(ws, { operations: dockerReadOperations(container) }),
     pi.createWriteToolDefinition(ws, { operations: dockerWriteOperations(container) }),
     pi.createEditToolDefinition(ws, { operations: dockerEditOperations(container) }),
+    // grep is a custom in-container tool: Pi's factory always spawns ripgrep
+    // on the HOST, so routing it via operations alone would search the wrong
+    // filesystem. find/ls are fully pluggable and use Pi's factories.
+    buildSandboxGrepTool(pi, container, ws),
+    pi.createFindToolDefinition(ws, { operations: dockerFindOperations(container, ws) }),
+    pi.createLsToolDefinition(ws, { operations: dockerLsOperations(container, ws) }),
   ];
-  return { tools, names: ["bash", "read", "write", "edit"] };
+  return { tools, names: ["bash", "read", "write", "edit", "grep", "find", "ls"] };
 }

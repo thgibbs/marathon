@@ -75,4 +75,59 @@ describe("classifyGithubEvent", () => {
     expect(classifyGithubEvent("pull_request", { action: "closed", pull_request: { merged: false } }).kind).toBe("ignore");
     expect(classifyGithubEvent("star", {}).kind).toBe("ignore");
   });
+
+  it("classifies a submitted review — NO mention required (§2b #11)", () => {
+    const a = classifyGithubEvent("pull_request_review", {
+      action: "submitted",
+      repository: { full_name: "o/repo" },
+      pull_request: { number: 9 },
+      review: { id: 33, state: "changes_requested", body: "Please tighten §2.", user: { login: "reviewer", type: "User" } },
+    });
+    expect(a).toMatchObject({
+      kind: "review",
+      repo: "o/repo",
+      number: 9,
+      reviewId: 33,
+      state: "changes_requested",
+      body: "Please tighten §2.",
+      author: "reviewer",
+      eventId: "rev-33",
+    });
+  });
+
+  it("review classification: commented triggers, approved does not, bots never do (§2b #11)", () => {
+    const base = {
+      action: "submitted",
+      repository: { full_name: "o/repo" },
+      pull_request: { number: 9 },
+    };
+    expect(
+      classifyGithubEvent("pull_request_review", {
+        ...base,
+        review: { id: 34, state: "COMMENTED", body: "batch of notes", user: { login: "r", type: "User" } },
+      }).kind,
+    ).toBe("review");
+    // Approval is the merge signal, never a revision request.
+    expect(
+      classifyGithubEvent("pull_request_review", {
+        ...base,
+        review: { id: 35, state: "approved", body: "LGTM", user: { login: "r", type: "User" } },
+      }).kind,
+    ).toBe("ignore");
+    // Bot authors (CI bots, Marathon-as-app once §2b #15 lands) never trigger.
+    expect(
+      classifyGithubEvent("pull_request_review", {
+        ...base,
+        review: { id: 36, state: "changes_requested", body: "x", user: { login: "ci[bot]", type: "Bot" } },
+      }).kind,
+    ).toBe("ignore");
+    // Only the submitted action counts (edited/dismissed do not).
+    expect(
+      classifyGithubEvent("pull_request_review", {
+        ...base,
+        action: "dismissed",
+        review: { id: 37, state: "changes_requested", body: "x", user: { login: "r", type: "User" } },
+      }).kind,
+    ).toBe("ignore");
+  });
 });
