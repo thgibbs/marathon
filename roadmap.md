@@ -945,6 +945,22 @@ fold into M7–M9 sequencing as capacity allows.
     `makeAgentTaskStepRunner`, and a Slack mention carries no deterministic doc-task
     signal to key them on. Add that contract/evidence mode when Slack drafting grows a
     recognizable doc-task shape.
+17. **Claude Code harness for chat/general-agent tasks** *(harness parity; surfaced
+    2026-07-06 in K7 review — the `harness: pi | claude-code` selector currently lands at
+    the BUILD site only).* Claude Code (Pattern 1, §12.6) runs its whole agent loop *inside*
+    a container, so `ClaudeCodeAgentRuntime` requires a workspace/container binding — which
+    only BUILD tasks provision today. Chat/general-agent tasks (Q&A, Slack-initiated doc
+    drafting) have no code workspace, so the live chat surface stays on Pi and
+    `assertSupportedHarness` rejects `claude-code` there. This is a **provisioning gap, not a
+    capability limit**: governed tools (`github.read_file`, `document.create`, …) already flow
+    over the MCP broker identically on either harness. To close it, provision a container +
+    workspace for chat tasks (an ephemeral scratch dir, or the configured repo checkout so
+    grounding has local files) and wire the chat step runner (`makeAgentTaskStepRunner` /
+    slack-app) through the shared `makeAgentRuntime` factory with that workspace + the model
+    proxy — reusing the BUILD path's proxy/settings/budget-kill wiring and the same
+    fail-closed cross-validation (Anthropic model + container-reachable proxy, §4.1/§13.1).
+    Then `harness: claude-code` is genuinely selectable per deployment across BOTH surfaces
+    (the §28 organ #1 "harnesses are replaceable" claim, fully realized). Pairs with K7.
 
 ---
 
