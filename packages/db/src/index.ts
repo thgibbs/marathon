@@ -239,6 +239,24 @@ export class Database implements AuditWriter, IdempotencyStore {
     return rows[0] ? rowToTask(rows[0]) : null;
   }
 
+  /**
+   * An unfinished code-revision task anchored to a PR (§2b #11): while one is
+   * queued/running/retrying, further review-submission triggers for the same
+   * PR are absorbed — the GitHub mirror of Slack's "chatter while running".
+   */
+  async findActiveRevisionTask(tenantId: Id, repo: string, prNumber: number): Promise<Task | null> {
+    const { rows } = await this.pool.query(
+      `select * from task
+       where tenant_id = $1 and source_type = 'github'
+         and source_ref->>'kind' = 'code_revision'
+         and source_ref->>'repo' = $2 and (source_ref->>'prNumber')::int = $3
+         and status in ('created', 'queued', 'running', 'retrying')
+       order by created_at desc limit 1`,
+      [tenantId, repo, prNumber],
+    );
+    return rows[0] ? rowToTask(rows[0]) : null;
+  }
+
   async findTaskBySourceTask(sourceTaskId: Id): Promise<Task | null> {
     const { rows } = await this.pool.query(
       `select * from task where source_task_id = $1 order by created_at desc limit 1`,
@@ -687,6 +705,52 @@ export class Database implements AuditWriter, IdempotencyStore {
       [tenantId, surfaceType, externalId],
     );
     return rows[0] ? rowToUserIdentity(rows[0]) : null;
+  }
+
+  /** A user's identity on one surface (§7.20 — the per-user access checker). */
+  async findUserIdentityByUser(tenantId: Id, userId: Id, surfaceType: SurfaceType): Promise<UserIdentity | null> {
+    const { rows } = await this.pool.query(
+      `select * from user_identity
+       where tenant_id = $1 and user_id = $2 and surface_type = $3`,
+      [tenantId, userId, surfaceType],
+    );
+    return rows[0] ? rowToUserIdentity(rows[0]) : null;
+  }
+
+  /**
+   * Write a VERIFIED identity link (§7.20 / §2b #10): upsert on the tenant
+   * uniqueness boundary (one external login per tenant). Proof of control
+   * wins — a re-link points the identity at the proving user, refreshes the
+   * verification fields, and reactivates a stale/revoked link.
+   */
+  async linkUserIdentity(input: {
+    tenantId: Id;
+    userId: Id;
+    surfaceType: SurfaceType;
+    externalId: string;
+    verificationMethod: "oauth" | "idp" | "admin_asserted";
+    credentialRef?: string;
+  }): Promise<UserIdentity> {
+    const { rows } = await this.pool.query(
+      `insert into user_identity(user_id, tenant_id, surface_type, external_id,
+                                 verified_at, verification_method, status, credential_ref)
+       values ($1, $2, $3, $4, now(), $5, 'active', $6)
+       on conflict on constraint user_identity_tenant_surface_external_key
+       do update set user_id = excluded.user_id,
+                     verified_at = excluded.verified_at,
+                     verification_method = excluded.verification_method,
+                     status = 'active',
+                     credential_ref = excluded.credential_ref,
+                     updated_at = now()
+       returning *`,
+      [input.userId, input.tenantId, input.surfaceType, input.externalId, input.verificationMethod, input.credentialRef ?? null],
+    );
+    return rowToUserIdentity(rows[0]);
+  }
+
+  /** Transition a link's status (§7.20: a failed refresh marks it `stale` → deny). */
+  async setUserIdentityStatus(id: Id, status: "active" | "stale" | "revoked"): Promise<void> {
+    await this.pool.query(`update user_identity set status = $2, updated_at = now() where id = $1`, [id, status]);
   }
 
   async recordFeedback(input: {

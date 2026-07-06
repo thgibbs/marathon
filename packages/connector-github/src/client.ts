@@ -30,6 +30,13 @@ export interface GithubClient {
     issueNumber: number,
     limit?: number,
   ): Promise<Array<{ id: number; author: string; body: string; createdAt: string }>>;
+  /** The inline comments belonging to ONE submitted review (§2b #11). */
+  listReviewComments(
+    repo: string,
+    prNumber: number,
+    reviewId: number,
+    limit?: number,
+  ): Promise<Array<{ id: number; author: string; body: string; path: string; line: number | null }>>;
   closeIssue(repo: string, issueNumber: number): Promise<void>;
   mergePullRequest(
     repo: string,
@@ -104,30 +111,49 @@ export async function getRepoAccess(client: GithubClient, repo: string, username
   return { agentOk, userOk: userPermission !== "none", userPermission };
 }
 
+/**
+ * A static PAT, or a dynamic source (App installation tokens, §2b #15 —
+ * they expire hourly, so a long-running client must resolve per request).
+ */
+export type GithubClientAuth = string | { getToken(forceRefresh?: boolean): Promise<string> };
+
 /** Real read-only GitHub client (Contents API). */
 export class HttpGithubClient implements GithubClient {
   constructor(
-    private readonly token: string,
+    private readonly auth: GithubClientAuth,
     private readonly baseUrl = "https://api.github.com",
   ) {}
 
+  private async resolveToken(forceRefresh = false): Promise<string> {
+    return typeof this.auth === "string" ? this.auth : this.auth.getToken(forceRefresh);
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async api(path: string, init?: { method?: string; body?: unknown }): Promise<any> {
-    const res = await fetch(`${this.baseUrl}${path}`, {
+    let res = await this.request(path, await this.resolveToken(), init);
+    // §2b #15: an installation token can be revoked before its stated expiry;
+    // one forced refresh + retry covers that without looping.
+    if (res.status === 401 && typeof this.auth !== "string") {
+      res = await this.request(path, await this.resolveToken(true), init);
+    }
+    if (!res.ok) {
+      throw new Error(`github ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    }
+    if (res.status === 204) return null;
+    return res.json();
+  }
+
+  private async request(path: string, token: string, init?: { method?: string; body?: unknown }): Promise<Response> {
+    return fetch(`${this.baseUrl}${path}`, {
       method: init?.method ?? "GET",
       headers: {
-        Authorization: `Bearer ${this.token}`,
+        Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
         "User-Agent": "marathon",
         ...(init?.body ? { "Content-Type": "application/json" } : {}),
       },
       body: init?.body ? JSON.stringify(init.body) : undefined,
     });
-    if (!res.ok) {
-      throw new Error(`github ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    }
-    if (res.status === 204) return null;
-    return res.json();
   }
 
   async readFile(repo: string, path: string, ref?: string): Promise<GithubFile> {
@@ -181,6 +207,24 @@ export class HttpGithubClient implements GithubClient {
       author: String(c.user?.login ?? ""),
       body: String(c.body ?? ""),
       createdAt: String(c.created_at ?? ""),
+    }));
+  }
+
+  async listReviewComments(
+    repo: string,
+    prNumber: number,
+    reviewId: number,
+    limit = 50,
+  ): Promise<Array<{ id: number; author: string; body: string; path: string; line: number | null }>> {
+    const j = await this.api(`/repos/${repo}/pulls/${prNumber}/reviews/${reviewId}/comments?per_page=${limit}`);
+    const arr = Array.isArray(j) ? j : [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return arr.map((c: any) => ({
+      id: Number(c.id),
+      author: String(c.user?.login ?? ""),
+      body: String(c.body ?? ""),
+      path: String(c.path ?? ""),
+      line: typeof c.line === "number" ? c.line : typeof c.original_line === "number" ? c.original_line : null,
     }));
   }
 
@@ -318,15 +362,20 @@ export class HttpGithubClient implements GithubClient {
   }
 
   private async graphql(query: string, variables: Record<string, unknown>): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/graphql`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        "User-Agent": "marathon",
-      },
-      body: JSON.stringify({ query, variables }),
-    });
+    const run = async (token: string): Promise<Response> =>
+      fetch(`${this.baseUrl}/graphql`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "User-Agent": "marathon",
+        },
+        body: JSON.stringify({ query, variables }),
+      });
+    let res = await run(await this.resolveToken());
+    if (res.status === 401 && typeof this.auth !== "string") {
+      res = await run(await this.resolveToken(true));
+    }
     if (!res.ok) throw new Error(`github graphql ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const j = (await res.json()) as { errors?: Array<{ message: string }> };
     if (j.errors?.length) throw new Error(`github graphql: ${j.errors[0]!.message}`);
@@ -442,6 +491,28 @@ export class FixturesGithubClient implements GithubClient {
       .filter((c) => c.key === `${repo}:${issueNumber}`)
       .slice(0, limit)
       .map((c) => ({ id: c.id, author: c.author, body: c.body, createdAt: "" }));
+  }
+
+  /** Seed with `${repo}:${prNumber}:${reviewId}` keys for §2b #11 tests. */
+  public readonly reviewComments: Array<{
+    key: string;
+    id: number;
+    author: string;
+    body: string;
+    path: string;
+    line: number | null;
+  }> = [];
+
+  async listReviewComments(
+    repo: string,
+    prNumber: number,
+    reviewId: number,
+    limit = 50,
+  ): Promise<Array<{ id: number; author: string; body: string; path: string; line: number | null }>> {
+    return this.reviewComments
+      .filter((c) => c.key === `${repo}:${prNumber}:${reviewId}`)
+      .slice(0, limit)
+      .map(({ key: _key, ...c }) => c);
   }
 
   async closeIssue(repo: string, issueNumber: number): Promise<void> {

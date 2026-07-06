@@ -13,6 +13,9 @@ export type AuditEventType =
   | "policy.denied"
   | "task.created"
   | "task.cancelled"
+  // identity linking (§7.20): link / stale / unlink transitions are audited
+  | "identity.linked"
+  | "identity.stale"
   // task lifecycle transitions are recorded as `task.<status>`
   | (string & {});
 

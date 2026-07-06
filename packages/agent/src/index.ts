@@ -7,4 +7,5 @@ export * from "./claude-stream";
 export * from "./claude-code";
 export * from "./runtime-factory";
 export * from "./sandbox-tools";
+export * from "./chat-workspace";
 export * from "./sandbox-factory";

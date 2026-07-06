@@ -136,6 +136,39 @@ async function main(): Promise<void> {
     assert(gh.writes.some((w) => w.op === "putFile" && (w.args as { branch?: string }).branch?.startsWith("marathon/doc-")), "revision committed to the draft branch");
     console.log("[github-app demo] PR comment -> revised doc on its branch (no new PR)");
 
+    // 2c. §2b #11: a SUBMITTED review on the Marathon-drafted doc PR triggers
+    //     a revision WITHOUT an @marathon mention — GitHub's batched "now act"
+    //     signal. A bot-authored review (CI, or Marathon itself) never does.
+    deps.runtime = new FakeAgentRuntime({
+      turns: [{
+        text: "Addressed the review feedback.",
+        act: async (ctx) => {
+          const artifact = await db.findDocumentArtifactByPr(boot.tenantId, REPO, 1);
+          const loc = artifact!.location as { path: string; branch: string };
+          await gateway.run("document.revise", { repo: REPO, path: loc.path, content: "# Rate limiting design\n\n- addressed review", branch: loc.branch }, govCtx(ctx));
+        },
+      }],
+    });
+    const putsBeforeReview = count(gh, "putFile");
+    // A bot-authored review is ignored (no revision).
+    await handleWebhookRequest(deps, SECRET, signed("pull_request_review", `d-botrev-${u}`, {
+      action: "submitted",
+      repository: { full_name: REPO, owner: { login: "thgibbs" } },
+      pull_request: { number: 1 },
+      review: { id: u + 30, state: "changes_requested", body: "automated note", user: { login: "ci[bot]", type: "Bot" } },
+    }));
+    assert(count(gh, "putFile") === putsBeforeReview, "a bot-authored review must not trigger a revision");
+    // A human review requesting changes revises the doc on its branch (no new PR).
+    await handleWebhookRequest(deps, SECRET, signed("pull_request_review", `d-review-${u}`, {
+      action: "submitted",
+      repository: { full_name: REPO, owner: { login: "thgibbs" } },
+      pull_request: { number: 1 },
+      review: { id: u + 31, state: "changes_requested", body: "Please tighten the burst allowance.", user: { login: "thgibbs", type: "User" } },
+    }));
+    assert(count(gh, "createPullRequest") === 1, "a review-triggered revision must NOT open a new PR");
+    assert(count(gh, "putFile") === putsBeforeReview + 1, "a submitted review should revise the doc once");
+    console.log("[github-app demo] submitted review -> revision (no mention); bot review ignored (§2b #11)");
+
     // 2b. §2b #16: a turn that makes NO document tool call commits NOTHING and
     //     reports a visible no-op — the model's chat text is never committed.
     deps.runtime = new FakeAgentRuntime({

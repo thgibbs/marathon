@@ -4,7 +4,7 @@
  * Needs: GITHUB_TOKEN (Contents+PR write), GITHUB_WEBHOOK_SECRET, a model key
  * (OPENAI_API_KEY), Postgres at DATABASE_URL, and inbound events one of two
  * ways (configure the GitHub App/webhook to send issue_comment,
- * pull_request_review_comment, pull_request):
+ * pull_request_review_comment, pull_request_review, pull_request):
  *   - dev (§2b #12): MARATHON_WEBHOOK_PROXY=https://smee.io/<channel> — the
  *     app SUBSCRIBES outbound to the channel (no tunnel); point the App's
  *     webhook URL at the same channel once.
@@ -17,12 +17,12 @@
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { PiAgentRuntime } from "@marathon/agent";
-import { EnvSecretStore, loadAgentSpecs, loadConfig, type AgentSpec } from "@marathon/config";
-import { ensureBranch, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
+import { makeAgentRuntime, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
+import { EnvSecretStore, loadAgentSpecs, loadConfig, warnUnknownMarathonEnv } from "@marathon/config";
+import { ensureBranch, githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
 import { WebhookProxyClient } from "@marathon/surface-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
-import { bootstrapGithubApp, handleWebhookRequest, makeBuildWiring, type GithubAppDeps } from "@marathon/github-app";
+import { bootstrapGithubApp, handleIdentityRequest, handleWebhookRequest, makeBuildWiring, type GithubAppDeps, type IdentityLinkDeps } from "@marathon/github-app";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
 import { Queue } from "@marathon/queue";
@@ -30,14 +30,9 @@ import { DeliveryFanout } from "@marathon/surface";
 import { InMemorySourceLedger, ToolGateway, toolPolicyFromSpec, ToolRegistry } from "@marathon/tools";
 import { BUILD_JOB_KIND, InvocationRouter, makeDocumentPrRecorder, Orchestrator, Worker } from "@marathon/worker";
 
-/** The kernel runs the Pi harness; `claude-code` is a config value reserved for K7. */
-function assertSupportedHarness(spec: AgentSpec): void {
-  if (spec.harness !== "pi") {
-    throw new Error(`agent '${spec.name}': harness '${spec.harness}' is not available yet (K7) — use 'pi'`);
-  }
-}
-
 async function main(): Promise<void> {
+  // §2b #13: a misspelled MARATHON_* variable fails silently otherwise.
+  warnUnknownMarathonEnv();
   const cfg = loadConfig();
   const secret = process.env.GITHUB_WEBHOOK_SECRET?.trim();
   const owner = process.env.GITHUB_OWNER?.trim();
@@ -48,18 +43,26 @@ async function main(): Promise<void> {
   await migrate(cfg.databaseUrl);
   const db = new Database(cfg.databaseUrl);
   const queue = new Queue(cfg.databaseUrl);
-  const secrets = new EnvSecretStore();
-  const token = await secrets.get("secret/github");
-  if (!token) throw new Error("GITHUB_TOKEN is required");
+  // GitHub auth (§2b #15): App installation tokens when GITHUB_APP_ID +
+  // GITHUB_APP_PRIVATE_KEY are set (posts author as <app-slug>[bot]); PAT
+  // fallback otherwise. The decorated store makes every `secret/github`
+  // consumer — client factory, brokered gh/git, clone source — App-authored.
+  const auth = githubAuthFromEnv(new EnvSecretStore(), owner);
+  const secrets = auth.secrets;
+  console.log(`[github-app] github auth mode: ${auth.mode === "app" ? "App installation token (posts as the app bot)" : "personal access token (set GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY to post as the app)"}`);
+  if (auth.mode === "token" && !(await secrets.get("secret/github"))) {
+    throw new Error("GITHUB_TOKEN (or GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY) is required");
+  }
 
   // Configured agents (Track 14): YAML specs; the first file is the default.
   // Its grants (with the ONE configured repo as every grant's allowlist)
   // become the gateway policy below — editing the YAML narrows the surface.
   const specs = await loadAgentSpecs(cfg.agentsDir);
   const flagship = specs[0]!;
-  assertSupportedHarness(flagship);
   const boot = await bootstrapGithubApp(db, { owner, tenantName: cfg.tenant, specs });
-  const client = new HttpGithubClient(token);
+  // Dynamic auth keeps this long-running client valid across the ~1h
+  // installation-token expiry (it refreshes per request + retries on 401).
+  const client = new HttpGithubClient(auth.tokenSource ?? (await secrets.get("secret/github"))!);
   const orchestrator = new Orchestrator(db, queue);
   const delivery = new GithubDelivery(client);
   const fanout = new DeliveryFanout({ github: delivery }, db);
@@ -98,12 +101,29 @@ async function main(): Promise<void> {
     orchestrator,
     delivery,
     fanout,
-    runtime: new PiAgentRuntime({
-      secrets,
-      // Durable per-task sessions (K4) — same location the BUILD side uses.
-      sessionDir: join(tmpdir(), "marathon-sessions"),
-      governed: { gateway: toolGateway, tools: governedToolDefsFor(flagship.tools.map((t) => t.tool)) },
-    }),
+    // Harness from the spec (§2b #17): the mention/doc flows run EITHER
+    // harness through the shared factory. Claude Code needs a container +
+    // workspace even for chat-shaped tasks — withChatWorkspace binds an
+    // ephemeral scratch dir per task; Pi keeps running containerless.
+    runtime: withChatWorkspace(
+      makeAgentRuntime(flagship, {
+        secrets,
+        // Durable per-task sessions (K4) — same location the BUILD side uses.
+        sessionDir: join(tmpdir(), "marathon-sessions"),
+        governed: { gateway: toolGateway, tools: governedToolDefsFor(flagship.tools.map((t) => t.tool)) },
+        sandbox: flagship.harness === "claude-code" ? workspaceSandboxFromSpec(flagship) : undefined,
+        proxy:
+          flagship.harness === "claude-code"
+            ? (process.env.MARATHON_MODEL_PROXY_URL?.trim() ? { baseUrl: process.env.MARATHON_MODEL_PROXY_URL.trim() } : undefined)
+            : undefined,
+        lockedDownEgress: flagship.sandbox.network === "none",
+        cli: { settingsPath: "/etc/marathon/claude-settings.json" },
+        getRemainingBudgetUsd: flagship.budget
+          ? async (ctx) => flagship.budget!.limitUsd - (await db.sumModelCostUsd(ctx.request.taskId))
+          : undefined,
+      }),
+      { root: join(tmpdir(), "marathon-chat-workspaces") },
+    ),
     tenantId: boot.tenantId,
     agents: boot.agents,
     agentIdByName: boot.agentIdByName,
@@ -126,10 +146,13 @@ async function main(): Promise<void> {
     secrets,
     getClient: httpGithubClientFactory(),
     fanout,
-    source: (task) => {
+    source: async (task) => {
       const repo = flagship.repo!;
       void task;
-      return `https://x-access-token:${token}@github.com/${repo}.git`;
+      // Resolved per task so a fresh installation token (§2b #15) rides each
+      // clone; the credential stays host-side only (§29.2).
+      const cloneToken = await secrets.get("secret/github");
+      return `https://x-access-token:${cloneToken}@github.com/${repo}.git`;
     },
     sessionDir: join(tmpdir(), "marathon-sessions"),
   });
@@ -151,7 +174,40 @@ async function main(): Promise<void> {
   };
   void pollBuild();
 
+  // Identity linking (§7.20 / §2b #10): the OAuth start/callback endpoints.
+  // Needs the GitHub App's OAuth client credentials + the shared master
+  // secret (the Slack app signs link tokens with the same key).
+  const oauthClientId = process.env.GITHUB_APP_CLIENT_ID?.trim();
+  const oauthClientSecret = process.env.GITHUB_APP_CLIENT_SECRET?.trim();
+  const identity: IdentityLinkDeps | undefined =
+    cfg.secretKey && oauthClientId && oauthClientSecret
+      ? { db, masterSecret: cfg.secretKey, oauth: { clientId: oauthClientId, clientSecret: oauthClientSecret } }
+      : undefined;
+  console.log(
+    identity
+      ? "[github-app] identity linking enabled (/auth/github/start + /auth/github/callback)"
+      : "[github-app] identity linking not configured (set MARATHON_SECRET_KEY + GITHUB_APP_CLIENT_ID + GITHUB_APP_CLIENT_SECRET to enable)",
+  );
+
   const server = createServer((req, res) => {
+    const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+    if (identity && req.method === "GET" && url.pathname.startsWith("/auth/github/")) {
+      void handleIdentityRequest(identity, req.method, url)
+        .then((r) => {
+          if (!r) {
+            res.writeHead(404).end();
+          } else if (r.location) {
+            res.writeHead(302, { location: r.location }).end();
+          } else {
+            res.writeHead(r.status, { "content-type": r.contentType ?? "text/plain; charset=utf-8" }).end(r.body ?? "");
+          }
+        })
+        .catch((e) => {
+          console.error("[github-app] identity-link error:", e);
+          res.writeHead(500).end("identity link failed — check the app logs");
+        });
+      return;
+    }
     if (req.method !== "POST" || !req.url?.startsWith("/webhooks/github")) {
       res.writeHead(404).end();
       return;
@@ -192,6 +248,13 @@ async function main(): Promise<void> {
       const note = result.note ? ` (${result.note})` : "";
       console.log(`[github-app] proxied ${delivery.eventType} ${delivery.deliveryId ?? ""}: ${result.status}${note}`);
     });
+  } else {
+    // §2b #13: state the effective inbound-event mode explicitly — without
+    // this line a missing/misspelled MARATHON_WEBHOOK_PROXY boots a listener
+    // that looks alive but never receives a delivery.
+    console.log(
+      `[github-app] no webhook proxy configured — inbound receiver only on :${port}/webhooks/github (GitHub must reach this address; dev alternative: MARATHON_WEBHOOK_PROXY)`,
+    );
   }
 }
 

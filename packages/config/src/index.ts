@@ -31,6 +31,88 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 }
 
 /**
+ * Every `MARATHON_*` environment variable any part of the system reads (§2b
+ * #13). An app can't warn about a variable it doesn't know to look for, so
+ * misspellings die silently — this list is what boot-time checks compare
+ * against. Keep it in sync when a new variable is introduced.
+ */
+export const KNOWN_MARATHON_ENV_VARS: readonly string[] = [
+  "MARATHON_AGENTS_DIR",
+  "MARATHON_GIT_TOKEN",
+  "MARATHON_LINK_BASE_URL",
+  "MARATHON_MODEL_PROXY_URL",
+  "MARATHON_SANDBOX",
+  "MARATHON_SANDBOX_IMAGE",
+  "MARATHON_SANDBOX_NETWORK",
+  "MARATHON_SECRET_KEY",
+  "MARATHON_TENANT",
+  "MARATHON_WEBHOOK_PROXY",
+];
+
+/** Levenshtein edit distance — small inputs only (env var names). */
+function editDistance(a: string, b: string): number {
+  const prev = new Array<number>(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0]!;
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const next = Math.min(
+        prev[j]! + 1,
+        prev[j - 1]! + 1,
+        diag + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+      diag = prev[j]!;
+      prev[j] = next;
+    }
+  }
+  return prev[b.length]!;
+}
+
+/**
+ * Warnings for `MARATHON_*` variables present in the environment that nothing
+ * reads (§2b #13): a misspelled variable (`MARATHON_WEBHOOK_URL` for
+ * `MARATHON_WEBHOOK_PROXY`) silently boots the app into the wrong mode, so
+ * the live apps surface these at startup. Each warning names the stray
+ * variable and, when a known variable is plausibly close, a
+ * "did you mean …?" hint.
+ */
+export function unknownMarathonEnvWarnings(
+  env: NodeJS.ProcessEnv = process.env,
+  known: readonly string[] = KNOWN_MARATHON_ENV_VARS,
+): string[] {
+  const warnings: string[] = [];
+  for (const key of Object.keys(env).sort()) {
+    if (!key.startsWith("MARATHON_") || known.includes(key)) continue;
+    let best: string | undefined;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of known) {
+      const d = editDistance(key, candidate);
+      if (d < bestDistance) {
+        bestDistance = d;
+        best = candidate;
+      }
+    }
+    // Hint only when the nearest known name is plausibly a typo of this one;
+    // a wholly unrelated stray gets the bare warning.
+    const hint =
+      best !== undefined && bestDistance <= Math.max(3, Math.floor(key.length / 3))
+        ? ` — did you mean ${best}?`
+        : "";
+    warnings.push(`unrecognized environment variable ${key} (nothing reads it)${hint}`);
+  }
+  return warnings;
+}
+
+/** Log the §2b #13 unknown-variable warnings at boot (the live apps call this). */
+export function warnUnknownMarathonEnv(
+  log: (msg: string) => void = console.warn,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  for (const w of unknownMarathonEnvWarnings(env)) log(`[marathon] ${w}`);
+}
+
+/**
  * Secret store. Refs look like "secret/<name>" (e.g. "secret/anthropic").
  * Production will back this with an encrypted store; for dev we resolve from env.
  */

@@ -9,6 +9,43 @@ import { mergeDeliveryTargets, type DeliveryTarget, type DocumentArtifact, type 
  * silently ignored (no artifact → no approval → no implementation task).
  */
 
+/**
+ * The doc-task tool contracts (§2b #16), mirroring the BUILD contract (§29.4):
+ * the document body is delivered ONLY as a `document.*` tool argument through
+ * the Tool Gateway — the turn's text is just the in-thread reply and is never
+ * committed. Tool names use the model-facing form (dots → underscores).
+ * Shared by the GitHub mention flows and the Slack doc-draft path.
+ */
+export function docDraftContract(o: { repo: string; path: string }): string {
+  return (
+    `This task delivers a design document. Submit it by calling the document_create tool ` +
+    `exactly once, with repo "${o.repo}", path "${o.path}", a concise "title" for the pull ` +
+    `request, and the COMPLETE markdown document as the "content" argument. The document ` +
+    `reaches review ONLY through that tool call — text in your reply is never committed ` +
+    `anywhere. After the tool call, finish with a short reply for the requester's thread ` +
+    `(a sentence or two on what you drafted); never include the document body in the reply. ` +
+    `If you cannot produce a document, make no document tool call and explain why in your reply.`
+  );
+}
+
+export function docReviseContract(o: { repo: string; path: string; branch: string }): string {
+  return (
+    `This task revises the existing document ${o.path}, under review on pull-request branch ` +
+    `"${o.branch}" (its current content is in the untrusted context). Apply the requested ` +
+    `changes and submit the COMPLETE revised markdown by calling the document_revise tool ` +
+    `exactly once, with repo "${o.repo}", path "${o.path}", branch "${o.branch}", and the full ` +
+    `revised document as the "content" argument. The revision lands ONLY through that tool ` +
+    `call — text in your reply is never committed anywhere. After the tool call, finish with a ` +
+    `short reply for the PR thread; never include the document body in the reply. If no change ` +
+    `is warranted, make no document tool call and explain why in your reply.`
+  );
+}
+
+/** A stable, path-safe slug for a drafted document's filename. */
+export function docPathSlug(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "doc";
+}
+
 /** What the recorder needs from the database (`Database` satisfies this). */
 export interface DocumentRecorderDb {
   getTask(taskId: Id): Promise<Task | null>;

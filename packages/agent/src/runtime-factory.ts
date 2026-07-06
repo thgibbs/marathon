@@ -8,11 +8,12 @@ import type { AgentRuntime } from "./types";
  * The shared harness factory (K7, design §7.5): pick the `AgentRuntime` from the
  * agent spec's `harness` field, so the harness is selectable per deployment with
  * the worker step runners untouched — the seam holds. Used at the BUILD wiring
- * site (github-app), the only surface where `claude-code` is supported today: it
- * runs its whole loop inside a per-task code container, so it needs a workspace
- * binding, the container factory, and the model proxy. The chat/general-agent
- * surface has no such workspace and stays on Pi. `claude-code`'s harness/model
- * pairing is cross-validated fail-closed (§13.1) before a runtime is built.
+ * site (github-app) AND the chat surfaces (§2b #17): `claude-code` runs its
+ * whole loop inside a per-task container, so it needs a workspace binding, the
+ * container factory, and the model proxy — BUILD tasks materialize a repo
+ * workspace; chat tasks get an ephemeral scratch one via `withChatWorkspace`.
+ * `claude-code`'s harness/model pairing is cross-validated fail-closed (§13.1)
+ * before a runtime is built.
  */
 export interface MakeAgentRuntimeDeps {
   secrets: SecretStore;

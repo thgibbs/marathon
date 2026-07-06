@@ -141,7 +141,8 @@ Setup:
    don't open the approval boundary. An abandoned plan just stays there; an
    implemented plan reaches main with its code PR.
 4. For the document surface webhooks: create a GitHub App, subscribe to
-   `issue_comment`, `pull_request_review_comment`, and `pull_request`, set a
+   `issue_comment`, `pull_request_review_comment`, `pull_request_review`, and
+   `pull_request`, set a
    webhook secret → `GITHUB_WEBHOOK_SECRET`, and install it on the repo. For
    the webhook URL, create a channel at [smee.io/new](https://smee.io/new) and
    use it — no tunnel needed, and the URL is set once (the channel is stable
