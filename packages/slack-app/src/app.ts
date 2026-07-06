@@ -1,7 +1,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EnvSecretStore, loadAgentSpecs, loadConfig, type AgentSpec } from "@marathon/config";
-import { PiAgentRuntime } from "@marathon/agent";
+import { makeAgentRuntime } from "@marathon/agent";
 import { ensureBranch, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
@@ -101,7 +101,10 @@ export async function startSlackApp(): Promise<void> {
     sourceLedger: new InMemorySourceLedger(),
   });
   const governedTools = governedToolDefsFor(flagship.tools.map((t) => t.tool));
-  const runtime = new PiAgentRuntime({
+  // Harness from the spec (K7) via the shared factory. The chat surface has no
+  // code workspace, so `claude-code` (which runs its whole loop inside a
+  // container) fails closed here — the kernel default is `harness: pi`.
+  const runtime = makeAgentRuntime(flagship, {
     secrets,
     // Durable per-task sessions (Track 12/K4): a resumed turn — answering a
     // clarifying question, a later turn — re-opens the SAME session, so the

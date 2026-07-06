@@ -106,7 +106,7 @@ This is the heart of Marathon.
 
 ### Agent Worker
 
-The Agent Worker runs the **configured harness** behind the `AgentRuntime` seam (§7.5) — **Pi** embedded in-process, or **Claude Code headless** as a sandboxed subprocess: Marathon provides the durable wrapper (leasing, checkpointing, resumption) and the harness runs the agent loop inside it. The per-task **harness session JSONL** is persisted as the durable checkpoint and trace.
+The Agent Worker runs the **configured harness** behind the `AgentRuntime` seam (§7.5) — **Pi** embedded in-process, or **Claude Code headless** as a sandboxed subprocess (integration references: `pi-details.md`, `claude-code-impl.md`): Marathon provides the durable wrapper (leasing, checkpointing, resumption) and the harness runs the agent loop inside it. The per-task **harness session JSONL** is persisted as the durable checkpoint and trace.
 
 Responsibilities:
 
@@ -126,7 +126,9 @@ Workers should be stateless except for currently leased work.
 sandbox** (Pi RPC mode, or the Claude Code subprocess — Pattern 1, §12.6) with a
 credential-free, egress-denied, ephemeral workspace; **code/FS
 tools execute in the sandbox**, while **credentialed tools are brokered back to the host** gateway
-(creds + policy + approval + redaction stay host-side). Today this is a seam (`ToolSandbox`,
+(creds + policy + approval + redaction stay host-side). Under Claude Code the harness's own
+model call is the one extra exit: a host-side key-injecting proxy on an internal-only
+network (§12.6). Today this is a seam (`ToolSandbox`,
 default `NoSandbox` refuses); the Docker/microVM runtime is M9.
 
 ---

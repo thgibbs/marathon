@@ -266,7 +266,11 @@ export function parseAgentSpec(value: unknown, source = "agent spec"): AgentSpec
 /** Load an agent spec from a YAML file (e.g. `agents/forge.yaml`). */
 export async function loadAgentSpec(path: string): Promise<AgentSpec> {
   const raw = await readFile(path, "utf8");
-  return parseAgentSpec(parseYaml(raw), path);
+  const spec = parseAgentSpec(parseYaml(raw), path);
+  // Fail closed at load if the harness/model pairing is invalid (§13.1); the
+  // proxy check is deferred to the wiring site, which knows the endpoint.
+  validateHarnessConfig(spec);
+  return spec;
 }
 
 /**
@@ -314,4 +318,35 @@ export async function loadAgentSpecs(dir: string): Promise<AgentSpec[]> {
 /** The command families granted to `tool` in a spec (e.g. for `github.exec`). */
 export function grantFamilies(spec: AgentSpec, tool: string): string[] | undefined {
   return spec.tools.find((t) => t.tool === tool)?.families;
+}
+
+/**
+ * Fail-closed cross-validation for the Claude Code harness (K7, design §13.1:
+ * the harness choice constrains the provider). An agent with `harness:
+ * claude-code` MUST route to an Anthropic model — Claude Code speaks only the
+ * Anthropic API — so every model ref in its policy must be `anthropic:*`, and a
+ * policy must be present (the deployment default is provider-agnostic and could
+ * be OpenAI). `opts.proxyConfigured` additionally asserts the wiring supplies a
+ * model proxy (the key-injecting endpoint); pass it from the wiring site.
+ * A no-op for the Pi harness. Throws with a precise reason.
+ */
+export function validateHarnessConfig(spec: AgentSpec, opts: { proxyConfigured?: boolean } = {}): void {
+  if (spec.harness !== "claude-code") return;
+  const source = `agent '${spec.name}'`;
+  if (!spec.models) {
+    throw new Error(
+      `${source}: harness 'claude-code' requires an Anthropic 'models' policy (§13.1) — the deployment default may not be Anthropic`,
+    );
+  }
+  for (const [role, ref] of Object.entries(spec.models)) {
+    const provider = ref.split(":")[0];
+    if (provider !== "anthropic") {
+      throw new Error(
+        `${source}: harness 'claude-code' requires Anthropic models, but models.${role} is "${ref}" (§13.1)`,
+      );
+    }
+  }
+  if (opts.proxyConfigured === false) {
+    throw new Error(`${source}: harness 'claude-code' requires a configured model proxy (§4.1)`);
+  }
 }

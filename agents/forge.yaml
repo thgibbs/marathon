@@ -18,6 +18,7 @@ harness: pi # deployment default; claude-code once K7 lands
 # without it an unconstrained grant would drop the one-repo boundary, so
 # wiring fails instead (toolPolicyFromSpec).
 # repo: your-org/your-repo
+repo: thgibbs/marathon
 
 tools:
   - github.read_file # ground answers in real code

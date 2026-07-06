@@ -237,6 +237,24 @@ importers:
         specifier: workspace:*
         version: link:../../packages/worker
 
+  demos/k7:
+    dependencies:
+      '@marathon/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@marathon/mcp-shim':
+        specifier: workspace:*
+        version: link:../../packages/mcp-shim
+      '@marathon/model-gateway':
+        specifier: workspace:*
+        version: link:../../packages/model-gateway
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+
   demos/m0:
     dependencies:
       '@marathon/config':
@@ -614,6 +632,12 @@ importers:
       '@marathon/worker':
         specifier: workspace:*
         version: link:../worker
+
+  packages/mcp-shim:
+    dependencies:
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../tools
 
   packages/memory:
     dependencies:

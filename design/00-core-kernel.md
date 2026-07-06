@@ -86,9 +86,11 @@ simplified below.
   spans the whole loop (draft docs *and* write code — defined in [[21-example-agents]]
   §21.0). Easy-to-use is a kernel feature, not packaging.
 - **K7 — Claude Code harness (headless).** The second `AgentRuntime`: `claude -p` as a
-  sandboxed subprocess (Pattern 1, §12.6), governed tools via MCP-over-broker, a host-side
-  key-injecting model proxy, `--resume` checkpointing — selectable per deployment
-  (`harness: pi | claude-code`). Done when the K1–K4 demos re-run green under
+  sandboxed subprocess (Pattern 1, §12.6), governed tools via an MCP shim over the host
+  broker, a host-side key-injecting model proxy on an internal-only network, session state
+  in the workspace home, `--resume` checkpointing with `--max-turns`-bounded turns —
+  selectable per deployment (`harness: pi | claude-code`). Full integration reference:
+  `claude-code-impl.md`. Done when the K1–K4 demos re-run green under
   `harness=claude-code`. **Not required for the §0.6 bar** — first blood ships on one
   harness (the already-integrated Pi); K7 lands in parallel or after, without blocking the
   ratchet.

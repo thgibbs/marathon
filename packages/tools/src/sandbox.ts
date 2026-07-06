@@ -121,13 +121,28 @@ export class DockerSandbox implements ToolSandbox {
   }
 }
 
+export interface ContainerMount {
+  /** Host path. */
+  source: string;
+  /** Path inside the container. */
+  target: string;
+  readonly?: boolean;
+}
+
 export interface DockerContainerOptions extends DockerSandboxOptions {
   /** Host dir mounted read-write at /workspace (required). */
   workspaceDir: string;
+  /**
+   * Extra bind mounts beyond the workspace (K7: the per-task broker unix socket,
+   * `claude-code-impl.md` §3.1). These carry no secrets — the socket is the
+   * governed-tool boundary, brokered host-side.
+   */
+  mounts?: ContainerMount[];
 }
 
 /** Build the persistent-container `docker run -d` argv (pure; CI-testable). */
 export function dockerStartArgs(image: string, opts: DockerContainerOptions): string[] {
+  const mounts = (opts.mounts ?? []).flatMap((m) => ["-v", `${m.source}:${m.target}${m.readonly ? ":ro" : ""}`]);
   return [
     "run",
     "-d",
@@ -135,6 +150,7 @@ export function dockerStartArgs(image: string, opts: DockerContainerOptions): st
     ...hardeningFlags(opts),
     "-v",
     `${opts.workspaceDir}:/workspace:rw`,
+    ...mounts,
     "-w",
     "/workspace",
     image,
@@ -179,7 +195,10 @@ export class DockerContainer {
    * Lower-level exec used for tool routing (design §12.6, Pattern 2): streams output,
    * supports stdin (`write`), a working directory, abort, and timeout, and **returns the
    * exit code instead of throwing** on non-zero (a shell tool legitimately exits non-zero).
-   * No host env is forwarded — the sandbox is credential-free by construction.
+   * No host env is forwarded — the sandbox is credential-free by construction. `opts.env`
+   * passes an *explicit* set of NON-secret variables into the exec (e.g. the Claude Code
+   * harness's `ANTHROPIC_BASE_URL` proxy pointer and placeholder key, §4.1) — the caller is
+   * responsible for never putting a credential here.
    */
   async execStream(
     argv: string[],
@@ -187,15 +206,18 @@ export class DockerContainer {
       onData?: (chunk: Buffer) => void;
       input?: string | Buffer;
       cwd?: string;
+      env?: Record<string, string>;
       signal?: AbortSignal;
       timeoutMs?: number;
     } = {},
   ): Promise<{ exitCode: number | null; stdout: Buffer; stderr: Buffer }> {
     if (!this.containerId) throw new Error("DockerContainer.execStream: container not started");
+    const envArgs = opts.env ? Object.entries(opts.env).flatMap(([k, v]) => ["-e", `${k}=${v}`]) : [];
     const dockerArgs = [
       "exec",
       ...(opts.input !== undefined ? ["-i"] : []),
       ...(opts.cwd ? ["-w", opts.cwd] : []),
+      ...envArgs,
       this.containerId,
       ...argv,
     ];

@@ -1,5 +1,7 @@
 import type { SecretStore } from "@marathon/config";
 
+export * from "./proxy";
+
 /**
  * Minimal model gateway (design.md §9.2 / §13): model specs + cost computation +
  * routing + per-tenant key resolution. The actual model call is performed by the

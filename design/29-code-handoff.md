@@ -84,8 +84,9 @@ declined). Recorded in `open-questions.md` (OQ-9).
    **write the approved plan doc at its `doc_path`** (fetched at `plan_ref.merge_commit_sha`
    from the plans branch, §29.1a — so the plan is in the working tree and thus in the diff),
    then **strip remotes and credential helpers** before mounting at `/workspace`. The clone
-   is a governed read (recorded in the source ledger, §7.8); the sandbox never fetches — it
-   has no network beyond the broker and, for Claude Code, the model proxy (§12.6).
+   is a governed read (recorded in the source ledger, §7.8); the sandbox never fetches — its
+   only exits are the broker socket and, for Claude Code, the model proxy on the
+   internal-only network (§12.6).
 3. The agent **works**: edits files, runs commands via sandboxed `bash`. Local `git` use
    (commits, branches) is allowed as the agent's own scratch discipline but is **advisory** —
    the authoritative artifact is the final working tree. (Exporting the agent's commit series

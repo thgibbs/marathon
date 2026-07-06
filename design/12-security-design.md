@@ -275,11 +275,44 @@ by construction). Proven end-to-end by `make smoke-pi-sandbox` (a real model run
 sandboxed `write` writes through to the host workspace). Remaining: route `grep`/`find`/`ls`
 (today the model uses `bash` for these), the microVM backend, and consistent uid mapping. **Pattern 1
 (harness-in-sandbox + broker) is the integration shape for the Claude Code harness** (§7.5,
-roadmap K7): the `claude` subprocess runs in the container, its built-in file/bash tools see
-only the workspace, governed tools arrive over the broker as an **MCP server backed by the
-gateway**, and the model call exits only via the host-side key-injecting proxy
-(`ANTHROPIC_BASE_URL`) on the egress allowlist — so the broker is load-bearing, not just the
-remote path. It also remains available for Pi-in-container / remote sandboxes.
+roadmap K7; full reference: `claude-code-impl.md`). The hardened shape, concretely:
+
+* **Process containment.** The `claude` subprocess (CLI version pinned in the toolchain
+  image, autoupdater disabled) runs in the container; its built-in file/bash tools see only
+  the `/workspace` mount — the same containment the Pattern-2 routed tools get, from the
+  other direction.
+* **Governed tools over the broker.** A stdio MCP shim inside the container forwards every
+  governed call over a **per-task unix socket mounted into the container** to the host
+  broker (`serveToolBroker` → `gateway.run`); credentials, policy, the read ledger, egress
+  routing, audit, and redaction all stay host-side, and results cross back **pre-redacted**
+  — so the session JSONL never contains unredacted tool output. `--strict-mcp-config`
+  prevents the untrusted workspace from registering additional MCP servers. The broker is
+  load-bearing here, not just the remote path; it also remains available for
+  Pi-in-container / remote sandboxes.
+* **Egress follows the per-agent posture (`sandbox.network`, §6.2); key hygiene doesn't.**
+  Under **`bridge`** — the kernel/dogfood default (Track 8) — the container has
+  credential-free outbound internet for installs, doc lookups, and `WebFetch`; acceptable
+  because nothing secret can be exfiltrated from a credential-free container holding a
+  company-viewable repo (OQ-4 calibration). The **locked-down posture** is not literally
+  `--network none` for this harness (that would sever the model call too) but a Docker
+  **internal** network (no outbound route, no host ports) with precisely two members: the
+  sandbox and the **host-side key-injecting model proxy** (`ANTHROPIC_BASE_URL`). Web
+  *search* survives lockdown — Claude Code's `WebSearch` executes **server-side through the
+  messages API**, i.e. through the proxy — while client-side fetches and installs do not.
+  In **both** postures the model call goes through the proxy: it holds the per-tenant
+  Anthropic key (the container carries only a placeholder), forwards only Anthropic API
+  paths, and meters usage as a backstop. With
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (no telemetry/update/error-reporting
+  traffic), the proxy is the CLI's *only* required network dependency.
+* **The harness's own permission machinery is defense-in-depth, never the boundary.** Runs
+  use `--permission-mode bypassPermissions` (headless can't answer prompts) plus deny lists
+  for network built-ins and sub-agents; the actual boundary is the container, the broker +
+  gateway, the proxy, and branch protection — an injected agent that defeats every harness
+  flag still reaches no credentials, no host, no unaudited egress.
+* **Session state lives in the workspace home** (`CLAUDE_CONFIG_DIR` under
+  `/workspace/.marathon-home` — already excluded from the repo's git view), so the full
+  trace is host-persistable per turn, destroyed at teardown, and can never enter the
+  handoff diff (§29.4).
 
 ### The `ToolSandbox` contract
 

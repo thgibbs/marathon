@@ -93,7 +93,8 @@ report, with everything written to *state*.
 - **Loop (#7)** — specified here; built in **M11** (frontier plan/verify + sub-agents).
 - **Adapter breadth (#1)** — the second harness is now a **product requirement**, not just a
   replaceability proof: **Claude Code (headless)** behind `AgentRuntime`, selectable
-  one-or-the-other per deployment (§7.5). Scheduled as roadmap **K7**; re-running the K1–K4
+  one-or-the-other per deployment (§7.5); integration reference in `claude-code-impl.md`
+  (the counterpart of `pi-details.md`). Scheduled as roadmap **K7**; re-running the K1–K4
   demos under `harness=claude-code` proves "harnesses are replaceable" for real.
 - **Coordinator (#4)** — folded into the loop for now (the frontier model chooses sub-agents);
   explicit agent-to-agent messaging (A2A) is a later, separate capability.

@@ -1,0 +1,269 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { EnvSecretStore } from "@marathon/config";
+import { ModelRegistry } from "@marathon/model-gateway";
+import {
+  type AuditRecord,
+  ToolBrokerClient,
+  ToolGateway,
+  type ToolInvocationRecord,
+  ToolRegistry,
+  type Tool,
+  type ToolPolicy,
+} from "@marathon/tools";
+import { describe, expect, it } from "vitest";
+import {
+  type AgentContainer,
+  ClaudeCodeAgentRuntime,
+  claudeSessionHostPath,
+  decodeSessionRef,
+  GUEST_BROKER_SOCKET,
+} from "../src/claude-code";
+import type { AgentTurnCheckpoint, AgentWorkspaceBinding } from "../src/types";
+
+const AXES = { reversible: true, crossesTrustBoundary: false, audience: "private", costly: false } as const;
+
+function governedGateway() {
+  const invocations: ToolInvocationRecord[] = [];
+  const audits: AuditRecord[] = [];
+  const tool: Tool = {
+    name: "github.read_file",
+    description: "read a file",
+    riskAxes: AXES,
+    defaultMode: "autonomous",
+    async execute() {
+      return { content: "FILE CONTENTS from host gateway" };
+    },
+  };
+  const gateway = new ToolGateway({
+    registry: new ToolRegistry([tool]),
+    policy: { grants: [{ tool: "github.read_file" }] } as ToolPolicy,
+    secrets: new EnvSecretStore({}),
+    recorder: {
+      onInvocation: (r) => void invocations.push(r),
+      onAudit: (a) => void audits.push(a),
+    },
+  });
+  const tools = [{ name: "github.read_file", description: "read a file", parameters: { type: "object" } }];
+  return { gateway, tools, invocations, audits };
+}
+
+const registry = new ModelRegistry([
+  { provider: "anthropic", model: "claude-sonnet-4-6", cost: { input: 3, output: 15 } },
+]);
+
+/** A fake container whose `execStream` runs the given fake-`claude` script on the host. */
+type CliScript = (args: {
+  argv: string[];
+  env: Record<string, string>;
+  onData: (b: Buffer) => void;
+  signal?: AbortSignal;
+  socketPath: string;
+  workspaceDir: string;
+}) => Promise<{ exitCode: number }>;
+
+function fakeSandbox(script: CliScript, workspace: AgentWorkspaceBinding) {
+  const seen: { env?: Record<string, string>; argv?: string[] } = {};
+  const sandbox = {
+    createContainer: (_req: unknown, _ws: AgentWorkspaceBinding | undefined, extra?: { mounts?: { source: string; target: string }[] }) => {
+      const socketPath = extra?.mounts?.find((m) => m.target === GUEST_BROKER_SOCKET)?.source ?? "";
+      const container: AgentContainer = {
+        async start() {},
+        async stop() {},
+        async execStream(argv, opts = {}) {
+          seen.argv = argv;
+          seen.env = opts.env;
+          const r = await script({
+            argv,
+            env: opts.env ?? {},
+            onData: opts.onData ?? (() => {}),
+            signal: opts.signal,
+            socketPath,
+            workspaceDir: workspace.dir,
+          });
+          return { exitCode: r.exitCode, stdout: Buffer.from(""), stderr: Buffer.from("") };
+        },
+      };
+      return container;
+    },
+  };
+  return { sandbox, seen };
+}
+
+function sessionId(argv: string[]): string {
+  const i = Math.max(argv.indexOf("--session-id"), argv.indexOf("--resume"));
+  return argv[i + 1] ?? "";
+}
+
+function emit(onData: (b: Buffer) => void, ev: unknown): void {
+  onData(Buffer.from(`${JSON.stringify(ev)}\n`));
+}
+
+async function callGoverned(socketPath: string): Promise<{ status: string; content?: string }> {
+  const conn = connect(socketPath);
+  await new Promise<void>((res, rej) => {
+    conn.once("connect", res);
+    conn.once("error", rej);
+  });
+  const client = new ToolBrokerClient(conn, conn);
+  const tools = await client.listTools();
+  const resp = await client.request({ tool: tools[0]?.name ?? "", input: {} });
+  conn.destroy();
+  return resp as { status: string; content?: string };
+}
+
+function writeSession(workspaceDir: string, sid: string, body: string): string {
+  const p = claudeSessionHostPath({ workspaceDir, sessionId: sid });
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, body);
+  return p;
+}
+
+describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => {
+  it("brokers a governed tool through the gateway, captures cost, snapshots the session", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const sessionDir = mkdtempSync(join(tmpdir(), "ccsess-"));
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+
+    const script: CliScript = async ({ argv, onData, socketPath, workspaceDir }) => {
+      const sid = sessionId(argv);
+      const resp = await callGoverned(socketPath);
+      writeSession(workspaceDir, sid, `${JSON.stringify({ role: "user", content: "go" })}\n${JSON.stringify({ role: "assistant", content: resp.content })}\n`);
+      emit(onData, { type: "system", subtype: "init", session_id: sid, mcp_servers: [{ name: "marathon", status: "connected" }] });
+      emit(onData, { type: "assistant", message: { content: [{ type: "tool_use", name: "github_read_file", input: {} }], usage: { input_tokens: 100, output_tokens: 20 } } });
+      emit(onData, { type: "result", subtype: "success", result: `read: ${resp.content}`, session_id: sid, total_cost_usd: 0.033, usage: { input_tokens: 100, output_tokens: 20 }, duration_api_ms: 999 });
+      return { exitCode: 0 };
+    };
+    const { sandbox, seen } = fakeSandbox(script, ws);
+
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({}),
+      registry,
+      sessionDir,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+      proxy: { baseUrl: "http://proxy.internal:8080" },
+    });
+
+    const checkpoints: AgentTurnCheckpoint[] = [];
+    const turn = await runtime.nextTurn({
+      request: { taskId: "task1", instructions: "You are Forge.", input: "read the file", modelRef: "anthropic:claude-sonnet-4-6", tenantId: "tn1", agentId: "ag1" },
+      checkpoint: { completedSteps: [], findings: [] } as never,
+      workspace: ws,
+      onTurnCheckpoint: (cp) => void checkpoints.push(cp),
+    });
+
+    // The governed tool ran through the REAL gateway (audited host-side).
+    expect(gov.invocations.some((r) => r.toolName === "github.read_file" && r.status === "ok")).toBe(true);
+    expect(turn.text).toBe("read: FILE CONTENTS from host gateway");
+    expect(turn.done).toBe(true);
+
+    // Cost captured onto the checkpoint's ModelInvocation.
+    expect(checkpoints).toHaveLength(1);
+    expect(checkpoints[0]?.modelInvocation?.costUsd).toBe(0.033);
+    expect(checkpoints[0]?.modelInvocation?.provider).toBe("anthropic");
+
+    // Session snapshotted; sessionRef decodes to id + snapshot path.
+    const ref = decodeSessionRef(turn.sessionRef);
+    expect(ref?.snapshot && existsSync(ref.snapshot)).toBeTruthy();
+
+    // No key ever entered the container env — only the placeholder.
+    expect(seen.env?.ANTHROPIC_API_KEY).toBe("marathon-proxy");
+    expect(seen.env?.ANTHROPIC_BASE_URL).toBe("http://proxy.internal:8080");
+    expect(JSON.stringify(seen.env)).not.toMatch(/sk-ant/);
+  });
+
+  it("restores the snapshot OVER a partial JSONL on resume (§5.2 turn atomicity)", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const sessionDir = mkdtempSync(join(tmpdir(), "ccsess-"));
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+
+    let restoredAtStart: string | undefined;
+    const script: CliScript = async ({ argv, onData, workspaceDir }) => {
+      const sid = sessionId(argv);
+      const p = claudeSessionHostPath({ workspaceDir, sessionId: sid });
+      // What the runtime handed us at the start of this turn.
+      restoredAtStart = existsSync(p) ? readFileSync(p, "utf8") : undefined;
+      writeSession(workspaceDir, sid, "CLEAN-SESSION\n");
+      emit(onData, { type: "system", subtype: "init", session_id: sid });
+      emit(onData, { type: "result", subtype: "success", result: "ok", session_id: sid, total_cost_usd: 0.01, usage: { input_tokens: 1, output_tokens: 1 } });
+      return { exitCode: 0 };
+    };
+    const { sandbox } = fakeSandbox(script, ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({}),
+      registry,
+      sessionDir,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+      proxy: { baseUrl: "http://proxy.internal:8080" },
+    });
+
+    // Turn 0: produces a snapshot.
+    const t0 = await runtime.nextTurn({
+      request: { taskId: "task2", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+      checkpoint: { completedSteps: [], findings: [] } as never,
+      workspace: ws,
+      onTurnCheckpoint: () => {},
+    });
+    const ref0 = decodeSessionRef(t0.sessionRef)!;
+    const snapshotContent = readFileSync(ref0.snapshot!, "utf8");
+
+    // Simulate a crashed invocation leaving a partial file at the live path.
+    writeSession(ws.dir, ref0.sessionId, "PARTIAL-GARBAGE-FROM-CRASH\n");
+
+    // Turn 1: resume — the runtime must restore the snapshot over the partial.
+    await runtime.nextTurn({
+      request: { taskId: "task2", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+      checkpoint: { completedSteps: ["turn:0"], findings: [], sessionRef: t0.sessionRef, turnIndex: 0 } as never,
+      workspace: ws,
+      onTurnCheckpoint: () => {},
+    });
+    expect(restoredAtStart).toBe(snapshotContent);
+    expect(restoredAtStart).not.toContain("PARTIAL-GARBAGE");
+  });
+
+  it("kills the invocation when streamed usage breaches the remaining budget (§4.3)", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+
+    const script: CliScript = async ({ argv, onData, signal }) => {
+      const sid = sessionId(argv);
+      emit(onData, { type: "system", subtype: "init", session_id: sid });
+      // A single huge-usage assistant message pushes estimated cost past the cap.
+      emit(onData, { type: "assistant", message: { content: [{ type: "text", text: "..." }], usage: { input_tokens: 5_000_000, output_tokens: 0 } } });
+      // Wait to be aborted (the runaway that a between-turn check can't stop).
+      await new Promise<void>((_res, rej) => {
+        if (signal?.aborted) return rej(new Error("aborted"));
+        signal?.addEventListener("abort", () => rej(new Error("aborted")), { once: true });
+      });
+      return { exitCode: 0 };
+    };
+    const { sandbox } = fakeSandbox(script, ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({}),
+      registry,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+      proxy: { baseUrl: "http://proxy.internal:8080" },
+      getRemainingBudgetUsd: () => 0.0001,
+    });
+
+    await expect(
+      runtime.nextTurn({
+        request: { taskId: "task3", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+        checkpoint: { completedSteps: [], findings: [] } as never,
+        workspace: ws,
+        onTurnCheckpoint: () => {},
+      }),
+    ).rejects.toThrow(/budget exceeded mid-invocation/);
+  });
+});
