@@ -3,7 +3,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { newId } from "@marathon/core";
 import type { SecretStore } from "@marathon/config";
-import { ModelRegistry, parseModelRef } from "@marathon/model-gateway";
+import { ModelRegistry, parseModelRef, resolveApiKey } from "@marathon/model-gateway";
 import { type ContainerMount, serveToolBroker, type ToolGateway } from "@marathon/tools";
 import type { GovernedToolsConfig } from "./pi";
 import {
@@ -61,7 +61,13 @@ export const GUEST_MCP_CONFIG = "/workspace/.marathon-home/mcp.json";
 export const CONTINUATION_PROMPT = "Continue with the task.";
 
 export interface ClaudeCodeAgentOptions {
-  /** Host-side secret store (kept for parity with the Pi options; never placed in the container env). */
+  /**
+   * Host-side secret store. In proxy mode the model key never enters the
+   * container (the proxy injects it host-side); in **direct mode** (the bridge
+   * default, §4.1) the Marathon Anthropic key from here is injected into the
+   * container at launch as a low-blast-radius spend credential. Business
+   * credentials (GitHub/Slack/document) never enter the sandbox in either mode.
+   */
   secrets: SecretStore;
   registry?: ModelRegistry;
   /** Per-task session snapshots (as {@link PiAgentOptions.sessionDir}). */
@@ -77,12 +83,14 @@ export interface ClaudeCodeAgentOptions {
   /** Governed tools, served via broker + MCP shim (same spec list as Pi). */
   governed?: GovernedToolsConfig;
   /**
-   * The model proxy (§4.1). `baseUrl` MUST be an endpoint the *container* can
-   * reach (a host-visible address under `network: bridge`, or the internal
-   * network's proxy alias under the locked-down posture) — NOT a host-loopback
-   * address, which resolves to the container itself. The proxy is a separate,
-   * long-lived deployment component (`AnthropicKeyProxy`) that injects the
-   * per-tenant key host-side; the runtime never provisions one on loopback.
+   * The model proxy (§4.1) — **optional on `network: bridge`** (direct key
+   * injection is the default there; see resolveModelAccessEnv), **required
+   * under locked-down egress** (`network: none`), where it is the sole route to
+   * the model API. When set, `baseUrl` MUST be an endpoint the *container* can
+   * reach (a host-visible address, or the internal-network proxy alias in the
+   * locked-down posture) — NOT a host-loopback address, which resolves to the
+   * container itself. The proxy is a separate long-lived deployment component
+   * (`AnthropicKeyProxy`) that injects the key host-side.
    */
   proxy?: { baseUrl?: string };
   /** Checkpoint cadence (§2.1); default 10. */
@@ -236,6 +244,55 @@ export function disallowedTools(opts: { lockedDownEgress?: boolean; readOnly?: b
   ];
 }
 
+export interface ModelAccessParams {
+  /** The host-side model proxy endpoint, when configured (proxy mode). */
+  proxyBaseUrl?: string;
+  /** The Marathon Anthropic key for direct mode; undefined in proxy mode. */
+  directKey?: string;
+  /** `network: none` — the container has NO egress except the proxy. */
+  lockedDownEgress?: boolean;
+}
+
+/**
+ * The `ANTHROPIC_*` / `CLAUDE_*` env for the CLI's model access, and the
+ * decision between the two postures (design: model-proxy decision, §4.1).
+ * Exported pure so the posture logic is testable without a container.
+ *
+ * - **Direct (the default on `network: bridge`).** A Marathon-dedicated Anthropic
+ *   key is injected at launch. The sandbox already has open outbound on bridge,
+ *   so a proxy would add **no data boundary** here — it would only hide the key
+ *   from a *non-code-exec* leak. Treat the key as a low-blast-radius **spend**
+ *   credential (budget-capped, rotated), never a business/data credential; the
+ *   GitHub/Slack/document credentials stay brokered on the host regardless.
+ * - **Proxy (opt-in on bridge; REQUIRED under locked-down egress).** The key
+ *   never enters the container; the call exits through the host proxy, which
+ *   injects the real key and is the sole allowed egress in the `network: none`
+ *   posture.
+ *
+ * Throws when locked-down egress has no proxy (no other route to the model API),
+ * or when direct mode has no key configured — fail closed either way.
+ */
+export function resolveModelAccessEnv(p: ModelAccessParams): Record<string, string> {
+  const base: Record<string, string> = {
+    CLAUDE_CONFIG_DIR: GUEST_CONFIG_DIR,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  };
+  if (p.proxyBaseUrl) {
+    return { ...base, ANTHROPIC_BASE_URL: p.proxyBaseUrl, ANTHROPIC_API_KEY: "marathon-proxy" };
+  }
+  if (p.lockedDownEgress) {
+    throw new Error(
+      "claude-code under locked-down egress (network: none) requires the model proxy — the container has no other route to the model API (§4.1)",
+    );
+  }
+  if (!p.directKey) {
+    throw new Error(
+      "claude-code (direct model access) needs a Marathon Anthropic key in the secret store (secret/anthropic); none found",
+    );
+  }
+  return { ...base, ANTHROPIC_API_KEY: p.directKey };
+}
+
 export class ClaudeCodeAgentRuntime implements AgentRuntime {
   constructor(private readonly opts: ClaudeCodeAgentOptions) {}
 
@@ -254,6 +311,21 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
     if (!workspace) {
       throw new Error("claude-code harness requires a code workspace binding (§29.2)");
     }
+
+    // Model access (§4.1, model-proxy decision): DIRECT key injection is the
+    // default on `network: bridge` (the sandbox already has open outbound, so a
+    // proxy adds no data boundary — see resolveModelAccessEnv); the proxy is
+    // opt-in there and REQUIRED under locked-down egress. Resolve a direct key
+    // only when no proxy is wired, and build the env NOW — BEFORE any resource
+    // (session restore, broker socket, container) is provisioned — so a
+    // misconfiguration fails closed without leaking a broker or container.
+    const proxyBaseUrl = this.opts.proxy?.baseUrl;
+    const directKey = proxyBaseUrl ? undefined : await resolveApiKey(this.opts.secrets, provider);
+    const modelAccessEnv = resolveModelAccessEnv({
+      proxyBaseUrl,
+      directKey,
+      lockedDownEgress: this.opts.lockedDownEgress,
+    });
 
     // Resume vs first turn (§5.2): a decoded session ref carries the Claude
     // session id and the snapshot to restore over any partial JSONL.
@@ -279,35 +351,28 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       question.value = q;
     });
 
-    // Model proxy (§4.1): keys never enter the container; the CLI's model call
-    // exits only through this endpoint. Fail closed if no container-reachable
-    // proxy is wired — a missing proxy must not silently degrade to a direct,
-    // key-bearing call or an unreachable loopback address.
-    const proxyBaseUrl = this.opts.proxy?.baseUrl;
-    if (!proxyBaseUrl) {
-      throw new Error(
-        "claude-code harness requires a container-reachable model proxy (proxy.baseUrl / MARATHON_MODEL_PROXY_URL); none is wired (§4.1)",
-      );
-    }
-
-    // MCP config into the workspace home (host-visible → readable in-container).
-    const mcpHostPath = join(workspace.dir, ".marathon-home", "mcp.json");
-    mkdirSync(dirname(mcpHostPath), { recursive: true });
-    writeFileSync(
-      mcpHostPath,
-      mcpConfigJson(GUEST_BROKER_SOCKET, {
-        command: this.opts.cli?.shimCommand ?? "marathon-mcp-shim",
-        args: this.opts.cli?.shimArgs,
-      }),
-    );
-
-    const container = await this.opts.sandbox.createContainer(ctx.request, workspace, {
-      mounts: [{ source: hostSocket, target: GUEST_BROKER_SOCKET }],
-    });
-    await container.start();
-
+    // Everything after the broker starts is inside the try/finally, so a
+    // failure in workspace/MCP setup, container creation, or start still closes
+    // the broker (and stops a started container) — no leaked socket/server.
+    let container: AgentContainer | undefined;
     const start = Date.now();
     try {
+      // MCP config into the workspace home (host-visible → readable in-container).
+      const mcpHostPath = join(workspace.dir, ".marathon-home", "mcp.json");
+      mkdirSync(dirname(mcpHostPath), { recursive: true });
+      writeFileSync(
+        mcpHostPath,
+        mcpConfigJson(GUEST_BROKER_SOCKET, {
+          command: this.opts.cli?.shimCommand ?? "marathon-mcp-shim",
+          args: this.opts.cli?.shimArgs,
+        }),
+      );
+
+      container = await this.opts.sandbox.createContainer(ctx.request, workspace, {
+        mounts: [{ source: hostSocket, target: GUEST_BROKER_SOCKET }],
+      });
+      await container.start();
+
       // A run that stopped on --max-turns resumes with a neutral continuation
       // prompt; a normal resume (e.g. a durable-wait answer) uses the given input.
       const prompt = resume && prior?.continued ? CONTINUATION_PROMPT : ctx.request.input;
@@ -352,12 +417,7 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
         }
       };
 
-      const env: Record<string, string> = {
-        ANTHROPIC_BASE_URL: proxyBaseUrl,
-        ANTHROPIC_API_KEY: "marathon-proxy", // placeholder; the proxy discards it (§4.1)
-        CLAUDE_CONFIG_DIR: GUEST_CONFIG_DIR,
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-      };
+      const env = modelAccessEnv;
 
       let exitCode: number | null = null;
       try {
@@ -409,7 +469,7 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       };
     } finally {
       broker.close();
-      await container.stop().catch(() => {});
+      await container?.stop().catch(() => {});
     }
   }
 

@@ -82,14 +82,15 @@ describe("makeBuildWiring (Track 15 — the coherent BUILD loop from one spec)",
     const claudeSpec = (o: Partial<AgentSpec> = {}) =>
       makeSpec({ harness: "claude-code", models: { default: "anthropic:claude-sonnet-4-6" }, ...o });
 
-    it("wires when a container-reachable proxy URL is configured", () => {
+    it("wires with a proxy (opt-in key hygiene) or without one (direct key injection, the bridge default)", () => {
+      // Proxy opt-in.
       expect(() =>
         makeBuildWiring({ db: fakeDb, spec: claudeSpec(), secrets, getClient: () => ({}) as never, source: "/x", modelProxyUrl: "http://marathon-proxy:8080" }),
       ).not.toThrow();
-    });
-
-    it("fails closed when no model proxy is wired (§4.1)", () => {
-      expect(() => wire(claudeSpec())).toThrow(/requires a configured model proxy/);
+      // No proxy on the default bridge posture is NOW valid — direct key
+      // injection is the default (model-proxy decision, §4.1); the runtime
+      // enforces the posture-specific rule at nextTurn.
+      expect(() => wire(claudeSpec())).not.toThrow();
     });
 
     it("fails closed on the locked-down posture (sandbox.network: none) until the internal-network spike lands (§7.1)", () => {

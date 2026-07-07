@@ -92,10 +92,12 @@ export interface BuildWiringOptions {
   /** Container overrides (image, limits); network comes from the spec. */
   sandbox?: WorkspaceSandboxOptions;
   /**
-   * Claude Code harness (K7): the model proxy endpoint (`ANTHROPIC_BASE_URL`),
-   * which MUST be reachable from inside the sandbox container (§4.1) — not a
-   * host-loopback address. Required when the agent's `harness: claude-code`;
-   * wiring fails closed if it is missing (defaults to `MARATHON_MODEL_PROXY_URL`).
+   * Claude Code harness (K7): an **optional** model proxy endpoint
+   * (`ANTHROPIC_BASE_URL`) for the `harness: claude-code` path. On `network:
+   * bridge` (the default) it is opt-in — direct key injection is the default
+   * (model-proxy decision, §4.1). When set it MUST be reachable from inside the
+   * sandbox container (not a host-loopback address). Defaults to
+   * `MARATHON_MODEL_PROXY_URL`.
    */
   modelProxyUrl?: string;
   defaultBranch?: string;
@@ -181,9 +183,9 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
     // note); containers stay credential-free by construction.
     sandbox: workspaceSandboxFromSpec(spec, opts.sandbox),
     governed: { gateway, tools: governedTools },
-    // Claude Code only (ignored by Pi): the container-reachable proxy endpoint
-    // (required — undefined fails validation closed), locked-down egress posture
-    // from the YAML network mode, the image's managed settings, and a
+    // Claude Code only (ignored by Pi): the OPTIONAL model proxy endpoint (unset
+    // → direct key injection, the bridge default, §4.1), locked-down egress
+    // posture from the YAML network mode, the image's managed settings, and a
     // mid-invocation budget kill against this task's accrued spend (§4.3).
     proxy: spec.harness === "claude-code" ? (proxyUrl ? { baseUrl: proxyUrl } : undefined) : undefined,
     lockedDownEgress: spec.sandbox.network === "none",

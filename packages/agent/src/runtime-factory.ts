@@ -47,8 +47,10 @@ export interface MakeAgentRuntimeDeps {
 
 export function makeAgentRuntime(spec: AgentSpec, deps: MakeAgentRuntimeDeps): AgentRuntime {
   if (spec.harness === "claude-code") {
-    // Fail closed before building: Anthropic model policy (§13.1) + a proxy (§4.1).
-    validateHarnessConfig(spec, { proxyConfigured: deps.proxy !== undefined });
+    // Fail closed before building: Anthropic model policy (§13.1). The model
+    // proxy is NOT required here — direct key injection is the bridge default
+    // and the runtime enforces the posture-specific proxy rule (§4.1).
+    validateHarnessConfig(spec);
     if (!deps.sandbox) {
       throw new Error(`agent '${spec.name}': harness 'claude-code' requires a sandbox container factory`);
     }

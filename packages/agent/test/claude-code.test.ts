@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -229,14 +229,48 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
     expect(restoredAtStart).not.toContain("PARTIAL-GARBAGE");
   });
 
-  it("fails closed when no container-reachable model proxy is wired (§4.1)", async () => {
+  it("direct mode (bridge default): injects the Marathon key, no proxy, no ANTHROPIC_BASE_URL (§4.1)", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const sessionDir = mkdtempSync(join(tmpdir(), "ccsess-"));
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+    const script: CliScript = async ({ argv, onData, workspaceDir }) => {
+      const sid = sessionId(argv);
+      writeSession(workspaceDir, sid, `${JSON.stringify({ role: "assistant", content: "ok" })}\n`);
+      emit(onData, { type: "system", subtype: "init", session_id: sid });
+      emit(onData, { type: "result", subtype: "success", result: "ok", session_id: sid, total_cost_usd: 0.01, usage: { input_tokens: 1, output_tokens: 1 } });
+      return { exitCode: 0 };
+    };
+    const { sandbox, seen } = fakeSandbox(script, ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      // The Marathon-dedicated spend key lives in the secret store.
+      secrets: new EnvSecretStore({ ANTHROPIC_API_KEY: "sk-ant-marathon" }),
+      registry,
+      sessionDir,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+      // no proxy wired → direct mode on bridge (the default)
+    });
+    await runtime.nextTurn({
+      request: { taskId: "task0", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+      checkpoint: { completedSteps: [], findings: [] } as never,
+      workspace: ws,
+      onTurnCheckpoint: () => {},
+    });
+    // The real key is injected directly; there is NO proxy base URL.
+    expect(seen.env?.ANTHROPIC_API_KEY).toBe("sk-ant-marathon");
+    expect(seen.env?.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
+  it("direct mode fails closed when no Anthropic key is configured (§4.1)", async () => {
     const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
     const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
     const gov = governedGateway();
     const script: CliScript = async () => ({ exitCode: 0 });
     const { sandbox } = fakeSandbox(script, ws);
     const runtime = new ClaudeCodeAgentRuntime({
-      secrets: new EnvSecretStore({}),
+      secrets: new EnvSecretStore({}), // no key
       registry,
       socketDir,
       sandbox,
@@ -250,7 +284,86 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
         workspace: ws,
         onTurnCheckpoint: () => {},
       }),
-    ).rejects.toThrow(/requires a container-reachable model proxy/);
+    ).rejects.toThrow(/needs a Marathon Anthropic key/);
+  });
+
+  it("fails closed BEFORE provisioning the broker — no leaked socket (review)", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+    const script: CliScript = async () => ({ exitCode: 0 });
+    const { sandbox } = fakeSandbox(script, ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({}), // no key → direct mode fails closed
+      registry,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+    });
+    await expect(
+      runtime.nextTurn({
+        request: { taskId: "task0", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+        checkpoint: { completedSteps: [], findings: [] } as never,
+        workspace: ws,
+        onTurnCheckpoint: () => {},
+      }),
+    ).rejects.toThrow(/needs a Marathon Anthropic key/);
+    // Model access is resolved before the broker socket is created — nothing leaks.
+    expect(existsSync(socketDir) ? readdirSync(socketDir).filter((f) => f.endsWith(".sock")) : []).toEqual([]);
+  });
+
+  it("closes the broker when container creation fails after it started (review)", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+    // A sandbox that starts the broker (via the runtime) then fails to create the container.
+    const sandbox = {
+      createContainer: () => {
+        throw new Error("docker daemon unavailable");
+      },
+    } as never;
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({ ANTHROPIC_API_KEY: "sk-ant-marathon" }),
+      registry,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+    });
+    await expect(
+      runtime.nextTurn({
+        request: { taskId: "task0", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+        checkpoint: { completedSteps: [], findings: [] } as never,
+        workspace: ws,
+        onTurnCheckpoint: () => {},
+      }),
+    ).rejects.toThrow(/docker daemon unavailable/);
+    // The finally ran broker.close(), which removes the socket — no leak.
+    expect(readdirSync(socketDir).filter((f) => f.endsWith(".sock"))).toEqual([]);
+  });
+
+  it("locked-down egress requires the proxy — a key can't reach the model with no egress (§4.1)", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+    const script: CliScript = async () => ({ exitCode: 0 });
+    const { sandbox } = fakeSandbox(script, ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({ ANTHROPIC_API_KEY: "sk-ant-marathon" }), // even WITH a key
+      registry,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+      lockedDownEgress: true, // network: none — no egress except the proxy
+      // no proxy wired
+    });
+    await expect(
+      runtime.nextTurn({
+        request: { taskId: "task0", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+        checkpoint: { completedSteps: [], findings: [] } as never,
+        workspace: ws,
+        onTurnCheckpoint: () => {},
+      }),
+    ).rejects.toThrow(/locked-down egress .* requires the model proxy/);
   });
 
   it("kills the invocation when streamed usage breaches the remaining budget (§4.3)", async () => {

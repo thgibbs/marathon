@@ -6,7 +6,42 @@ import {
   disallowedTools,
   encodeSessionRef,
   mcpConfigJson,
+  resolveModelAccessEnv,
 } from "../src/claude-code";
+
+describe("resolveModelAccessEnv (model-proxy decision, §4.1)", () => {
+  it("PROXY mode: routes through the proxy with a placeholder key (no real key in the container)", () => {
+    const env = resolveModelAccessEnv({ proxyBaseUrl: "http://host.docker.internal:8080" });
+    expect(env.ANTHROPIC_BASE_URL).toBe("http://host.docker.internal:8080");
+    expect(env.ANTHROPIC_API_KEY).toBe("marathon-proxy");
+    expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
+  });
+
+  it("DIRECT mode (bridge default): injects the real key, no ANTHROPIC_BASE_URL", () => {
+    const env = resolveModelAccessEnv({ directKey: "sk-ant-real" });
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-real");
+    expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(env.CLAUDE_CONFIG_DIR).toContain(".marathon-home");
+  });
+
+  it("proxy WINS when both are present (opt-in proxy hides the key)", () => {
+    const env = resolveModelAccessEnv({ proxyBaseUrl: "http://proxy", directKey: "sk-ant-real" });
+    expect(env.ANTHROPIC_API_KEY).toBe("marathon-proxy");
+    expect(env.ANTHROPIC_BASE_URL).toBe("http://proxy");
+  });
+
+  it("locked-down egress REQUIRES the proxy — direct is refused (no other egress)", () => {
+    expect(() => resolveModelAccessEnv({ lockedDownEgress: true, directKey: "sk-ant-real" })).toThrow(
+      /locked-down egress .* requires the model proxy/,
+    );
+    // ...but a proxy under locked-down egress is fine.
+    expect(() => resolveModelAccessEnv({ lockedDownEgress: true, proxyBaseUrl: "http://proxy" })).not.toThrow();
+  });
+
+  it("direct mode fails closed when no key is configured", () => {
+    expect(() => resolveModelAccessEnv({})).toThrow(/needs a Marathon Anthropic key/);
+  });
+});
 
 describe("disallowedTools (chat-repo.md §3.4)", () => {
   it("always denies Task; adds WebFetch only when egress is locked down", () => {

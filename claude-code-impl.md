@@ -50,8 +50,10 @@ the process lives in the container and only governed calls come out.
        ledger → egress → creds → execute →      │        tools/call over the socket)
        redact → audit)                          │
                                                 │
-  model proxy (injects tenant key,  ◄───────────┼─── ANTHROPIC_BASE_URL=http://proxy:8080
-    allowlists api.anthropic.com)  ──► Anthropic│      (bridge or internal-only — §7.1)
+  model access (§4.1):                          │
+    bridge default → direct ANTHROPIC_API_KEY ──┼──► Anthropic  (no proxy)
+    locked-down / opt-in → key-injecting proxy ◄┼─── ANTHROPIC_BASE_URL=http://proxy:8080
+      (allowlists api.anthropic.com) ──► Anthropic│     (proxy is the sole egress — §7.1)
 ```
 
 ---
@@ -193,20 +195,54 @@ Per run:
 
 ## 4. Models, auth & cost
 
-### 4.1 The model proxy — keys never enter the container
+### 4.1 Model access — direct key by default, proxy for the locked-down posture
 
-Claude Code calls the Anthropic API itself, so Pattern 1's classic cost (the key must enter
-the container) is paid off with a **host-side key-injecting proxy**:
+**Decision (2026-07-07): the model proxy is opt-in on `network: bridge`, required only under
+locked-down egress (`network: none`); the default on bridge is direct key injection.** Two
+postures, chosen by `resolveModelAccessEnv` (`packages/agent/src/claude-code.ts`):
 
-- The container gets `ANTHROPIC_BASE_URL=http://<proxy>/` and a **placeholder**
-  `ANTHROPIC_API_KEY=marathon-proxy` (the CLI requires *a* key; the proxy discards it).
-- The proxy: strips/replaces `Authorization`/`x-api-key` with the **per-tenant key from the
-  secret store** (host-side, resolved per task); forwards **only** Anthropic API paths
-  (`/v1/messages`, token counting); refuses everything else; records request metadata
-  (model, tokens from the response) as **backstop metering** independent of what the agent
-  reports.
-- No key material in the image, the container env, or the workspace — the K7 exit
-  criterion "assert no key in the container env" tests exactly this.
+- **Direct (the default on `network: bridge`).** A Marathon-dedicated Anthropic key from the
+  secret store (`secret/anthropic`) is injected into the container at launch as
+  `ANTHROPIC_API_KEY`; no `ANTHROPIC_BASE_URL`, no proxy. **Rationale:** on the kernel-default
+  bridge posture the sandbox already has open outbound internet, so a proxy adds **no data
+  boundary** — a malicious process (or an injected prompt that induces one) can already exfil
+  workspace contents to any host. The proxy would only hide the key from a *non-code-exec*
+  leak, and the threat model here is an agent that runs arbitrary code, so that marginal
+  bar-raising is small. Treat the injected key as a **low-blast-radius spend credential**
+  (dedicated to Marathon, provider-budget-capped, rotated) — never a business/data credential.
+  The GitHub/Slack/document credentials stay brokered on the host in **both** postures
+  (design §12.6, `12-security-design.md:284`), which is the boundary that actually matters.
+- **Proxy (opt-in on bridge; REQUIRED under `network: none`).** When `MARATHON_MODEL_PROXY_URL`
+  is set, the container gets `ANTHROPIC_BASE_URL=http://<proxy>/` and a **placeholder**
+  `ANTHROPIC_API_KEY=marathon-proxy` (the CLI needs *a* key; the proxy discards it). The proxy
+  injects the real key host-side, allowlists only Anthropic API paths, and is the **sole
+  reachable endpoint** in the internal-only network of the locked-down posture (§7.1). This is
+  where the proxy earns its keep: with outbound severed, it is the one carve-out for the model
+  call and the allowlist actually bites.
+
+**Why not proxy-by-default (the original design).** Of the three things the proxy bought,
+two are ~zero on bridge and the third is minor: (a) the path allowlist only bites when the
+proxy is the sole egress — moot on bridge's open outbound; (b) the **backstop metering** is
+redundant and, for the streaming CLI, effectively dead — `parseUsageFromAnthropicResponse`
+parses a non-streamed body, but Claude Code streams, and budget enforcement already reads
+usage from the stream (§4.3), not the proxy; (c) key-out-of-container only matters against
+key theft, and only strongly under no-egress. So the proxy is **optional hardening, not the
+default architecture**. `AnthropicKeyProxy` (`packages/model-gateway/src/proxy.ts`) is kept
+as the mechanism for the locked-down/compliance mode and the bridge opt-in.
+
+**Fail-closed rules (`resolveModelAccessEnv`):** direct mode with no key → throw; locked-down
+egress with no proxy → throw (the container has no other route to the model API). The
+harness/model cross-validation (`validateHarnessConfig`) no longer requires a proxy — that is
+now a posture-specific runtime check, not a config-load one.
+
+> **Future work — scoped model credentials (the real missing primitive).** Direct mode is
+> only as safe as the key is low-value. Marathon should be able to issue **per-tenant or
+> per-deployment Anthropic credentials with provider-side spend caps + rotation** (Anthropic's
+> Admin API supports workspace-scoped keys with limits) so that key theft from a sandbox has
+> bounded blast radius. Until that lands, a deployment that injects one shared org key is
+> **accepting spend-theft / rate-limit-DoS risk** — acceptable for dogfood/self-host, but it
+> should be a stated acceptance. This primitive is what makes direct-by-default properly safe;
+> the proxy is a workaround for not having it.
 
 ### 4.2 Event stream → Marathon records
 
@@ -262,8 +298,10 @@ explicitly and the whole session/config story lands there by construction:
 - **Diff-excluded** — the session (which contains the full trace) can never ride
   `git diff base_sha..worktree` into a PR (§29.4 reads only the repo view).
 - **Ephemeral** — teardown destroys it with the workspace; the durable copies are
-  Marathon's snapshots (§5.2). Tool results in it are pre-redacted by the broker (§3.2),
-  and the model proxy keeps keys out entirely — the file is clean by construction.
+  Marathon's snapshots (§5.2). Tool results in it are pre-redacted by the broker (§3.2), and
+  the CLI does not write its API key into the session — so the file is clean by construction
+  (in proxy mode the key isn't in the container at all; in direct mode it lives only in the
+  process env, not the JSONL).
 
 ### 5.2 Checkpoint/resume (K4 contract, design §11.2)
 
@@ -293,13 +331,16 @@ New file `packages/agent/src/claude-code.ts`, sibling of `pi.ts`:
 
 ```ts
 export interface ClaudeCodeAgentOptions {
-  secrets: SecretStore;                    // resolved host-side; feeds the proxy, never the env
+  secrets: SecretStore;                    // host-side; feeds the proxy (proxy mode) OR the
+                                           //   container env directly (direct mode, §4.1)
   sessionDir?: string;                     // per-task snapshots, as PiAgentOptions.sessionDir
   sandbox: {                               // REQUIRED — this harness has no host mode
     createContainer(req, workspace): DockerContainer;
   };
   governed?: GovernedToolsConfig;          // same spec list; served via broker+shim, not defineTool
-  proxy: { baseUrl: string };              // the model proxy endpoint on the internal network
+  proxy?: { baseUrl?: string };            // OPTIONAL on bridge (direct is default); REQUIRED
+                                           //   under locked-down egress (§4.1)
+  lockedDownEgress?: boolean;              // network:none — proxy becomes required
   maxTurnsPerInvocation?: number;          // checkpoint cadence, default ~10
   clarification?: boolean;                 // expose ask_user over MCP (§2.3)
   cli?: { bin?: string; settingsPath?: string };
@@ -307,7 +348,12 @@ export interface ClaudeCodeAgentOptions {
 
 export class ClaudeCodeAgentRuntime implements AgentRuntime {
   async nextTurn(ctx: AgentTurnContext): Promise<AgentTurn> {
+    // 0. resolveModelAccessEnv (§4.1) FIRST — fail closed on a misconfig before
+    //    provisioning the broker/container: proxy mode → placeholder key + BASE_URL;
+    //    direct mode (bridge default) → real ANTHROPIC_API_KEY, no BASE_URL;
+    //    locked-down-without-proxy / direct-without-key → throw.
     // 1. container + workspace up (as pi.ts:244); bind the broker unix socket into it
+    //    (everything after the broker starts is inside a try/finally that closes it)
     // 2. serveToolBroker(socket, gateway, { taskId, tenantId, agentId })  — host side
     // 3. restore session snapshot if ctx.checkpoint.sessionRef (§5.2)
     // 4. argv: claude -p <prompt> [--resume <sid> | --session-id <uuid>]
@@ -316,9 +362,11 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
     //      --mcp-config <shim config> --strict-mcp-config
     //      --permission-mode bypassPermissions --disallowedTools "WebFetch,WebSearch,Task"
     //      --settings /etc/marathon/claude-settings.json
-    //    env: ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY=placeholder,
-    //         CLAUDE_CONFIG_DIR=/workspace/.marathon-home/.claude,
-    //         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+    //    env: from resolveModelAccessEnv (§4.1) —
+    //         proxy mode: ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY=placeholder
+    //         direct mode: ANTHROPIC_API_KEY=<real Marathon key>, no BASE_URL
+    //         + CLAUDE_CONFIG_DIR=/workspace/.marathon-home/.claude,
+    //           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
     // 5. parse stream-json lines → onEvent progress + usage accumulation (budget kill)
     // 6. on result: snapshot session → onTurnCheckpoint → return AgentTurn (§2.2)
     // 7. finally: container.stop(); teardown never persists anything locally
@@ -340,9 +388,10 @@ stage provides. The **chat/general-agent surface** (`packages/slack-app/src/app.
 code workspace, so it stays on Pi and rejects `claude-code` (`assertSupportedHarness`);
 general-chat container binding is a follow-on. The worker step runners
 (`packages/worker/src/agent-step.ts`) need **no changes** — the seam holds. BUILD wiring
-**fails closed** when a `claude-code` agent lacks a container-reachable proxy URL, when its
-model policy is non-Anthropic (§4.3), or under the locked-down `network: none` posture whose
-internal-network proxy wiring is a pending spike (§7.1).
+**fails closed** when a `claude-code` agent's model policy is non-Anthropic (§4.3), when
+direct mode has no Anthropic key configured, or under the locked-down `network: none` posture
+whose internal-network proxy wiring is a pending spike (§7.1). The model proxy is **optional**
+on the bridge default (direct key injection, §4.1) — not a wiring requirement.
 
 ---
 
@@ -353,40 +402,49 @@ internal-network proxy wiring is a pending spike (§7.1).
 The egress posture is **per-agent configuration** (`sandbox.network: bridge | none`,
 `packages/config/src/index.ts:65`; "none from any source wins",
 `packages/agent/src/sandbox-factory.ts:70`), and the invariant that holds in **both** is
-credential-freedom: no key, no token, no secret ever enters the container.
+**business-credential-freedom**: no GitHub/Slack/document token, and no other data credential,
+ever enters the container — those stay brokered on the host (§3.1). The *model* credential is
+the one exception, and how it's handled is the posture difference (§4.1): a low-value Anthropic
+**spend** key is injected directly on bridge, or kept out entirely behind the proxy under
+lockdown.
 
 - **`bridge` — the kernel/dogfood default** (`agents/forge.yaml`; Dockerfile Track 8):
-  outbound internet for package installs, doc lookups, and `WebFetch`. Accepted for the
-  kernel because the container is credential-free and the workspace is a company-viewable
-  repo — the exfiltration surface is bounded by what's already in the tree (OQ-4
-  calibration). Direct egress here bypasses the gateway's source-ledger routing, which is
-  exactly why restricted-source tenants need the locked-down posture instead.
-- **Internal-only — the locked-down posture.** `--network none` would sever the model proxy
+  outbound internet for package installs, doc lookups, and `WebFetch`. The model call goes
+  **direct** with the injected Marathon spend key (§4.1) — a proxy here would add no data
+  boundary, since outbound is already open. Accepted for the kernel because the container
+  carries no business credentials and the workspace is a company-viewable repo — the
+  exfiltration surface is bounded by what's already in the tree (OQ-4 calibration). Direct
+  egress here bypasses the gateway's source-ledger routing, which is exactly why
+  restricted-source tenants need the locked-down posture instead.
+- **Internal-only — the locked-down posture.** `--network none` would sever the model call
   too, so "locked down" is not literally `none` for this harness: a per-deployment
   **internal Docker network** (`docker network create --internal marathon-egress`, no
   outbound route, no host ports) whose only members are the sandbox and the **model proxy**
   (§4.1) — the proxy is the sole reachable endpoint and the only component with an outbound
-  route. `WebSearch` still works (server-side, rides the proxy — §3.3); `WebFetch` and
-  installs don't.
-- **In both postures:** the model call goes through the proxy (`ANTHROPIC_BASE_URL` — key
-  hygiene is independent of egress posture), the **broker** stays a unix-socket mount
-  (§3.1, not a network endpoint), and everything else from `hardeningFlags`
-  (`packages/tools/src/sandbox.ts:69`) is unchanged: read-only root, tmpfs scratch,
-  cap-drop ALL, no-new-privileges, non-root uid, cpu/mem/pids limits, **no env/secrets
-  forwarded**.
+  route, so here the proxy is **required** and the model key stays host-side. `WebSearch`
+  still works (server-side, rides the proxy — §3.3); `WebFetch` and installs don't.
+- **In both postures:** the **broker** stays a unix-socket mount (§3.1, not a network
+  endpoint), and everything else from `hardeningFlags` (`packages/tools/src/sandbox.ts:69`)
+  is unchanged: read-only root, tmpfs scratch, cap-drop ALL, no-new-privileges, non-root uid,
+  cpu/mem/pids limits, and **no business secrets forwarded** (the bridge posture's direct
+  model key is the sole, deliberate exception, §4.1).
 
 ### 7.2 Phone-home lockdown
 
 Set `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (disables telemetry, error reporting,
-update checks, and the autoupdater in one). Result: the CLI's only network dependency is
-`ANTHROPIC_BASE_URL` — which is the proxy. The internal network makes this *enforced*, the
-env var makes it *quiet* (no hanging retries against unreachable telemetry hosts).
+update checks, and the autoupdater in one). Result: the CLI's only network dependency is the
+model API — reached directly on bridge, or via `ANTHROPIC_BASE_URL` (the proxy) under the
+locked-down posture, where the internal network makes it *enforced* (the proxy is the sole
+route). The env var makes it *quiet* either way (no hanging retries against unreachable
+telemetry hosts).
 
 ### 7.3 What is and isn't the boundary
 
 - **Boundary:** the container (code/FS containment), the broker + gateway (governed
-  effects, credentials, audit, redaction), the proxy (model access + key custody), branch
-  protection (nothing lands without a human merge).
+  effects, business credentials, audit, redaction), branch protection (nothing lands without
+  a human merge). Model-key custody is the proxy under lockdown, or a deliberately low-value
+  direct key on bridge (§4.1) — either way it's a spend credential, not part of the data
+  boundary.
 - **Not the boundary:** Claude Code's permission modes, allow/deny lists, and settings —
   defense-in-depth only (§3.3). An injected agent that talks the model into ignoring them
   still can't reach credentials, the host, or unaudited egress.
@@ -421,8 +479,11 @@ closed at wiring, like the repo-allowlist check does today.
   → not-done, malformed lines, `is_error` results); `claudeArgv` builder (resume vs first
   turn, flags, no secrets in argv); shim MCP↔broker bridging (list/call/typed errors/
   `requires_proposal`) against a fake stream; snapshot/restore including
-  restore-over-partial; proxy key injection + path allowlist (**assert no key in container
-  env**); settings-deny-under-bypass probe (§3.3); config cross-validation (§8.2).
+  restore-over-partial; **model access** (`resolveModelAccessEnv`, §4.1) — proxy mode injects
+  the placeholder (**assert no real key in the container env**), direct mode injects the
+  Marathon spend key with no `ANTHROPIC_BASE_URL`, locked-down-without-proxy and
+  direct-without-key both fail closed; proxy path allowlist; settings-deny-under-bypass probe
+  (§3.3); config cross-validation (§8.2).
 - **`make demo-k7`:** a **recorded/fake CLI** (a stub binary emitting a canned stream-json
   script, injected via `cli.bin`) drives the full pipeline with the real broker, gateway,
   and container: threaded reply, governed calls audited, cost captured, kill-and-resume
@@ -469,7 +530,9 @@ claude -p "<prompt>" \
   --settings /etc/marathon/claude-settings.json
 ```
 
-**Container env:** `ANTHROPIC_BASE_URL=<proxy>` · `ANTHROPIC_API_KEY=<placeholder>` ·
+**Container env (§4.1):** direct mode (bridge default) → `ANTHROPIC_API_KEY=<real Marathon
+key>` (no `ANTHROPIC_BASE_URL`); proxy mode (opt-in / locked-down) →
+`ANTHROPIC_BASE_URL=<proxy>` + `ANTHROPIC_API_KEY=<placeholder>`. Plus
 `CLAUDE_CONFIG_DIR=/workspace/.marathon-home/.claude` ·
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` · `HOME=/workspace/.marathon-home` (image).
 
