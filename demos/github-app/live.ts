@@ -17,7 +17,7 @@
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { makeAgentRuntime, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
+import { assertSubscriptionAckIfNeeded, makeAgentRuntime, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
 import { EnvSecretStore, loadAgentSpecs, loadConfig, warnUnknownMarathonEnv } from "@marathon/config";
 import { ensureBranch, githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
 import { WebhookProxyClient } from "@marathon/surface-github";
@@ -69,6 +69,18 @@ async function main(): Promise<void> {
     throw new Error(
       `agent '${flagship.name}': locked-down claude-code (sandbox.network: none) needs the internal-network model-proxy wiring (K7 spike, §7.1) — not yet available; use 'bridge'`,
     );
+  }
+  // State the effective Claude Code model-auth mode at startup (§4.1).
+  if (flagship.harness === "claude-code") {
+    assertSubscriptionAckIfNeeded(process.env.MARATHON_MODEL_PROXY_URL?.trim(), await secrets.get("secret/claude-code-oauth-token"));
+    const mode = process.env.MARATHON_MODEL_PROXY_URL?.trim()
+      ? "proxy (MARATHON_MODEL_PROXY_URL)"
+      : (await secrets.get("secret/claude-code-oauth-token"))
+        ? "subscription (CLAUDE_CODE_OAUTH_TOKEN — no per-token billing)"
+        : (await secrets.get("secret/anthropic"))
+          ? "api key (ANTHROPIC_API_KEY — per-token billing)"
+          : "MISCONFIGURED — no model credential (set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)";
+    console.log(`[github-app] claude-code model auth: ${mode}`);
   }
   const boot = await bootstrapGithubApp(db, { owner, tenantName: cfg.tenant, specs });
   // Dynamic auth keeps this long-running client valid across the ~1h

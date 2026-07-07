@@ -263,6 +263,40 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
     expect(seen.env?.ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
+  it("subscription mode: CLAUDE_CODE_OAUTH_TOKEN in the env is injected, no ANTHROPIC_API_KEY (§4.1)", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const sessionDir = mkdtempSync(join(tmpdir(), "ccsess-"));
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+    const script: CliScript = async ({ argv, onData, workspaceDir }) => {
+      const sid = sessionId(argv);
+      writeSession(workspaceDir, sid, `${JSON.stringify({ role: "assistant", content: "ok" })}\n`);
+      emit(onData, { type: "system", subtype: "init", session_id: sid });
+      emit(onData, { type: "result", subtype: "success", result: "ok", session_id: sid, total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } });
+      return { exitCode: 0 };
+    };
+    const { sandbox, seen } = fakeSandbox(script, ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      // Both set → subscription wins; the OAuth token maps from CLAUDE_CODE_OAUTH_TOKEN
+      // via the EnvSecretStore convention (secret/claude-code-oauth-token).
+      secrets: new EnvSecretStore({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat-xyz", ANTHROPIC_API_KEY: "sk-ant-key" }),
+      registry,
+      sessionDir,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+    });
+    await runtime.nextTurn({
+      request: { taskId: "task0", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+      checkpoint: { completedSteps: [], findings: [] } as never,
+      workspace: ws,
+      onTurnCheckpoint: () => {},
+    });
+    expect(seen.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat-xyz");
+    expect(seen.env?.ANTHROPIC_API_KEY).toBeUndefined(); // subscription, not per-token API billing
+    expect(seen.env?.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
   it("direct mode fails closed when no Anthropic key is configured (§4.1)", async () => {
     const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
     const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
@@ -284,7 +318,7 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
         workspace: ws,
         onTurnCheckpoint: () => {},
       }),
-    ).rejects.toThrow(/needs a Marathon Anthropic key/);
+    ).rejects.toThrow(/needs a model credential/);
   });
 
   it("fails closed BEFORE provisioning the broker — no leaked socket (review)", async () => {
@@ -307,7 +341,7 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
         workspace: ws,
         onTurnCheckpoint: () => {},
       }),
-    ).rejects.toThrow(/needs a Marathon Anthropic key/);
+    ).rejects.toThrow(/needs a model credential/);
     // Model access is resolved before the broker socket is created — nothing leaks.
     expect(existsSync(socketDir) ? readdirSync(socketDir).filter((f) => f.endsWith(".sock")) : []).toEqual([]);
   });
@@ -402,5 +436,43 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
         onTurnCheckpoint: () => {},
       }),
     ).rejects.toThrow(/budget exceeded mid-invocation/);
+  });
+
+  it("does NOT apply the mid-invocation budget kill under subscription (§4.1 — no per-token cost)", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+    let budgetChecked = false;
+    const script: CliScript = async ({ argv, onData, workspaceDir }) => {
+      const sid = sessionId(argv);
+      writeSession(workspaceDir, sid, `${JSON.stringify({ role: "assistant", content: "ok" })}\n`);
+      emit(onData, { type: "system", subtype: "init", session_id: sid });
+      // Huge usage that WOULD breach a tiny cap at API prices — but subscription
+      // isn't metered in dollars, so this must not abort the run.
+      emit(onData, { type: "assistant", message: { content: [{ type: "text", text: "..." }], usage: { input_tokens: 5_000_000, output_tokens: 0 } } });
+      emit(onData, { type: "result", subtype: "success", result: "done", session_id: sid, total_cost_usd: 0, usage: { input_tokens: 5_000_000, output_tokens: 0 } });
+      return { exitCode: 0 };
+    };
+    const { sandbox } = fakeSandbox(script, ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({ CLAUDE_CODE_OAUTH_TOKEN: "oat" }), // subscription
+      registry,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+      // The runtime must not even consult the budget under subscription.
+      getRemainingBudgetUsd: () => {
+        budgetChecked = true;
+        return 0.0001;
+      },
+    });
+    const turn = await runtime.nextTurn({
+      request: { taskId: "task3", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+      checkpoint: { completedSteps: [], findings: [] } as never,
+      workspace: ws,
+      onTurnCheckpoint: () => {},
+    });
+    expect(turn.text).toBe("done"); // completed, not killed
+    expect(budgetChecked).toBe(false); // USD budget is inert under subscription
   });
 });

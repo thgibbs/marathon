@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertSubscriptionAckIfNeeded,
   claudeArgv,
   claudeSessionHostPath,
   decodeSessionRef,
@@ -8,6 +9,22 @@ import {
   mcpConfigJson,
   resolveModelAccessEnv,
 } from "../src/claude-code";
+
+describe("assertSubscriptionAckIfNeeded (§4.1 — subscription fails closed as dev-only)", () => {
+  it("throws when an OAuth token is set without the ack (no proxy)", () => {
+    expect(() => assertSubscriptionAckIfNeeded(undefined, "oat", {})).toThrow(/DEV-ONLY/);
+    expect(() => assertSubscriptionAckIfNeeded(undefined, "oat", {})).toThrow(/MARATHON_CLAUDE_SUBSCRIPTION_DEV=1/);
+  });
+  it("passes once the ack is set", () => {
+    expect(() =>
+      assertSubscriptionAckIfNeeded(undefined, "oat", { MARATHON_CLAUDE_SUBSCRIPTION_DEV: "1" }),
+    ).not.toThrow();
+  });
+  it("is a no-op for api-key mode (no token) and proxy mode (token ignored)", () => {
+    expect(() => assertSubscriptionAckIfNeeded(undefined, undefined, {})).not.toThrow();
+    expect(() => assertSubscriptionAckIfNeeded("http://proxy", "oat", {})).not.toThrow();
+  });
+});
 
 describe("resolveModelAccessEnv (model-proxy decision, §4.1)", () => {
   it("PROXY mode: routes through the proxy with a placeholder key (no real key in the container)", () => {
@@ -38,8 +55,32 @@ describe("resolveModelAccessEnv (model-proxy decision, §4.1)", () => {
     expect(() => resolveModelAccessEnv({ lockedDownEgress: true, proxyBaseUrl: "http://proxy" })).not.toThrow();
   });
 
-  it("direct mode fails closed when no key is configured", () => {
-    expect(() => resolveModelAccessEnv({})).toThrow(/needs a Marathon Anthropic key/);
+  it("fails closed when no model credential is configured (API key OR subscription)", () => {
+    expect(() => resolveModelAccessEnv({})).toThrow(/needs a model credential/);
+  });
+
+  it("SUBSCRIPTION mode: injects CLAUDE_CODE_OAUTH_TOKEN and NO api key / base url", () => {
+    const env = resolveModelAccessEnv({ oauthToken: "sk-ant-oat-abc" });
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat-abc");
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined(); // an API key would force per-token billing
+    expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
+  it("precedence: subscription beats a direct key; proxy beats subscription", () => {
+    // oauth over api key.
+    const sub = resolveModelAccessEnv({ oauthToken: "oat", directKey: "sk-ant-real" });
+    expect(sub.CLAUDE_CODE_OAUTH_TOKEN).toBe("oat");
+    expect(sub.ANTHROPIC_API_KEY).toBeUndefined();
+    // proxy over oauth.
+    const px = resolveModelAccessEnv({ proxyBaseUrl: "http://proxy", oauthToken: "oat" });
+    expect(px.ANTHROPIC_BASE_URL).toBe("http://proxy");
+    expect(px.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  it("locked-down egress still requires the proxy even with a subscription token", () => {
+    expect(() => resolveModelAccessEnv({ lockedDownEgress: true, oauthToken: "oat" })).toThrow(
+      /locked-down egress .* requires the model proxy/,
+    );
   });
 });
 

@@ -1,7 +1,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EnvSecretStore, loadAgentSpecs, loadConfig, warnUnknownMarathonEnv } from "@marathon/config";
-import { makeAgentRuntime, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
+import { assertSubscriptionAckIfNeeded, makeAgentRuntime, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
 import { ensureBranch, githubAuthFromEnv, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools, makeUserRepoAccessChecker } from "@marathon/connector-github";
 import { CodeWorkspace } from "@marathon/code-handoff";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
@@ -125,6 +125,20 @@ export async function startSlackApp(): Promise<void> {
     );
   }
   const chatProxyUrl = process.env.MARATHON_MODEL_PROXY_URL?.trim();
+  // State the effective Claude Code model-auth mode at startup (§4.1) so a
+  // misconfiguration is loud, not silent (e.g. an OAuth token that nothing
+  // reads, or an API key that quietly overrides an intended subscription).
+  if (flagship.harness === "claude-code") {
+    assertSubscriptionAckIfNeeded(chatProxyUrl, await secrets.get("secret/claude-code-oauth-token"));
+    const mode = chatProxyUrl
+      ? "proxy (MARATHON_MODEL_PROXY_URL)"
+      : (await secrets.get("secret/claude-code-oauth-token"))
+        ? "subscription (CLAUDE_CODE_OAUTH_TOKEN — no per-token billing)"
+        : (await secrets.get("secret/anthropic"))
+          ? "api key (ANTHROPIC_API_KEY — per-token billing)"
+          : "MISCONFIGURED — no model credential (set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)";
+    console.log(`[slack-app] claude-code model auth: ${mode}`);
+  }
   const runtime = withChatWorkspace(
     makeAgentRuntime(flagship, {
       secrets,

@@ -53,6 +53,7 @@ export const DEFAULT_MODEL_POLICY: ModelPolicy = {
  */
 export const BUILTIN_MODELS: ModelSpec[] = [
   { provider: "anthropic", model: "claude-haiku-4-5", cost: { input: 0.8, output: 4 }, contextWindow: 200_000 },
+  { provider: "anthropic", model: "claude-sonnet-5", cost: { input: 3, output: 15 }, contextWindow: 200_000 },
   { provider: "anthropic", model: "claude-3-7-sonnet", cost: { input: 3, output: 15 }, contextWindow: 200_000 },
   { provider: "openai", model: "gpt-4o", cost: { input: 2.5, output: 10 }, contextWindow: 128_000 },
   { provider: "openai", model: "gpt-4o-mini", cost: { input: 0.15, output: 0.6 }, contextWindow: 128_000 },
