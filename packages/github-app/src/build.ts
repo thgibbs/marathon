@@ -190,6 +190,8 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
     proxy: spec.harness === "claude-code" ? (proxyUrl ? { baseUrl: proxyUrl } : undefined) : undefined,
     lockedDownEgress: spec.sandbox.network === "none",
     cli: { settingsPath: "/etc/marathon/claude-settings.json" },
+    // TCP broker for macOS Docker Desktop (§3.1): set MARATHON_BROKER_HOST=host.docker.internal.
+    brokerHost: process.env.MARATHON_BROKER_HOST?.trim() || undefined,
     getRemainingBudgetUsd: spec.budget
       ? async (ctx) => spec.budget!.limitUsd - (await db.sumModelCostUsd(ctx.request.taskId))
       : undefined,

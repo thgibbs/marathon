@@ -9,18 +9,32 @@
 // in packages/mcp-shim (handler.ts + the broker transport). Keep the two in sync.
 import { connect } from "node:net";
 
+// Transport: a per-task unix socket (--socket <path>, Linux default) or a TCP
+// endpoint (--tcp <host:port>) — the latter for macOS Docker Desktop, where a
+// bind-mounted unix socket is not connectable across the host↔VM boundary.
 const argv = process.argv.slice(2);
-const si = argv.indexOf("--socket");
-const socketPath = si >= 0 ? argv[si + 1] : argv.find((a) => a.startsWith("--socket="))?.slice(9);
-if (!socketPath) {
-  process.stderr.write("marathon-mcp-shim: --socket <path> is required\n");
+const flag = (name) => {
+  const i = argv.indexOf(name);
+  if (i >= 0 && argv[i + 1]) return argv[i + 1];
+  return argv.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1);
+};
+const tcp = flag("--tcp");
+const socketPath = flag("--socket");
+if (!tcp && !socketPath) {
+  process.stderr.write("marathon-mcp-shim: --socket <path> or --tcp <host:port> is required\n");
   process.exit(1);
 }
 
 const PROTOCOL_VERSION = "2024-11-05";
-const sock = connect(socketPath);
+let sock;
+if (tcp) {
+  const ci = tcp.lastIndexOf(":");
+  sock = connect(Number(tcp.slice(ci + 1)), tcp.slice(0, ci));
+} else {
+  sock = connect(socketPath);
+}
 sock.on("error", (err) => {
-  process.stderr.write(`marathon-mcp-shim: broker socket error: ${err}\n`);
+  process.stderr.write(`marathon-mcp-shim: broker connection error: ${err}\n`);
   process.exit(1);
 });
 

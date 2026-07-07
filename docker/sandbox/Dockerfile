@@ -15,7 +15,7 @@
 # Debian packages ride the pinned base snapshot; for byte-identical rebuilds,
 # publish the built image and pin consumers to its digest — that, not a
 # rebuild, is the production distribution path.
-ARG SANDBOX_VERSION=3
+ARG SANDBOX_VERSION=4
 FROM node:22.12.0-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

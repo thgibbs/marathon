@@ -156,13 +156,18 @@ describe("claudeArgv (K7 §11)", () => {
 });
 
 describe("mcpConfigJson", () => {
-  it("wires the stdio shim to the guest broker socket", () => {
-    const cfg = JSON.parse(mcpConfigJson("/run/marathon/broker.sock", { command: "marathon-mcp-shim" }));
+  it("wires the stdio shim to the guest broker socket (unix)", () => {
+    const cfg = JSON.parse(mcpConfigJson({ socket: "/run/marathon/broker.sock" }, { command: "marathon-mcp-shim" }));
     expect(cfg.mcpServers.marathon).toEqual({
       type: "stdio",
       command: "marathon-mcp-shim",
       args: ["--socket", "/run/marathon/broker.sock"],
     });
+  });
+
+  it("wires the shim to a TCP endpoint (macOS Docker Desktop, §3.1)", () => {
+    const cfg = JSON.parse(mcpConfigJson({ tcp: "host.docker.internal:54321" }, { command: "marathon-mcp-shim", args: ["tsx", "bin.ts"] }));
+    expect(cfg.mcpServers.marathon.args).toEqual(["tsx", "bin.ts", "--tcp", "host.docker.internal:54321"]);
   });
 });
 

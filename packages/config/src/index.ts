@@ -38,6 +38,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
  */
 export const KNOWN_MARATHON_ENV_VARS: readonly string[] = [
   "MARATHON_AGENTS_DIR",
+  "MARATHON_BROKER_HOST",
   "MARATHON_CLAUDE_SUBSCRIPTION_DEV",
   "MARATHON_GIT_TOKEN",
   "MARATHON_LINK_BASE_URL",

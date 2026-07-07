@@ -37,6 +37,8 @@ export interface MakeAgentRuntimeDeps {
   lockedDownEgress?: boolean;
   /** Claude Code: read-only tool surface for chat grounding (chat-repo.md §3.4). */
   readOnly?: boolean;
+  /** Claude Code: reach the broker over TCP at this host (macOS Docker Desktop, §3.1). */
+  brokerHost?: string;
   /** Claude Code: CLI/shim overrides. */
   cli?: ClaudeCodeAgentOptions["cli"];
   /** Claude Code: host dir for per-task broker sockets. */
@@ -66,6 +68,7 @@ export function makeAgentRuntime(spec: AgentSpec, deps: MakeAgentRuntimeDeps): A
       clarification: deps.clarification,
       lockedDownEgress: deps.lockedDownEgress,
       readOnly: deps.readOnly,
+      brokerHost: deps.brokerHost,
       cli: deps.cli,
       socketDir: deps.socketDir,
       getRemainingBudgetUsd: deps.getRemainingBudgetUsd,
