@@ -8,10 +8,13 @@ describe("summarizeTaskFailure (design/30-task-failure-reporting.md)", () => {
     expect(summary.toLowerCase()).toContain("budget exhausted");
   });
 
-  it("renders a generic non-empty failure message for a non-budget lastError", () => {
+  it("renders a bounded generic failure message for a non-budget lastError, without echoing the raw error", () => {
+    // Non-budget lastError can carry provider/tool/config/connector internals
+    // that aren't guaranteed redacted — never fan those out to Slack/GitHub.
     const summary = summarizeTaskFailure("unexpected: tool schema rejected the call");
     expect(summary).not.toBe("(no response)");
-    expect(summary).toContain("unexpected: tool schema rejected the call");
+    expect(summary).not.toContain("unexpected: tool schema rejected the call");
+    expect(summary.toLowerCase()).toContain("check task logs");
   });
 
   it("still avoids a silent (no response) when no error detail was recorded", () => {

@@ -133,10 +133,17 @@ async function runAndReport(deps: AppDeps, taskId: string, fallbackRef: Record<s
 
 /**
  * A `failed` task never appended a checkpoint finding when the failure
- * happened pre-turn (e.g. budget exhaustion) — so `runAndReport` renders the
- * persisted `lastError` instead of falling back to "(no response)"
+ * happened pre-turn (e.g. budget exhaustion) — so `runAndReport` renders a
+ * user-safe summary instead of falling back to "(no response)"
  * (design/30-task-failure-reporting.md §30.2). Matches `BudgetExceededError`
  * the same way `classifyError` matches transient errors: by message pattern.
+ *
+ * `lastError` (`String(err)`, persisted by worker.ts's `safeFailTask`) can
+ * originate from provider responses, tool/gateway errors, config parsing, or
+ * connector payloads — none of it is guaranteed redacted, so only the
+ * allowlisted budget case echoes any of its text; everything else gets a
+ * bounded generic message and the raw string stays in `last_error` for
+ * logs/admin only.
  */
 export function summarizeTaskFailure(lastError: string | null): string {
   // `lastError` is `String(err)` (worker.ts's safeFailTask), which stringifies
@@ -145,9 +152,7 @@ export function summarizeTaskFailure(lastError: string | null): string {
   if (lastError && /budget exceeded/i.test(lastError)) {
     return "Budget exhausted — this task's spending cap was reached before it could finish.";
   }
-  return lastError
-    ? `This task failed: ${lastError}`
-    : "This task failed, but no error detail was recorded.";
+  return "This task failed before it could finish; check task logs for details.";
 }
 
 /** Is this mention a status ask (Track 16, §15.3) rather than new work? */

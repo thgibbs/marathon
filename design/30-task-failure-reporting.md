@@ -63,16 +63,18 @@ instead of falling back to the checkpoint when the task ended in `failed`.
    instead of the checkpoint fallback:
    * If the stored error is a budget failure (name/message produced by
      `BudgetExceededError` — matched the same way `classifyError` matches
-     patterns, e.g. `/budget exceeded/i`), reply with a fixed, friendly
+     patterns, e.g. `/^budget exceeded/i`), reply with a fixed, friendly
      string: **`"Budget exhausted — this task's spending cap was reached
      before it could finish."`** (contains "budget exhausted" per the ask).
-     As-built: `safeFailTask` persists `String(err)`, not `err.message`, so a
-     `BudgetExceededError` is stored as `"BudgetExceededError: budget
-     exceeded: spent $X of $Y"` — the match is an unanchored substring test,
-     not a `/^budget exceeded/` prefix anchor.
-   * Otherwise, reply with a generic but still non-empty failure message,
-     e.g. `` `This task failed: ${finalTask.lastError}` ``, still better than
-     a silent "(no response)".
+   * Otherwise, reply with a generic, bounded, non-empty failure message that
+     does **not** echo `finalTask.lastError`: **`"This task failed before it
+     could finish; check task logs for details."`** `lastError` (`String(err)`,
+     persisted from whatever the worker caught) can originate from provider
+     responses, tool/gateway errors, config parsing, or connector payloads —
+     none of it is guaranteed redacted, and `runAndReport` fans this summary
+     out to the task's delivery targets (Slack/GitHub/etc.), so raw error text
+     must not reach it. The raw string stays in `last_error` for logs/admin
+     only (§30.3).
    * When the task did *not* fail, behavior is unchanged (existing
      `cp.findings.at(-1) ?? "(no response)"` fallback stays as the belt-and-
      suspenders case for a completed task with no findings, which should not
@@ -99,6 +101,7 @@ that's waiting on a reply.
   `lastError` set to a `BudgetExceededError`-style message, the delivered
   result's `summary` contains "budget exhausted".
 * Unit test for a `failed` task with a non-budget `lastError`: summary is the
-  generic failure message, not `"(no response)"`.
+  generic bounded failure message, not `"(no response)"` and not the raw
+  `lastError` text.
 * Existing worker/db tests continue to pass; add a test that
   `safeFailTask`/`transitionTask` persists `lastError`.
