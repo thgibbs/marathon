@@ -216,15 +216,21 @@ postures, chosen by `resolveModelAccessEnv` (`packages/agent/src/claude-code.ts`
   `claude setup-token`, resolved from `secret/claude-code-oauth-token` → the
   `CLAUDE_CODE_OAUTH_TOKEN` env var) is injected instead of an API key, and the CLI runs on the
   subscription — no per-token API billing. **No `ANTHROPIC_API_KEY` is set** (an API key would
-  override the OAuth token and force API billing). Precedence is proxy › subscription › API
-  key. **Caveats:** (a) the OAuth token is a *higher*-value personal credential than a scoped
-  spend key, so this is deliberately opt-in — keep it short-lived / dev-scoped; (b) on bridge it
-  is still readable by arbitrary code in the container, same as the direct key; (c) whether the
-  CLI persists the env token to `.credentials.json` in `CLAUDE_CONFIG_DIR` (the host-visible
-  workspace home) is a **verify-on-pin** item — if it does, point the creds path at a
-  container-only tmpfs so it never lands on the host mount. The refresh-token daemon (hold the
-  long-lived refresh token host-side, inject only a short-lived access token) is the
-  production-shaped generalization; for dev the token is read from the host login.
+  override the OAuth token and force API billing). Precedence is proxy › subscription › API key.
+  **Budget:** subscription has no per-token dollar cost, so the USD budget is inert — the
+  runtime *skips the mid-invocation kill* under subscription (an API-price estimate would abort a
+  run for spend that isn't happening); `--max-turns` and Anthropic's subscription rate limits
+  bound a runaway loop instead. **Fail closed — dev-only:** because (a) the OAuth token is a
+  *higher*-value personal credential than a scoped spend key, (b) on bridge it is readable by
+  arbitrary code in the container (same as the direct key), and (c) it is **unverified** whether
+  the CLI persists the env token to `.credentials.json` in `CLAUDE_CONFIG_DIR` (the host-visible
+  workspace home), subscription mode does **not** activate silently: the live apps refuse to boot
+  with an OAuth token set unless `MARATHON_CLAUDE_SUBSCRIPTION_DEV=1` explicitly acknowledges the
+  risk (`assertSubscriptionAckIfNeeded`). **Hardening before this is more than local dev:**
+  confirm the persistence behavior with a live smoke and, if the CLI writes creds to the config
+  dir, point that path at a container-only tmpfs so the token never lands on the host mount. The
+  refresh-token daemon (hold the long-lived refresh token host-side, inject only a short-lived
+  access token) is the production-shaped generalization; for dev the token is read from the host login.
 - **Proxy (opt-in on bridge; REQUIRED under `network: none`).** When `MARATHON_MODEL_PROXY_URL`
   is set, the container gets `ANTHROPIC_BASE_URL=http://<proxy>/` and a **placeholder**
   `ANTHROPIC_API_KEY=marathon-proxy` (the CLI needs *a* key; the proxy discards it). The proxy

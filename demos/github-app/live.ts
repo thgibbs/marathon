@@ -17,7 +17,7 @@
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { makeAgentRuntime, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
+import { assertSubscriptionAckIfNeeded, makeAgentRuntime, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
 import { EnvSecretStore, loadAgentSpecs, loadConfig, warnUnknownMarathonEnv } from "@marathon/config";
 import { ensureBranch, githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
 import { WebhookProxyClient } from "@marathon/surface-github";
@@ -72,6 +72,7 @@ async function main(): Promise<void> {
   }
   // State the effective Claude Code model-auth mode at startup (§4.1).
   if (flagship.harness === "claude-code") {
+    assertSubscriptionAckIfNeeded(process.env.MARATHON_MODEL_PROXY_URL?.trim(), await secrets.get("secret/claude-code-oauth-token"));
     const mode = process.env.MARATHON_MODEL_PROXY_URL?.trim()
       ? "proxy (MARATHON_MODEL_PROXY_URL)"
       : (await secrets.get("secret/claude-code-oauth-token"))

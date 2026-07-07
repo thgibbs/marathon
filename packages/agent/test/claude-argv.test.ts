@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertSubscriptionAckIfNeeded,
   claudeArgv,
   claudeSessionHostPath,
   decodeSessionRef,
@@ -8,6 +9,22 @@ import {
   mcpConfigJson,
   resolveModelAccessEnv,
 } from "../src/claude-code";
+
+describe("assertSubscriptionAckIfNeeded (§4.1 — subscription fails closed as dev-only)", () => {
+  it("throws when an OAuth token is set without the ack (no proxy)", () => {
+    expect(() => assertSubscriptionAckIfNeeded(undefined, "oat", {})).toThrow(/DEV-ONLY/);
+    expect(() => assertSubscriptionAckIfNeeded(undefined, "oat", {})).toThrow(/MARATHON_CLAUDE_SUBSCRIPTION_DEV=1/);
+  });
+  it("passes once the ack is set", () => {
+    expect(() =>
+      assertSubscriptionAckIfNeeded(undefined, "oat", { MARATHON_CLAUDE_SUBSCRIPTION_DEV: "1" }),
+    ).not.toThrow();
+  });
+  it("is a no-op for api-key mode (no token) and proxy mode (token ignored)", () => {
+    expect(() => assertSubscriptionAckIfNeeded(undefined, undefined, {})).not.toThrow();
+    expect(() => assertSubscriptionAckIfNeeded("http://proxy", "oat", {})).not.toThrow();
+  });
+});
 
 describe("resolveModelAccessEnv (model-proxy decision, §4.1)", () => {
   it("PROXY mode: routes through the proxy with a placeholder key (no real key in the container)", () => {

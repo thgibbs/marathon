@@ -437,4 +437,42 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
       }),
     ).rejects.toThrow(/budget exceeded mid-invocation/);
   });
+
+  it("does NOT apply the mid-invocation budget kill under subscription (§4.1 — no per-token cost)", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+    let budgetChecked = false;
+    const script: CliScript = async ({ argv, onData, workspaceDir }) => {
+      const sid = sessionId(argv);
+      writeSession(workspaceDir, sid, `${JSON.stringify({ role: "assistant", content: "ok" })}\n`);
+      emit(onData, { type: "system", subtype: "init", session_id: sid });
+      // Huge usage that WOULD breach a tiny cap at API prices — but subscription
+      // isn't metered in dollars, so this must not abort the run.
+      emit(onData, { type: "assistant", message: { content: [{ type: "text", text: "..." }], usage: { input_tokens: 5_000_000, output_tokens: 0 } } });
+      emit(onData, { type: "result", subtype: "success", result: "done", session_id: sid, total_cost_usd: 0, usage: { input_tokens: 5_000_000, output_tokens: 0 } });
+      return { exitCode: 0 };
+    };
+    const { sandbox } = fakeSandbox(script, ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({ CLAUDE_CODE_OAUTH_TOKEN: "oat" }), // subscription
+      registry,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+      // The runtime must not even consult the budget under subscription.
+      getRemainingBudgetUsd: () => {
+        budgetChecked = true;
+        return 0.0001;
+      },
+    });
+    const turn = await runtime.nextTurn({
+      request: { taskId: "task3", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+      checkpoint: { completedSteps: [], findings: [] } as never,
+      workspace: ws,
+      onTurnCheckpoint: () => {},
+    });
+    expect(turn.text).toBe("done"); // completed, not killed
+    expect(budgetChecked).toBe(false); // USD budget is inert under subscription
+  });
 });

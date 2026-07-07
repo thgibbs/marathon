@@ -237,6 +237,34 @@ const DEFAULT_MAX_TURNS = 10;
  */
 export const OAUTH_TOKEN_SECRET = "secret/claude-code-oauth-token";
 
+/** Env var that acknowledges the dev-only risk of subscription auth (§4.1). */
+export const SUBSCRIPTION_ACK_ENV = "MARATHON_CLAUDE_SUBSCRIPTION_DEV";
+
+/**
+ * Fail closed on subscription mode unless explicitly acknowledged as dev-only
+ * (§4.1, review). A subscription OAuth token is a high-value **personal** Claude
+ * credential, and whether the CLI persists it to `.credentials.json` in the
+ * host-visible workspace mount is unverified (verify-on-pin) — so subscription
+ * mode must not activate silently in anything beyond local dev. The live apps
+ * call this at startup: a present OAuth token (with no proxy) refuses to boot
+ * unless `MARATHON_CLAUDE_SUBSCRIPTION_DEV=1` is set. Proxy / API-key modes are
+ * unaffected. Exported pure for tests.
+ */
+export function assertSubscriptionAckIfNeeded(
+  proxyUrl: string | undefined,
+  oauthToken: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const subscription = !proxyUrl && !!oauthToken;
+  if (subscription && env[SUBSCRIPTION_ACK_ENV] !== "1") {
+    throw new Error(
+      `claude-code subscription auth (CLAUDE_CODE_OAUTH_TOKEN) is DEV-ONLY and not yet fail-safe: the CLI may persist the ` +
+        `personal OAuth token to the host-visible workspace, and it is readable by code in the sandbox on bridge (§4.1). ` +
+        `Set ${SUBSCRIPTION_ACK_ENV}=1 to acknowledge and proceed, or use ANTHROPIC_API_KEY.`,
+    );
+  }
+}
+
 /**
  * The `--disallowedTools` list for a turn (pure + exported for tests). `Task`
  * is always denied (no sub-agent spawning); `WebFetch` under locked-down
@@ -344,6 +372,9 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
     const proxyBaseUrl = this.opts.proxy?.baseUrl;
     const oauthToken = proxyBaseUrl ? undefined : await this.opts.secrets.get(OAUTH_TOKEN_SECRET);
     const directKey = proxyBaseUrl || oauthToken ? undefined : await resolveApiKey(this.opts.secrets, provider);
+    // Subscription mode = an OAuth token and no proxy; it changes budget
+    // semantics (no per-token dollar cost, see the budget-kill guard below).
+    const subscription = !proxyBaseUrl && oauthToken != null;
     const modelAccessEnv = resolveModelAccessEnv({
       proxyBaseUrl,
       oauthToken,
@@ -419,7 +450,14 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       });
 
       const acc = new ClaudeStreamAccumulator();
-      const remainingBudget = await this.opts.getRemainingBudgetUsd?.(ctx);
+      // Subscription mode has NO per-token dollar cost (§4.1): the CLI's
+      // `total_cost_usd` is ~0 and between-turn USD spend stays 0, so the
+      // USD budget is inert. The mid-invocation kill estimates dollars from
+      // token usage at API prices — under subscription that estimate is
+      // fictional and would abort a run for spend that isn't happening. Skip it
+      // there; `--max-turns` and Anthropic's own subscription rate limits bound
+      // a runaway loop instead.
+      const remainingBudget = subscription ? undefined : await this.opts.getRemainingBudgetUsd?.(ctx);
       const abort = new AbortController();
       let budgetKilled = false;
       let buf = "";
@@ -433,7 +471,7 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
           if (!ev) continue;
           acc.push(ev, ctx.onEvent);
           // Mid-invocation budget kill (§4.3): between-turn checks can't stop a
-          // runaway single invocation.
+          // runaway single invocation. Disabled under subscription (see above).
           if (remainingBudget != null && !budgetKilled && acc.estimatedCostUsd(spec) > remainingBudget) {
             budgetKilled = true;
             abort.abort();
