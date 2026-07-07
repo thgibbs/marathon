@@ -263,6 +263,60 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
     expect(seen.env?.ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
+  it("uses a SHORT default broker socket path (macOS sun_path limit) when no socketDir is set", async () => {
+    // Regression: the old default (process.cwd()/.marathon-sockets + full-UUID
+    // filename) overflowed the ~104-byte unix socket limit and crashed with
+    // listen EINVAL. With no socketDir, the run must succeed on a short path.
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const gov = governedGateway();
+    let sockLen = 0;
+    const script: CliScript = async ({ argv, onData, socketPath, workspaceDir }) => {
+      sockLen = socketPath.length;
+      const sid = sessionId(argv);
+      writeSession(workspaceDir, sid, `${JSON.stringify({ role: "assistant", content: "ok" })}\n`);
+      emit(onData, { type: "system", subtype: "init", session_id: sid });
+      emit(onData, { type: "result", subtype: "success", result: "ok", session_id: sid, total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } });
+      return { exitCode: 0 };
+    };
+    const { sandbox } = fakeSandbox(script, ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({ ANTHROPIC_API_KEY: "sk-ant-marathon" }),
+      registry,
+      sandbox, // no socketDir → the short tmp default
+      governed: { gateway: gov.gateway, tools: gov.tools },
+    });
+    const turn = await runtime.nextTurn({
+      request: { taskId: "492b7919-cc15-4ce4-9368-bb4592ef9b1c", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+      checkpoint: { completedSteps: [], findings: [] } as never,
+      workspace: ws,
+      onTurnCheckpoint: () => {},
+    });
+    expect(turn.text).toBe("ok"); // did not crash on listen EINVAL
+    expect(sockLen).toBeGreaterThan(0);
+    expect(sockLen).toBeLessThanOrEqual(103);
+  });
+
+  it("fails with an actionable error (not EINVAL) when a custom socketDir overflows the limit", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const gov = governedGateway();
+    const { sandbox } = fakeSandbox(async () => ({ exitCode: 0 }), ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({ ANTHROPIC_API_KEY: "k" }),
+      registry,
+      socketDir: join(tmpdir(), "x".repeat(120)), // dir is creatable, but the socket path overflows
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+    });
+    await expect(
+      runtime.nextTurn({
+        request: { taskId: "t", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+        checkpoint: { completedSteps: [], findings: [] } as never,
+        workspace: ws,
+        onTurnCheckpoint: () => {},
+      }),
+    ).rejects.toThrow(/too long for a unix domain socket/);
+  });
+
   it("subscription mode: CLAUDE_CODE_OAUTH_TOKEN in the env is injected, no ANTHROPIC_API_KEY (§4.1)", async () => {
     const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
     const sessionDir = mkdtempSync(join(tmpdir(), "ccsess-"));

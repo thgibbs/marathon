@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { newId } from "@marathon/core";
 import type { SecretStore } from "@marathon/config";
@@ -397,10 +399,21 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
     }
 
     // Per-task broker socket (§3.1): host-side unix socket, mounted into the
-    // container, serving governed tools through the gateway.
-    const socketDir = this.opts.socketDir ?? join(process.cwd(), ".marathon-sockets");
+    // container, serving governed tools through the gateway. Unix domain socket
+    // paths are capped near ~104 bytes (`sun_path`) on macOS, so the path must
+    // stay SHORT: default to a short tmp base (not the deep process cwd), and
+    // hash task+session into a short token instead of embedding full UUIDs.
+    const socketDir = this.opts.socketDir ?? join(tmpdir(), "mar");
     mkdirSync(socketDir, { recursive: true });
-    const hostSocket = join(socketDir, `${ctx.request.taskId}-${sessionId.slice(0, 8)}.sock`);
+    const socketId = createHash("sha1").update(`${ctx.request.taskId}:${sessionId}`).digest("hex").slice(0, 16);
+    const hostSocket = join(socketDir, `${socketId}.sock`);
+    // Fail with an actionable message rather than a cryptic listen EINVAL if a
+    // custom socketDir still overflows the platform limit.
+    if (hostSocket.length > 103) {
+      throw new Error(
+        `broker socket path is too long for a unix domain socket (${hostSocket.length} > 103): ${hostSocket} — set a shorter socketDir`,
+      );
+    }
     const question: { value?: string } = {};
     const broker = this.startBroker(hostSocket, ctx, (q) => {
       question.value = q;
