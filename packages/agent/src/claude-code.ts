@@ -231,6 +231,13 @@ export function claudeSessionHostPath(params: {
 const DEFAULT_MAX_TURNS = 10;
 
 /**
+ * Secret ref for the Claude subscription OAuth token (§4.1). Resolves the
+ * `CLAUDE_CODE_OAUTH_TOKEN` env var through the EnvSecretStore convention
+ * (`secret/<name>` → `<NAME>` / `<NAME>_TOKEN`).
+ */
+export const OAUTH_TOKEN_SECRET = "secret/claude-code-oauth-token";
+
+/**
  * The `--disallowedTools` list for a turn (pure + exported for tests). `Task`
  * is always denied (no sub-agent spawning); `WebFetch` under locked-down
  * egress (§3.3); and under `readOnly` the built-in file-mutating tools + shell
@@ -247,30 +254,41 @@ export function disallowedTools(opts: { lockedDownEgress?: boolean; readOnly?: b
 export interface ModelAccessParams {
   /** The host-side model proxy endpoint, when configured (proxy mode). */
   proxyBaseUrl?: string;
-  /** The Marathon Anthropic key for direct mode; undefined in proxy mode. */
+  /** The Marathon Anthropic key for direct API-key mode; undefined otherwise. */
   directKey?: string;
+  /**
+   * A Claude Pro/Max **subscription** OAuth token (`claude setup-token` →
+   * `CLAUDE_CODE_OAUTH_TOKEN`). When present (and no proxy), the CLI runs on the
+   * subscription instead of per-token API billing. Bridge-only.
+   */
+  oauthToken?: string;
   /** `network: none` — the container has NO egress except the proxy. */
   lockedDownEgress?: boolean;
 }
 
 /**
  * The `ANTHROPIC_*` / `CLAUDE_*` env for the CLI's model access, and the
- * decision between the two postures (design: model-proxy decision, §4.1).
- * Exported pure so the posture logic is testable without a container.
+ * decision between the postures (design: model-proxy decision, §4.1). Exported
+ * pure so the posture logic is testable without a container.
  *
- * - **Direct (the default on `network: bridge`).** A Marathon-dedicated Anthropic
- *   key is injected at launch. The sandbox already has open outbound on bridge,
- *   so a proxy would add **no data boundary** here — it would only hide the key
- *   from a *non-code-exec* leak. Treat the key as a low-blast-radius **spend**
- *   credential (budget-capped, rotated), never a business/data credential; the
- *   GitHub/Slack/document credentials stay brokered on the host regardless.
+ * - **Direct API key (the default on `network: bridge`).** A Marathon-dedicated
+ *   Anthropic key is injected at launch and billed per token. The sandbox already
+ *   has open outbound on bridge, so a proxy would add **no data boundary** here —
+ *   it would only hide the key from a *non-code-exec* leak. Treat the key as a
+ *   low-blast-radius **spend** credential (budget-capped, rotated).
+ * - **Subscription (bridge, opt-in).** A headless OAuth token runs the CLI on a
+ *   Claude Pro/Max subscription — **no** `ANTHROPIC_API_KEY` (an API key present
+ *   would override it and force per-token billing). The token is a *higher*-value
+ *   credential (a personal Claude account), so this is deliberately opt-in; it is
+ *   still readable by arbitrary code in the container on bridge, so keep it
+ *   short-lived / dev-scoped.
  * - **Proxy (opt-in on bridge; REQUIRED under locked-down egress).** The key
- *   never enters the container; the call exits through the host proxy, which
- *   injects the real key and is the sole allowed egress in the `network: none`
- *   posture.
+ *   never enters the container; the call exits through the host proxy, the sole
+ *   allowed egress in the `network: none` posture.
  *
- * Throws when locked-down egress has no proxy (no other route to the model API),
- * or when direct mode has no key configured — fail closed either way.
+ * Precedence: proxy › subscription › direct API key. Business credentials
+ * (GitHub/Slack/document) stay brokered on the host in every mode. Throws when
+ * locked-down egress has no proxy, or when no model credential is configured.
  */
 export function resolveModelAccessEnv(p: ModelAccessParams): Record<string, string> {
   const base: Record<string, string> = {
@@ -285,9 +303,15 @@ export function resolveModelAccessEnv(p: ModelAccessParams): Record<string, stri
       "claude-code under locked-down egress (network: none) requires the model proxy — the container has no other route to the model API (§4.1)",
     );
   }
+  if (p.oauthToken) {
+    // Subscription: inject the OAuth token, and NOT an API key (which would win
+    // and force per-token billing). No ANTHROPIC_BASE_URL — direct to Anthropic.
+    return { ...base, CLAUDE_CODE_OAUTH_TOKEN: p.oauthToken };
+  }
   if (!p.directKey) {
     throw new Error(
-      "claude-code (direct model access) needs a Marathon Anthropic key in the secret store (secret/anthropic); none found",
+      "claude-code needs a model credential: a Marathon Anthropic key (secret/anthropic) for API billing, " +
+        "or a subscription token (CLAUDE_CODE_OAUTH_TOKEN); none found (§4.1)",
     );
   }
   return { ...base, ANTHROPIC_API_KEY: p.directKey };
@@ -312,17 +336,17 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       throw new Error("claude-code harness requires a code workspace binding (§29.2)");
     }
 
-    // Model access (§4.1, model-proxy decision): DIRECT key injection is the
-    // default on `network: bridge` (the sandbox already has open outbound, so a
-    // proxy adds no data boundary — see resolveModelAccessEnv); the proxy is
-    // opt-in there and REQUIRED under locked-down egress. Resolve a direct key
-    // only when no proxy is wired, and build the env NOW — BEFORE any resource
-    // (session restore, broker socket, container) is provisioned — so a
-    // misconfiguration fails closed without leaking a broker or container.
+    // Model access (§4.1, model-proxy decision): resolve the credential and
+    // build the env NOW — BEFORE any resource (session restore, broker socket,
+    // container) is provisioned — so a misconfiguration fails closed without
+    // leaking a broker or container. Precedence: proxy › subscription OAuth
+    // token › direct API key (see resolveModelAccessEnv).
     const proxyBaseUrl = this.opts.proxy?.baseUrl;
-    const directKey = proxyBaseUrl ? undefined : await resolveApiKey(this.opts.secrets, provider);
+    const oauthToken = proxyBaseUrl ? undefined : await this.opts.secrets.get(OAUTH_TOKEN_SECRET);
+    const directKey = proxyBaseUrl || oauthToken ? undefined : await resolveApiKey(this.opts.secrets, provider);
     const modelAccessEnv = resolveModelAccessEnv({
       proxyBaseUrl,
+      oauthToken,
       directKey,
       lockedDownEgress: this.opts.lockedDownEgress,
     });

@@ -70,6 +70,17 @@ async function main(): Promise<void> {
       `agent '${flagship.name}': locked-down claude-code (sandbox.network: none) needs the internal-network model-proxy wiring (K7 spike, §7.1) — not yet available; use 'bridge'`,
     );
   }
+  // State the effective Claude Code model-auth mode at startup (§4.1).
+  if (flagship.harness === "claude-code") {
+    const mode = process.env.MARATHON_MODEL_PROXY_URL?.trim()
+      ? "proxy (MARATHON_MODEL_PROXY_URL)"
+      : (await secrets.get("secret/claude-code-oauth-token"))
+        ? "subscription (CLAUDE_CODE_OAUTH_TOKEN — no per-token billing)"
+        : (await secrets.get("secret/anthropic"))
+          ? "api key (ANTHROPIC_API_KEY — per-token billing)"
+          : "MISCONFIGURED — no model credential (set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)";
+    console.log(`[github-app] claude-code model auth: ${mode}`);
+  }
   const boot = await bootstrapGithubApp(db, { owner, tenantName: cfg.tenant, specs });
   // Dynamic auth keeps this long-running client valid across the ~1h
   // installation-token expiry (it refreshes per request + retries on 401).
