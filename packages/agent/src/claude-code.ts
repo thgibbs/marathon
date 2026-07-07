@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -79,7 +79,7 @@ export interface ClaudeCodeAgentOptions {
     createContainer: (
       req: AgentRequest,
       workspace: AgentWorkspaceBinding | undefined,
-      extra?: { mounts?: ContainerMount[] },
+      extra?: { mounts?: ContainerMount[]; extraHosts?: string[] },
     ) => Promise<AgentContainer> | AgentContainer;
   };
   /** Governed tools, served via broker + MCP shim (same spec list as Pi). */
@@ -106,6 +106,14 @@ export interface ClaudeCodeAgentOptions {
   clarification?: boolean;
   /** Disallow client-side `WebFetch` (locked-down egress posture, §3.3/§7.1). */
   lockedDownEgress?: boolean;
+  /**
+   * Reach the governed-tool broker over **TCP** at this host instead of a
+   * bind-mounted unix socket (§3.1). Set to `"host.docker.internal"` for **macOS
+   * Docker Desktop**, where a mounted unix socket is not connectable across the
+   * host↔VM boundary (ENOTSUP). Unset → the unix socket (the Linux default,
+   * more isolated). The broker listens on an ephemeral host port for the turn.
+   */
+  brokerHost?: string;
   /**
    * Read-only tool surface (chat-repo.md §3.4): disallow the built-in
    * file-*mutating* tools so a grounded chat agent can read the checkout but
@@ -199,14 +207,23 @@ export function claudeArgv(p: ClaudeArgvParams): string[] {
   return argv;
 }
 
-/** The MCP config passed via `--mcp-config --strict-mcp-config` (§3.1). */
-export function mcpConfigJson(guestSocket: string, shim: { command: string; args?: string[] }): string {
+/**
+ * The MCP config passed via `--mcp-config --strict-mcp-config` (§3.1). `connect`
+ * is either a unix socket path (the Linux default) or a TCP `host:port` — the
+ * latter for macOS Docker Desktop, where a bind-mounted socket is unconnectable.
+ */
+export function mcpConfigJson(
+  connect: ({ socket: string } | { tcp: string }) & { token?: string },
+  shim: { command: string; args?: string[] },
+): string {
+  const connectArgs = "socket" in connect ? ["--socket", connect.socket] : ["--tcp", connect.tcp];
+  if (connect.token) connectArgs.push("--token", connect.token);
   return JSON.stringify({
     mcpServers: {
       marathon: {
         type: "stdio",
         command: shim.command,
-        args: [...(shim.args ?? []), "--socket", guestSocket],
+        args: [...(shim.args ?? []), ...connectArgs],
       },
     },
   });
@@ -402,26 +419,31 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       copyFileSync(prior!.snapshot!, sessionHostPath);
     }
 
-    // Per-task broker socket (§3.1): host-side unix socket, mounted into the
-    // container, serving governed tools through the gateway. Unix domain socket
-    // paths are capped near ~104 bytes (`sun_path`) on macOS, so the path must
-    // stay SHORT: default to a short tmp base (not the deep process cwd), and
-    // hash task+session into a short token instead of embedding full UUIDs.
-    const socketDir = this.opts.socketDir ?? join(tmpdir(), "mar");
-    mkdirSync(socketDir, { recursive: true });
-    const socketId = createHash("sha1").update(`${ctx.request.taskId}:${sessionId}`).digest("hex").slice(0, 16);
-    const hostSocket = join(socketDir, `${socketId}.sock`);
-    // Fail with an actionable message rather than a cryptic listen EINVAL if a
-    // custom socketDir still overflows the platform limit.
-    if (hostSocket.length > 103) {
-      throw new Error(
-        `broker socket path is too long for a unix domain socket (${hostSocket.length} > 103): ${hostSocket} — set a shorter socketDir`,
-      );
-    }
+    // Per-task broker transport (§3.1). Default: a host-side **unix socket**
+    // bind-mounted into the container. On **macOS Docker Desktop** a bind-mounted
+    // socket is not connectable across the host↔VM boundary (ENOTSUP), so when
+    // `brokerHost` is set (e.g. "host.docker.internal") the broker listens on
+    // **TCP** and the container connects to `<brokerHost>:<port>` instead.
+    const tcpBroker = this.opts.brokerHost !== undefined;
     const question: { value?: string } = {};
-    const broker = this.startBroker(hostSocket, ctx, (q) => {
-      question.value = q;
-    });
+    let hostSocket: string | undefined;
+    let broker: { close: () => void; port?: number; token: string };
+    if (tcpBroker) {
+      broker = await this.startBroker({ tcp: true }, ctx, (q) => (question.value = q));
+    } else {
+      // Unix socket path must stay SHORT (macOS `sun_path` ~104 bytes): a short
+      // tmp base + a hashed task/session token, not the deep process cwd.
+      const socketDir = this.opts.socketDir ?? join(tmpdir(), "mar");
+      mkdirSync(socketDir, { recursive: true });
+      const socketId = createHash("sha1").update(`${ctx.request.taskId}:${sessionId}`).digest("hex").slice(0, 16);
+      hostSocket = join(socketDir, `${socketId}.sock`);
+      if (hostSocket.length > 103) {
+        throw new Error(
+          `broker socket path is too long for a unix domain socket (${hostSocket.length} > 103): ${hostSocket} — set a shorter socketDir, or use TCP (brokerHost)`,
+        );
+      }
+      broker = await this.startBroker({ unixSocket: hostSocket }, ctx, (q) => (question.value = q));
+    }
 
     // Everything after the broker starts is inside the try/finally, so a
     // failure in workspace/MCP setup, container creation, or start still closes
@@ -434,14 +456,23 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       mkdirSync(dirname(mcpHostPath), { recursive: true });
       writeFileSync(
         mcpHostPath,
-        mcpConfigJson(GUEST_BROKER_SOCKET, {
-          command: this.opts.cli?.shimCommand ?? "marathon-mcp-shim",
-          args: this.opts.cli?.shimArgs,
-        }),
+        mcpConfigJson(
+          tcpBroker
+            ? { tcp: `${this.opts.brokerHost}:${broker.port}`, token: broker.token }
+            : { socket: GUEST_BROKER_SOCKET, token: broker.token },
+          {
+            command: this.opts.cli?.shimCommand ?? "marathon-mcp-shim",
+            args: this.opts.cli?.shimArgs,
+          },
+        ),
       );
 
       container = await this.opts.sandbox.createContainer(ctx.request, workspace, {
-        mounts: [{ source: hostSocket, target: GUEST_BROKER_SOCKET }],
+        // Unix mode mounts the socket; TCP mode adds host.docker.internal so the
+        // container can reach the host broker (auto on Docker Desktop; explicit
+        // on Linux via host-gateway).
+        mounts: hostSocket ? [{ source: hostSocket, target: GUEST_BROKER_SOCKET }] : [],
+        extraHosts: tcpBroker ? ["host.docker.internal:host-gateway"] : undefined,
       });
       await container.start();
 
@@ -566,13 +597,14 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
     }
   }
 
-  private startBroker(
-    hostSocket: string,
+  private async startBroker(
+    listen: { unixSocket: string } | { tcp: true },
     ctx: AgentTurnContext,
     onAskUser: (question: string) => void,
-  ): { close: () => void } {
+  ): Promise<{ close: () => void; port?: number; token: string }> {
+    const hostSocket = "unixSocket" in listen ? listen.unixSocket : undefined;
     // Fresh socket each turn (containers are never recovered, §11.2).
-    if (existsSync(hostSocket)) {
+    if (hostSocket && existsSync(hostSocket)) {
       try {
         rmSync(hostSocket);
       } catch {
@@ -586,23 +618,60 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       tenantId: ctx.request.tenantId ?? "",
       agentId: ctx.request.agentId,
     };
+    // Per-turn capability token: the shim must present it before any tool is
+    // served (§3.1), so a peer that merely reaches the TCP port cannot invoke a
+    // governed tool. Also authenticates the unix socket (defense in depth).
+    const token = randomBytes(24).toString("hex");
     const conns: Socket[] = [];
     let server: Server | undefined;
+    let port: number | undefined;
     if (gateway) {
       server = createServer((conn) => {
         conns.push(conn);
         serveToolBroker(conn, conn, gateway, govCtx, {
           tools: specs,
           onAskUser: this.opts.clarification ? onAskUser : undefined,
+          authToken: token,
         });
       });
-      server.listen(hostSocket);
+      // Resolve on 'listening' (the broker is ready before the shim connects,
+      // and, for TCP, the ephemeral port is assigned); reject on 'error' so a
+      // failed listen (EPERM, EADDRINUSE, bad path) fails fast instead of
+      // hanging nextTurn forever (P2). Exactly one of the two fires.
+      const listening = new Promise<void>((resolve, reject) => {
+        const onError = (err: Error) => {
+          server!.off("listening", onListening);
+          reject(err);
+        };
+        const onListening = () => {
+          server!.off("error", onError);
+          resolve();
+        };
+        server!.once("error", onError);
+        server!.once("listening", onListening);
+      });
+      if (hostSocket) {
+        server.listen(hostSocket);
+      } else {
+        // TCP mode (macOS Docker Desktop): bind an ephemeral port on all
+        // interfaces so the container reaches it via host.docker.internal. The
+        // capability token above authenticates callers.
+        server.listen(0, "0.0.0.0");
+      }
+      try {
+        await listening;
+      } catch (err) {
+        server.close();
+        throw err;
+      }
+      const addr = server.address();
+      port = addr && typeof addr === "object" ? addr.port : undefined;
     }
     return {
       close: () => {
         for (const c of conns) c.destroy();
         server?.close();
-        if (existsSync(hostSocket)) {
+        if (hostSocket && existsSync(hostSocket)) {
           try {
             rmSync(hostSocket);
           } catch {
@@ -610,6 +679,8 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
           }
         }
       },
+      port,
+      token,
     };
   }
 }

@@ -89,6 +89,21 @@ describe("dockerStartArgs readonlyWorkspace (chat-repo.md §3.4)", () => {
   });
 });
 
+describe("dockerStartArgs extraHosts (TCP broker on Linux Docker, §3.1)", () => {
+  it("emits --add-host entries so the container can reach a host-side broker", () => {
+    const argv = dockerStartArgs("alpine:3.20", {
+      workspaceDir: "/host/ws",
+      extraHosts: ["host.docker.internal:host-gateway"],
+    });
+    const i = argv.indexOf("--add-host");
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(argv[i + 1]).toBe("host.docker.internal:host-gateway");
+  });
+  it("emits no --add-host when none are given", () => {
+    expect(dockerStartArgs("alpine:3.20", { workspaceDir: "/host/ws" })).not.toContain("--add-host");
+  });
+});
+
 describe("sandboxFromEnv", () => {
   it("defaults to NoSandbox (fail closed)", () => {
     expect(sandboxFromEnv({}).name).toBe("none");

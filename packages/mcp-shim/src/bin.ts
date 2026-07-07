@@ -1,6 +1,7 @@
 #!/usr/bin/env -S npx tsx
 import { connect } from "node:net";
 import { ToolBrokerClient } from "@marathon/tools";
+import { brokerConnectArg } from "./connect";
 import { handleMcpRequest, type JsonRpcRequest } from "./handler";
 
 /**
@@ -8,27 +9,26 @@ import { handleMcpRequest, type JsonRpcRequest } from "./handler";
  *
  * Claude Code spawns this as a stdio MCP server: its stdin/stdout speak MCP JSON-RPC
  * (newline-delimited) to the CLI, and it forwards `tools/list` / `tools/call` to the
- * host-side `serveToolBroker` over the per-task unix socket given by `--socket`. Zero
- * config, zero secrets — everything is resolved host-side per task.
+ * host-side `serveToolBroker`. The transport is either a per-task **unix socket**
+ * (`--socket <path>`, the Linux default) or a **TCP** endpoint
+ * (`--tcp <host:port>`) — the latter for macOS Docker Desktop, where a bind-mounted
+ * unix socket is not connectable across the host↔VM boundary (ENOTSUP). Zero config,
+ * zero secrets — everything is resolved host-side per task.
  */
 
-function socketPath(argv: string[]): string {
-  const i = argv.indexOf("--socket");
-  const next = i >= 0 ? argv[i + 1] : undefined;
-  if (next) return next;
-  const eq = argv.find((a) => a.startsWith("--socket="));
-  if (eq) return eq.slice("--socket=".length);
-  throw new Error("marathon-mcp-shim: --socket <path> is required");
-}
-
 async function main(): Promise<void> {
-  const path = socketPath(process.argv.slice(2));
-  const sock = connect(path);
+  const argv = process.argv.slice(2);
+  const target = brokerConnectArg(argv);
+  const ti = argv.indexOf("--token");
+  const token = (ti >= 0 ? argv[ti + 1] : undefined) ?? argv.find((a) => a.startsWith("--token="))?.slice("--token=".length);
+  const sock = "path" in target ? connect(target.path) : connect(target.port, target.host);
   sock.on("error", (err) => {
-    process.stderr.write(`marathon-mcp-shim: broker socket error: ${err}\n`);
+    process.stderr.write(`marathon-mcp-shim: broker connection error: ${err}\n`);
     process.exit(1);
   });
   await new Promise<void>((resolve) => sock.once("connect", resolve));
+  // Present the per-turn capability token as the first line before any request.
+  if (token) sock.write(`${JSON.stringify({ auth: token })}\n`);
   const broker = new ToolBrokerClient(sock, sock);
 
   // Newline-delimited JSON-RPC on stdin → handler → stdout.

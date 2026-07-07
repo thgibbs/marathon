@@ -14,7 +14,7 @@ export interface WorkspaceContainerFactory {
   createContainer: (
     req: AgentRequest,
     workspace?: AgentWorkspaceBinding,
-    extra?: { mounts?: ContainerMount[] },
+    extra?: { mounts?: ContainerMount[]; extraHosts?: string[] },
   ) => DockerContainer;
   shellPath?: string;
 }
@@ -68,7 +68,7 @@ export function workspaceContainerOptions(
   workspace: AgentWorkspaceBinding,
   opts: WorkspaceSandboxOptions = {},
   env: NodeJS.ProcessEnv = process.env,
-  mounts?: ContainerMount[],
+  extra?: { mounts?: ContainerMount[]; extraHosts?: string[] },
 ): DockerContainerOptions {
   return {
     workspaceDir: workspace.dir,
@@ -79,7 +79,8 @@ export function workspaceContainerOptions(
     pidsLimit: opts.pidsLimit ?? DEFAULT_PIDS,
     dockerPath: opts.dockerPath,
     readonlyWorkspace: opts.readonlyWorkspace,
-    mounts,
+    mounts: extra?.mounts,
+    extraHosts: extra?.extraHosts,
   };
 }
 
@@ -126,8 +127,9 @@ export function workspaceSandbox(
   env: NodeJS.ProcessEnv = process.env,
 ): WorkspaceContainerFactory {
   return {
-    // The optional third arg carries extra bind mounts (K7: the broker unix
-    // socket, `claude-code-impl.md` §3.1); the Pi path calls with two args.
+    // The optional third arg carries extra bind mounts + `--add-host` entries
+    // (K7: the broker socket or TCP host, `claude-code-impl.md` §3.1); the Pi
+    // path calls with two args.
     createContainer: (_req, workspace, extra) => {
       if (!workspace) {
         throw new Error(
@@ -139,7 +141,7 @@ export function workspaceSandbox(
       if (opts.readonlyWorkspace) {
         mkdirSync(join(workspace.dir, GUEST_HOME_DIRNAME), { recursive: true });
       }
-      return new DockerContainer(workspaceContainerOptions(workspace, opts, env, extra?.mounts));
+      return new DockerContainer(workspaceContainerOptions(workspace, opts, env, extra));
     },
     shellPath: opts.shellPath,
   };

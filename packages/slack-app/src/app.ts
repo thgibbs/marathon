@@ -164,6 +164,8 @@ export async function startSlackApp(): Promise<void> {
       proxy: flagship.harness === "claude-code" ? (chatProxyUrl ? { baseUrl: chatProxyUrl } : undefined) : undefined,
       lockedDownEgress: flagship.sandbox.network === "none",
       cli: { settingsPath: "/etc/marathon/claude-settings.json" },
+      // TCP broker for macOS Docker Desktop (§3.1): set MARATHON_BROKER_HOST=host.docker.internal.
+      brokerHost: process.env.MARATHON_BROKER_HOST?.trim() || undefined,
       getRemainingBudgetUsd: flagship.budget
         ? async (ctx) => flagship.budget!.limitUsd - (await db.sumModelCostUsd(ctx.request.taskId))
         : undefined,

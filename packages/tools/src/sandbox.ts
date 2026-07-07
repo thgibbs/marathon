@@ -145,6 +145,12 @@ export interface DockerContainerOptions extends DockerSandboxOptions {
    * governed-tool boundary, brokered host-side.
    */
   mounts?: ContainerMount[];
+  /**
+   * `--add-host` entries (e.g. `host.docker.internal:host-gateway`) so the
+   * container can reach a host-side TCP broker on Linux Docker (§3.1). Auto on
+   * Docker Desktop, but harmless there.
+   */
+  extraHosts?: string[];
 }
 
 /** The sandbox HOME dir name inside the workspace mount (Track 11). */
@@ -153,6 +159,7 @@ export const GUEST_HOME_DIRNAME = ".marathon-home";
 /** Build the persistent-container `docker run -d` argv (pure; CI-testable). */
 export function dockerStartArgs(image: string, opts: DockerContainerOptions): string[] {
   const mounts = (opts.mounts ?? []).flatMap((m) => ["-v", `${m.source}:${m.target}${m.readonly ? ":ro" : ""}`]);
+  const addHosts = (opts.extraHosts ?? []).flatMap((h) => ["--add-host", h]);
   const workspaceMounts = opts.readonlyWorkspace
     ? [
         // The repo checkout is read-only; the harness home is layered back as a
@@ -169,6 +176,7 @@ export function dockerStartArgs(image: string, opts: DockerContainerOptions): st
     "-d",
     "--rm",
     ...hardeningFlags(opts),
+    ...addHosts,
     ...workspaceMounts,
     ...mounts,
     "-w",

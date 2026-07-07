@@ -115,9 +115,20 @@ this consumer. What's new is the MCP face:
 - **`marathon-mcp-shim`** — a small Node script baked into the toolchain image. Claude Code
   spawns it as a **stdio MCP server** (its stdio speaks MCP JSON-RPC to the CLI). It
   implements `initialize`, `tools/list`, and `tools/call`, and forwards every `tools/call`
-  as a `ToolBrokerRequest` over **a per-task unix socket mounted into the container**
-  (e.g. `/run/marathon/broker.sock`). The host side of that socket is `serveToolBroker`
-  bound to the task's `ToolGateway` context.
+  as a `ToolBrokerRequest` to the host-side `serveToolBroker` bound to the task's
+  `ToolGateway` context. **Transport (`--socket` vs `--tcp`):** by default a per-task **unix
+  socket** mounted into the container (`/run/marathon/broker.sock`) — the Linux default, more
+  isolated. On **macOS Docker Desktop** a bind-mounted unix socket is **not connectable** from
+  inside the container (`ENOTSUP` across the VirtioFS host↔VM boundary — this is why the broker
+  "never comes online" and no governed tools are discoverable), so set
+  `MARATHON_BROKER_HOST=host.docker.internal` (`brokerHost`): the broker then listens on an
+  ephemeral **TCP** port and the shim connects to `host.docker.internal:<port>` (the container
+  gets `--add-host host.docker.internal:host-gateway`; auto on Docker Desktop, explicit on
+  Linux). Verified end-to-end on Docker Desktop. **Capability token:** because the TCP
+  broker is reachable beyond the sandbox, the runtime mints a **per-turn token**, passes it to
+  the shim in the MCP config (`--token`), and `serveToolBroker` requires it as the first line
+  (`{"auth":"<token>"}`) before serving any tool — an unauthenticated peer that merely reaches
+  the port gets nothing. The token also guards the unix socket (defense in depth).
 - **`tools/list` comes from the broker too** — extend the broker protocol with a
   `list_tools` request returning the task's registered governed tools (name, description,
   JSON-schema parameters, from the `ToolRegistry`). The shim carries **zero configuration
