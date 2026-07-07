@@ -10,7 +10,7 @@ import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
 import { DEFAULT_JOB_KIND, Queue } from "@marathon/queue";
 import { DeliveryFanout } from "@marathon/surface";
 import { RealSlackClient, SlackDelivery, SocketModeClient } from "@marathon/surface-slack";
-import { InMemorySourceLedger, ToolGateway, ToolRegistry, toolPolicyFromSpec } from "@marathon/tools";
+import { InMemorySourceLedger, installSandboxShutdownHandler, reapSandboxContainers, ToolGateway, ToolRegistry, toolPolicyFromSpec } from "@marathon/tools";
 import {
   InvocationRouter,
   makeAgentTaskStepRunner,
@@ -41,6 +41,17 @@ export async function startSlackApp(): Promise<void> {
   if (!appToken) throw new Error("SLACK_APP_TOKEN (xapp-) is required");
 
   await migrate(cfg.databaseUrl);
+  // Graceful shutdown: on Ctrl-C/SIGTERM, tear down this process's sandbox
+  // containers before exiting (the primary anti-leak). The boot reaper below is
+  // the backstop for SIGKILL/crashes, where no handler runs.
+  installSandboxShutdownHandler((n, sig) => {
+    if (n) console.log(`[slack-app] stopped ${n} sandbox container(s) on ${sig}`);
+  });
+  // Reap sandbox containers orphaned by a previous run that couldn't clean up
+  // (SIGKILL/crash). Safe at boot: task containers are made on demand during
+  // processing, never here.
+  const reaped = await reapSandboxContainers();
+  if (reaped.length) console.log(`[slack-app] reaped ${reaped.length} orphaned sandbox container(s)`);
   const db = new Database(cfg.databaseUrl);
   const queue = new Queue(cfg.databaseUrl);
   const envSecrets = new EnvSecretStore();

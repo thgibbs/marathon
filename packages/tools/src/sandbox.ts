@@ -156,6 +156,13 @@ export interface DockerContainerOptions extends DockerSandboxOptions {
 /** The sandbox HOME dir name inside the workspace mount (Track 11). */
 export const GUEST_HOME_DIRNAME = ".marathon-home";
 
+/**
+ * Docker label stamped on every persistent Marathon sandbox container so orphans
+ * (left behind when the host process is killed mid-task, before `stop()` runs)
+ * can be found and reaped. See {@link reapSandboxContainers}.
+ */
+export const SANDBOX_LABEL = "marathon.sandbox";
+
 /** Build the persistent-container `docker run -d` argv (pure; CI-testable). */
 export function dockerStartArgs(image: string, opts: DockerContainerOptions): string[] {
   const mounts = (opts.mounts ?? []).flatMap((m) => ["-v", `${m.source}:${m.target}${m.readonly ? ":ro" : ""}`]);
@@ -175,6 +182,10 @@ export function dockerStartArgs(image: string, opts: DockerContainerOptions): st
     "run",
     "-d",
     "--rm",
+    // Identify Marathon sandbox containers so orphans can be reaped (a keep-alive
+    // container leaks if the host process dies before `stop()` runs).
+    "--label",
+    `${SANDBOX_LABEL}=1`,
     ...hardeningFlags(opts),
     ...addHosts,
     ...workspaceMounts,
@@ -186,6 +197,32 @@ export function dockerStartArgs(image: string, opts: DockerContainerOptions): st
     "-f",
     "/dev/null", // keep-alive; we exec commands into it
   ];
+}
+
+/**
+ * Reap orphaned Marathon sandbox containers (labeled by {@link SANDBOX_LABEL}).
+ * Called at live-app startup: task containers are created on demand DURING
+ * processing, never at boot, so anything labeled and lingering when a fresh
+ * process starts is a leak from a previous run (e.g. the dev server was
+ * Ctrl-C'd mid-task). Returns the container ids removed. Best-effort — a Docker
+ * that is absent or erroring must not block boot.
+ *
+ * Single-host assumption: on a shared host running concurrent workers, scope by
+ * a per-worker label instead (a boot-time reap here would kill a peer's live
+ * container). Fine for the local dev deployment this targets.
+ */
+export async function reapSandboxContainers(dockerPath = "docker"): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync(dockerPath, ["ps", "-aq", "--filter", `label=${SANDBOX_LABEL}`], {
+      timeout: 10_000,
+    });
+    const ids = stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (!ids.length) return [];
+    await execFileAsync(dockerPath, ["rm", "-f", ...ids], { timeout: 30_000 }).catch(() => {});
+    return ids;
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -208,6 +245,9 @@ export class DockerContainer {
     const image = this.opts.image ?? "alpine:3.20";
     const { stdout } = await execFileAsync(this.docker(), dockerStartArgs(image, this.opts), { timeout: 60_000 });
     this.containerId = stdout.trim();
+    // Track for graceful shutdown: a signal handler stops these before exit so
+    // Ctrl-C mid-task doesn't leak a keep-alive container (see stopAllSandboxContainers).
+    ACTIVE_CONTAINERS.add(this);
   }
 
   async exec(bin: string, args: string[], opts?: { timeoutMs?: number }): Promise<SandboxResult> {
@@ -296,11 +336,53 @@ export class DockerContainer {
   }
 
   async stop(): Promise<void> {
+    ACTIVE_CONTAINERS.delete(this);
     if (!this.containerId) return;
     const id = this.containerId;
     this.containerId = undefined;
     await execFileAsync(this.docker(), ["rm", "-f", id], { timeout: 30_000 }).catch(() => {});
   }
+}
+
+/** Containers this process started and hasn't stopped — the graceful-shutdown set. */
+const ACTIVE_CONTAINERS = new Set<DockerContainer>();
+
+/**
+ * Stop every sandbox container this process started (graceful shutdown). Called
+ * from a SIGINT/SIGTERM handler so Ctrl-C during a task tears the container down
+ * cleanly instead of leaking it — the precise, concurrency-safe complement to
+ * the boot-time {@link reapSandboxContainers} backstop (which covers SIGKILL /
+ * crashes, where no handler runs). Returns how many were stopped.
+ */
+export async function stopAllSandboxContainers(): Promise<number> {
+  const containers = [...ACTIVE_CONTAINERS];
+  await Promise.all(containers.map((c) => c.stop().catch(() => {})));
+  return containers.length;
+}
+
+/**
+ * Install a one-shot SIGINT/SIGTERM handler that stops this process's sandbox
+ * containers, then exits. Idempotent; returns a disposer that removes it.
+ */
+export function installSandboxShutdownHandler(onStopped?: (count: number, signal: string) => void): () => void {
+  let shuttingDown = false;
+  const handle = (signal: NodeJS.Signals) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void stopAllSandboxContainers().then((count) => {
+      onStopped?.(count, signal);
+      // 128 + signal number is the conventional exit code for a signal.
+      process.exit(signal === "SIGINT" ? 130 : 143);
+    });
+  };
+  const onInt = () => handle("SIGINT");
+  const onTerm = () => handle("SIGTERM");
+  process.on("SIGINT", onInt);
+  process.on("SIGTERM", onTerm);
+  return () => {
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
+  };
 }
 
 /**

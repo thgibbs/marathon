@@ -248,6 +248,34 @@ describe("durable clarifying questions (Track 12, §11.6)", () => {
   });
 });
 
+describe("orphan job against an approval-gated task (§7.4)", () => {
+  it("acks a job whose task is waiting_for_approval instead of forcing an invalid ->completed", async () => {
+    // The live mention flow completes some tasks INLINE and parks the draft flow
+    // at waiting_for_approval, leaving an orphan queue job. A worker that leased
+    // it used to run steps and try waiting_for_approval -> completed (invalid),
+    // dead-lettering the job. It must ack the orphan as a no-op instead.
+    const h = makeHarness();
+    await h.rawDb.transitionTask("t1", "running");
+    await h.rawDb.transitionTask("t1", "waiting_for_approval");
+    const statusesBefore = h.statuses.length;
+    await (h.queue as unknown as { enqueue: (i: { taskId: string }) => Promise<unknown> }).enqueue({ taskId: "t1" });
+
+    let stepRan = false;
+    const worker = new Worker(h.queue, h.db, {
+      stepRunner: async () => {
+        stepRan = true;
+        throw new Error("stepRunner must not run for a waiting_for_approval task");
+      },
+    });
+
+    expect(await worker.runOnce()).toBe("completed"); // ack, not dead-letter
+    expect(stepRan).toBe(false);
+    expect(h.statuses.length).toBe(statusesBefore); // no transition attempted
+    expect(h.current().status).toBe("waiting_for_approval"); // left for the human/merge flow
+    expect(h.failures).toHaveLength(0); // never failed/retried
+  });
+});
+
 describe("makeWaitingNotifier (durable question publication)", () => {
   function makeAdapter() {
     const posted: string[] = [];

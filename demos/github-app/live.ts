@@ -27,7 +27,7 @@ import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
 import { Queue } from "@marathon/queue";
 import { DeliveryFanout } from "@marathon/surface";
-import { InMemorySourceLedger, ToolGateway, toolPolicyFromSpec, ToolRegistry } from "@marathon/tools";
+import { InMemorySourceLedger, installSandboxShutdownHandler, reapSandboxContainers, ToolGateway, toolPolicyFromSpec, ToolRegistry } from "@marathon/tools";
 import { BUILD_JOB_KIND, InvocationRouter, makeDocumentPrRecorder, Orchestrator, Worker } from "@marathon/worker";
 
 async function main(): Promise<void> {
@@ -41,6 +41,17 @@ async function main(): Promise<void> {
   if (!owner) throw new Error("GITHUB_OWNER is required (repo owner for the tenant)");
 
   await migrate(cfg.databaseUrl);
+  // Graceful shutdown: on Ctrl-C/SIGTERM, tear down this process's sandbox
+  // containers before exiting (the primary anti-leak). The boot reaper below is
+  // the backstop for SIGKILL/crashes, where no handler runs.
+  installSandboxShutdownHandler((n, sig) => {
+    if (n) console.log(`[github-app] stopped ${n} sandbox container(s) on ${sig}`);
+  });
+  // Reap sandbox containers orphaned by a previous run that couldn't clean up
+  // (SIGKILL/crash). Safe at boot: task containers are made on demand during
+  // processing, never here.
+  const reaped = await reapSandboxContainers();
+  if (reaped.length) console.log(`[github-app] reaped ${reaped.length} orphaned sandbox container(s)`);
   const db = new Database(cfg.databaseUrl);
   const queue = new Queue(cfg.databaseUrl);
   // GitHub auth (§2b #15): App installation tokens when GITHUB_APP_ID +

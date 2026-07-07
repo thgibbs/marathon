@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DockerSandbox, dockerRunArgs, dockerStartArgs, LocalSubprocessSandbox, NoSandbox, sandboxFromEnv } from "../src/sandbox";
+import { DockerContainer, DockerSandbox, dockerRunArgs, dockerStartArgs, LocalSubprocessSandbox, NoSandbox, SANDBOX_LABEL, sandboxFromEnv, stopAllSandboxContainers } from "../src/sandbox";
 
 describe("dockerRunArgs (isolation flags)", () => {
   const argv = dockerRunArgs("alpine:3.20", "echo", ["hi"]);
@@ -66,6 +66,11 @@ describe("dockerStartArgs (persistent container)", () => {
     expect(argv).not.toContain("-e");
     expect(argv).not.toContain("--env");
   });
+  it("labels the container so orphans can be reaped", () => {
+    const i = argv.indexOf("--label");
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(argv[i + 1]).toBe(`${SANDBOX_LABEL}=1`);
+  });
 });
 
 describe("dockerStartArgs readonlyWorkspace (chat-repo.md §3.4)", () => {
@@ -101,6 +106,17 @@ describe("dockerStartArgs extraHosts (TCP broker on Linux Docker, §3.1)", () =>
   });
   it("emits no --add-host when none are given", () => {
     expect(dockerStartArgs("alpine:3.20", { workspaceDir: "/host/ws" })).not.toContain("--add-host");
+  });
+});
+
+describe("sandbox container registry / graceful shutdown", () => {
+  it("tracks started containers and stopAllSandboxContainers tears them down", async () => {
+    // `echo` stands in for the docker binary: `start()` "runs" it (containerId =
+    // the echoed argv) and registers; no real container needed.
+    const c = new DockerContainer({ workspaceDir: "/tmp/ws", dockerPath: "echo" });
+    await c.start();
+    expect(await stopAllSandboxContainers()).toBeGreaterThanOrEqual(1);
+    expect(await stopAllSandboxContainers()).toBe(0); // drained — idempotent
   });
 });
 
