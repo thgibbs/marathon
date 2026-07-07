@@ -577,6 +577,18 @@ importers:
         specifier: workspace:*
         version: link:../tools
 
+  packages/console:
+    dependencies:
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../db
+      '@marathon/observability':
+        specifier: workspace:*
+        version: link:../observability
+
   packages/core: {}
 
   packages/db:
