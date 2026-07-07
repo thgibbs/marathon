@@ -133,6 +133,70 @@ describe("makeRepoChatWorkspaceProvider gate (§3.1)", () => {
   });
 });
 
+describe("makeRepoChatWorkspaceProvider best-effort I/O (review — degrade to ungrounded)", () => {
+  it("records the checkout as a source on success (§7.8)", async () => {
+    const grounded: Array<{ repo: string; sha: string; visibility: string }> = [];
+    const { deps } = makeDeps({
+      repoVisibility: async () => "private",
+      onGrounded: (_t, g) => void grounded.push(g),
+    });
+    // internal_confirmed audience so a private repo grounds.
+    const resolved = await makeRepoChatWorkspaceProvider(deps)(task({ sourceRef: { channel: "D1" } }));
+    expect(resolved).toBeDefined();
+    expect(grounded).toEqual([{ repo: REPO, sha: "head-sha", visibility: "private" }]);
+  });
+
+  it("degrades to ungrounded (no throw) when visibility can't be proven", async () => {
+    const errors: unknown[] = [];
+    const { deps, materialize } = makeDeps({
+      repoVisibility: async () => {
+        throw new Error("cannot determine visibility");
+      },
+      onError: (_t, e) => void errors.push(e),
+    });
+    expect(await makeRepoChatWorkspaceProvider(deps)(task())).toBeUndefined();
+    expect(materialize).not.toHaveBeenCalled();
+    expect(String(errors[0])).toContain("cannot determine visibility");
+  });
+
+  it("degrades to ungrounded when the clone source or materialization fails", async () => {
+    const errors: unknown[] = [];
+    const srcFail = makeDeps({
+      source: async () => {
+        throw new Error("no token");
+      },
+      onError: (_t, e) => void errors.push(e),
+    });
+    expect(await makeRepoChatWorkspaceProvider(srcFail.deps)(task())).toBeUndefined();
+
+    const matFail = makeDeps({
+      materialize: async () => {
+        throw new Error("clone failed");
+      },
+      onError: (_t, e) => void errors.push(e),
+    });
+    expect(await makeRepoChatWorkspaceProvider(matFail.deps)(task())).toBeUndefined();
+    expect(errors.map(String)).toEqual([expect.stringContaining("no token"), expect.stringContaining("clone failed")]);
+  });
+
+  it("disposes a materialized workspace if onGrounded throws", async () => {
+    let disposed = 0;
+    const { deps } = makeDeps({
+      materialize: async () => ({
+        workspace: { dir: "/tmp/ws", baseSha: "s" },
+        sha: "s",
+        dispose: async () => void disposed++,
+      }),
+      onGrounded: () => {
+        throw new Error("ledger down");
+      },
+      onError: () => {},
+    });
+    expect(await makeRepoChatWorkspaceProvider(deps)(task())).toBeUndefined();
+    expect(disposed).toBe(1);
+  });
+});
+
 describe("makeRepoChatWorkspaceProvider sha pinning (§3.3)", () => {
   it("pinned mode materializes the recorded sha on resume", async () => {
     const { deps, materialize } = makeDeps({ groundRef: "pinned" });

@@ -58,6 +58,19 @@ export interface ChatWorkspaceProviderDeps {
   claimOnce?: (key: string) => Promise<boolean>;
   /** Surfaced (at most once per task+reason) when access is denied — the link CTA. */
   onDenied?: (task: Task, reason: "no_link" | "stale" | "no_access") => void | Promise<void>;
+  /**
+   * Called when materialization succeeds — the checkout is a **source**
+   * (chat-repo.md §3.3, §7.8), so the caller records `github:${repo}` at `sha`
+   * in the task's SourceLedger before any later egress decision.
+   */
+  onGrounded?: (task: Task, grounded: { repo: string; sha: string; visibility: "public" | "private" }) => void | Promise<void>;
+  /**
+   * Called when a non-policy I/O step fails (visibility lookup, clone source,
+   * materialization). Grounding is best-effort — the failure is logged/audited
+   * here and the task continues **ungrounded** (chat-repo.md §7). Distinct from
+   * an access/audience *decline*, which is a policy decision, not an error.
+   */
+  onError?: (task: Task, err: unknown) => void | Promise<void>;
 }
 
 /**
@@ -105,20 +118,37 @@ export function makeRepoChatWorkspaceProvider(deps: ChatWorkspaceProviderDeps) {
     if (!repo || !deps.enabled) return undefined; // no repo / not opted in
     if (!task.invokingUserId) return undefined; // no user to check access for
 
-    // Per-user access (§3.1 cond. 3): each of the three denials surfaces the
-    // CTA, once per (task, reason).
-    const access = await deps.checkAccess(task.tenantId, task.invokingUserId, repo);
-    if (access !== "ok") {
-      await denyOnce(task, access);
+    // Everything below is best-effort I/O (access check, visibility lookup,
+    // clone): a failure degrades to **ungrounded**, never fails the task
+    // (chat-repo.md §7). Policy *declines* (access denied / audience) return
+    // undefined explicitly and are not errors. Any partially-materialized
+    // workspace is disposed before returning.
+    let resolved: ResolvedChatWorkspace | undefined;
+    try {
+      // Per-user access (§3.1 cond. 3): each denial surfaces the CTA once per
+      // (task, reason). Not an error — a policy decision.
+      const access = await deps.checkAccess(task.tenantId, task.invokingUserId, repo);
+      if (access !== "ok") {
+        await denyOnce(task, access);
+        return undefined;
+      }
+
+      // Audience × visibility (§3.1 cond. 4), deny-by-default. `repoVisibility`
+      // throws when it cannot PROVE visibility (e.g. a mis-scoped token can't
+      // see the repo) — caught below → ungrounded, never treated as public.
+      const visibility = await deps.repoVisibility(repo);
+      if (!mayGround(visibility, audienceTrust(task))) return undefined;
+
+      // Materialize read-only: pin the recorded sha when in pinned mode + resuming.
+      const ref = deps.groundRef === "pinned" ? opts.pinnedSha : undefined;
+      resolved = await deps.materialize(await deps.source(repo), ref);
+      // The checkout is now a source — record it before any egress decision.
+      await deps.onGrounded?.(task, { repo, sha: resolved.sha, visibility });
+      return resolved;
+    } catch (err) {
+      await resolved?.dispose().catch(() => {});
+      await deps.onError?.(task, err);
       return undefined;
     }
-
-    // Audience × visibility (§3.1 cond. 4), deny-by-default.
-    const visibility = await deps.repoVisibility(repo);
-    if (!mayGround(visibility, audienceTrust(task))) return undefined;
-
-    // Materialize read-only: pin the recorded sha when in pinned mode + resuming.
-    const ref = deps.groundRef === "pinned" ? opts.pinnedSha : undefined;
-    return deps.materialize(await deps.source(repo), ref);
   };
 }

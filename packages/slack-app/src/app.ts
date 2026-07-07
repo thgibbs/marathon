@@ -88,6 +88,10 @@ export async function startSlackApp(): Promise<void> {
   // the one-repo constraint from `repo:`) come from the agent's YAML, and the
   // Pi-visible tool list is derived from those same grants.
   const clientFactory = httpGithubClientFactory();
+  // Shared across the governed tools AND the chat-grounding provider (§7.8): a
+  // materialized checkout is a source and must be recorded in the SAME ledger
+  // the gateway consults for egress decisions.
+  const sourceLedger = new InMemorySourceLedger();
   const toolGateway = new ToolGateway({
     // Doc PRs target the configured plans branch (§29.1a) — authoritative,
     // so the model cannot retarget them at the default branch. The recorder
@@ -104,7 +108,7 @@ export async function startSlackApp(): Promise<void> {
     policy: toolPolicyFromSpec(flagship),
     secrets,
     recorder: dbToolRecorder(db),
-    sourceLedger: new InMemorySourceLedger(),
+    sourceLedger,
   });
   const governedTools = governedToolDefsFor(flagship.tools.map((t) => t.tool));
   // Harness from the spec (§2b #17): the chat surface now runs EITHER harness
@@ -174,7 +178,14 @@ export async function startSlackApp(): Promise<void> {
         groundRef: flagship.chat.groundRef,
         source: async (repo) => `https://x-access-token:${await secrets.get("secret/github")}@github.com/${repo}.git`,
         checkAccess,
-        repoVisibility: async (repo) => ((await visibilityClient!.getRepo(repo))?.private ? "private" : "public"),
+        // Visibility that cannot be PROVEN (a mis-scoped App/token can't see the
+        // repo → getRepo returns null) must NOT pass as public — throw so the
+        // provider degrades to ungrounded rather than bypassing the private rule.
+        repoVisibility: async (repo) => {
+          const info = await visibilityClient!.getRepo(repo);
+          if (!info) throw new Error(`cannot determine visibility of ${repo} (the App/token cannot see it)`);
+          return info.private ? "private" : "public";
+        },
         materialize: async (source, ref) => {
           const { workspace, sha } = await CodeWorkspace.materializeReadonly({ source, ref });
           return { workspace: { dir: workspace.dir, baseSha: sha }, sha, dispose: () => workspace.dispose() };
@@ -187,6 +198,14 @@ export async function startSlackApp(): Promise<void> {
               ? `I can't ground on \`${flagship.repo}\` for you — you don't appear to have access.`
               : "Run `/marathon link github` to connect your GitHub account so I can ground answers on the repo with your access.",
           ),
+        // §7.8: record the checkout as a source in the SAME ledger the gateway
+        // consults, so a later egress tool sees what the task has read. Kernel
+        // calibration: repos are `company_viewable` (design §7.8).
+        onGrounded: (task, { repo }) =>
+          sourceLedger.record(task.id, [{ source: `github:${repo}`, sensitivity: "company_viewable" }]),
+        // Best-effort: a clone/network/visibility failure degrades to ungrounded.
+        onError: (task, err) =>
+          console.error(`[slack-app] chat grounding failed for task ${task.id}; running ungrounded:`, err),
       })
     : undefined;
   console.log(
