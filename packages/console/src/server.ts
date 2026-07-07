@@ -35,7 +35,7 @@ export async function handleConsoleRequest(
 
   if (url.pathname === "/commands") {
     const commands = await listRecentCommands(db, tenantId, opts.commandsLimit ?? 100);
-    return { status: 200, body: renderCommandsListPage(commands) };
+    return { status: 200, body: renderCommandsListPage(commands, tenantId) };
   }
 
   const taskMatch = url.pathname.match(/^\/tasks\/([^/]+)$/);
@@ -46,15 +46,49 @@ export async function handleConsoleRequest(
     const report = await getTaskReport(db, tenantId, taskId);
     if (!report) return { status: 404, body: "task not found" };
     const related = await getRelatedTasks(db, tenantId, task);
-    return { status: 200, body: renderTaskDetailPage(task, report, related) };
+    return { status: 200, body: renderTaskDetailPage(task, report, related, tenantId) };
   }
 
   return { status: 404, body: "not found" };
 }
 
-/** Bind and listen, localhost by default (v1 has no auth story — see module doc). */
-export async function listenConsoleServer(server: Server, host = "127.0.0.1", port = 0): Promise<string> {
-  await new Promise<void>((resolve) => server.listen(port, host, resolve));
+/** Loopback-only hostnames/addresses this server is allowed to bind without an explicit opt-in (see `listenConsoleServer`). */
+export function isLoopbackHost(host: string): boolean {
+  return host === "localhost" || host === "::1" || /^127\.\d+\.\d+\.\d+$/.test(host);
+}
+
+/**
+ * Bind and listen, localhost by default (v1 has no auth story — see module
+ * doc). Refuses to bind a non-loopback host (e.g. an inherited `HOST=0.0.0.0`
+ * from an app-runner environment) unless `opts.allowNonLoopback` is set,
+ * since every route here is unauthenticated and tenant-scoped only by a
+ * caller-supplied query param.
+ */
+export async function listenConsoleServer(
+  server: Server,
+  host = "127.0.0.1",
+  port = 0,
+  opts: { allowNonLoopback?: boolean } = {},
+): Promise<string> {
+  if (!opts.allowNonLoopback && !isLoopbackHost(host)) {
+    throw new Error(
+      `refusing to bind unauthenticated console server to non-loopback host "${host}"; ` +
+        "set opts.allowNonLoopback (CONSOLE_ALLOW_NONLOOPBACK=1) if this is intentional",
+    );
+  }
+  await new Promise<void>((resolve, reject) => {
+    const onError = (err: Error) => {
+      server.off("listening", onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, host);
+  });
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("console server failed to bind a TCP port");
   return `http://${host}:${addr.port}`;

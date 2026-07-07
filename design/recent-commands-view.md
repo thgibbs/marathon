@@ -85,7 +85,14 @@ above (`getTaskTimeline`/`getTaskReport` already refuse to assemble data
 across tenants — see the tenant check in `timeline.ts`); the endpoint's own
 job is just to resolve which tenant is asking and pass that through, never to
 broaden the scope. It binds to localhost by default — v1 has no auth story,
-so no external exposure.
+so no external exposure. Since every route is unauthenticated and
+tenant-scoped only by a caller-supplied `tenantId` query param, the bind is
+enforced, not just defaulted: `listenConsoleServer` refuses a non-loopback
+`host` (e.g. an inherited `HOST=0.0.0.0` from an app-runner environment)
+unless the caller explicitly opts in (`CONSOLE_ALLOW_NONLOOPBACK=1` for
+`serve.ts`), and every internal task link rendered by either page carries the
+active `tenantId` so navigation between the list and detail pages stays
+within the requesting tenant's scope.
 
 ## User Interface Design
 - **List page**: a plain table (tool id, time, status, error, owning task

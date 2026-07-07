@@ -26,8 +26,13 @@ ${body}
 </body></html>`;
 }
 
+/** `handleConsoleRequest` only accepts `/tasks/:id?tenantId=...` — every internal task link must carry the active tenant. */
+function taskHref(taskId: string, tenantId: string): string {
+  return `/tasks/${encodeURIComponent(taskId)}?tenantId=${encodeURIComponent(tenantId)}`;
+}
+
 /** List page: a plain table of the most recent commands (design §List page). */
-export function renderCommandsListPage(commands: RecentCommand[]): string {
+export function renderCommandsListPage(commands: RecentCommand[], tenantId: string): string {
   const rows = commands
     .map(
       (c) => `<tr>
@@ -37,7 +42,7 @@ export function renderCommandsListPage(commands: RecentCommand[]): string {
   <td>${safe(c.error)}</td>
   <td>${safe(c.inputSummary)}</td>
   <td>${safe(c.outputSummary)}</td>
-  <td><a href="/tasks/${encodeURIComponent(c.taskId)}">${safe(c.taskId)}</a> (${safe(c.taskStatus)})</td>
+  <td><a href="${taskHref(c.taskId, tenantId)}">${safe(c.taskId)}</a> (${safe(c.taskStatus)})</td>
 </tr>`,
     )
     .join("\n");
@@ -89,19 +94,19 @@ function renderTimelineEvent(e: TimelineEvent): string {
 </tr>`;
 }
 
-function renderTaskLink(t: Task): string {
-  return `<a href="/tasks/${encodeURIComponent(t.id)}">${safe(t.id)}</a> (${safe(t.status)})`;
+function renderTaskLink(t: Task, tenantId: string): string {
+  return `<a href="${taskHref(t.id, tenantId)}">${safe(t.id)}</a> (${safe(t.status)})`;
 }
 
-function renderRelatedTasks(related: RelatedTasks): string {
+function renderRelatedTasks(related: RelatedTasks, tenantId: string): string {
   const ancestors = related.ancestors.length
-    ? `<ul>${related.ancestors.map((t) => `<li>${renderTaskLink(t)}</li>`).join("")}</ul>`
+    ? `<ul>${related.ancestors.map((t) => `<li>${renderTaskLink(t, tenantId)}</li>`).join("")}</ul>`
     : "<p>none</p>";
   const descendant = related.latestDescendant
-    ? `<p>Latest: ${renderTaskLink(related.latestDescendant)} (${related.descendantCount} total)</p>`
+    ? `<p>Latest: ${renderTaskLink(related.latestDescendant, tenantId)} (${related.descendantCount} total)</p>`
     : "<p>none</p>";
   const siblings = related.siblings.length
-    ? `<ul>${related.siblings.map((t) => `<li>${renderTaskLink(t)}</li>`).join("")}</ul>`
+    ? `<ul>${related.siblings.map((t) => `<li>${renderTaskLink(t, tenantId)}</li>`).join("")}</ul>`
     : "<p>none</p>";
   return `<h2>Related tasks</h2>
 <h3>Chain ancestry</h3>
@@ -113,7 +118,7 @@ ${siblings}`;
 }
 
 /** Detail page: Trigger, Prompt, Timeline, Related Tasks (design §Detail page). */
-export function renderTaskDetailPage(task: Task, report: TaskReport, related: RelatedTasks): string {
+export function renderTaskDetailPage(task: Task, report: TaskReport, related: RelatedTasks, tenantId: string): string {
   const trigger = triggerLink(task);
   const triggerHtml = trigger.href
     ? `<a href="${escapeHtml(trigger.href)}">${safe(trigger.label)}</a>`
@@ -138,6 +143,6 @@ ${timelineRows}
 </tbody>
 </table>
 
-${renderRelatedTasks(related)}`,
+${renderRelatedTasks(related, tenantId)}`,
   );
 }

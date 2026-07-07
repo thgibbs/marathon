@@ -1,6 +1,7 @@
+import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
 import type { Database } from "@marathon/db";
-import { handleConsoleRequest } from "../src/server";
+import { handleConsoleRequest, isLoopbackHost, listenConsoleServer } from "../src/server";
 import { makeTask } from "./fixtures";
 
 function baseDb(overrides: Partial<Database> = {}): Database {
@@ -58,5 +59,44 @@ describe("handleConsoleRequest", () => {
   it("404s for an unknown route", async () => {
     const res = await handleConsoleRequest(baseDb(), {}, "/nope?tenantId=tenant-1");
     expect(res.status).toBe(404);
+  });
+});
+
+describe("isLoopbackHost", () => {
+  it("accepts loopback hosts", () => {
+    expect(isLoopbackHost("127.0.0.1")).toBe(true);
+    expect(isLoopbackHost("127.5.6.7")).toBe(true);
+    expect(isLoopbackHost("::1")).toBe(true);
+    expect(isLoopbackHost("localhost")).toBe(true);
+  });
+
+  it("rejects non-loopback hosts, including a bind-everything address", () => {
+    expect(isLoopbackHost("0.0.0.0")).toBe(false);
+    expect(isLoopbackHost("10.0.0.5")).toBe(false);
+    expect(isLoopbackHost("example.com")).toBe(false);
+  });
+});
+
+describe("listenConsoleServer", () => {
+  it("refuses to bind a non-loopback host by default", async () => {
+    const server = createServer();
+    await expect(listenConsoleServer(server, "0.0.0.0", 0)).rejects.toThrow(/non-loopback/);
+  });
+
+  it("binds a non-loopback host when explicitly allowed", async () => {
+    const server = createServer();
+    const url = await listenConsoleServer(server, "0.0.0.0", 0, { allowNonLoopback: true });
+    expect(url).toMatch(/^http:\/\/0\.0\.0\.0:\d+$/);
+    server.close();
+  });
+
+  it("rejects instead of hanging when the port is already bound", async () => {
+    const first = createServer();
+    const url = await listenConsoleServer(first, "127.0.0.1", 0);
+    const port = Number(new URL(url).port);
+
+    const second = createServer();
+    await expect(listenConsoleServer(second, "127.0.0.1", port)).rejects.toThrow();
+    first.close();
   });
 });

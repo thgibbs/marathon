@@ -26,16 +26,17 @@ const NO_RELATED: RelatedTasks = { ancestors: [], latestDescendant: null, descen
 
 describe("renderCommandsListPage", () => {
   it("redacts a planted secret in input_summary/output_summary", () => {
-    const html = renderCommandsListPage([
-      makeCommand({ inputSummary: `token=${PLANTED_SECRET}`, outputSummary: `key: ${PLANTED_SECRET}` }),
-    ]);
+    const html = renderCommandsListPage(
+      [makeCommand({ inputSummary: `token=${PLANTED_SECRET}`, outputSummary: `key: ${PLANTED_SECRET}` })],
+      "tenant-1",
+    );
     expect(html).not.toContain(PLANTED_SECRET);
     expect(html).toContain("[REDACTED]");
   });
 
-  it("links the owning task to its detail page", () => {
-    const html = renderCommandsListPage([makeCommand({ taskId: "task-42" })]);
-    expect(html).toContain('href="/tasks/task-42"');
+  it("links the owning task to its detail page, carrying the active tenant", () => {
+    const html = renderCommandsListPage([makeCommand({ taskId: "task-42" })], "tenant-1");
+    expect(html).toContain('href="/tasks/task-42?tenantId=tenant-1"');
   });
 });
 
@@ -44,7 +45,7 @@ describe("renderTaskDetailPage", () => {
     const task = makeTask({ inputText: `please use ${PLANTED_SECRET} to log in` });
     const db = emptyTimelineDb();
     const report = (await getTaskReport(db, task.tenantId, task.id))!;
-    const html = renderTaskDetailPage(task, report, NO_RELATED);
+    const html = renderTaskDetailPage(task, report, NO_RELATED, task.tenantId);
     expect(html).not.toContain(PLANTED_SECRET);
     expect(html).toContain("[REDACTED]");
   });
@@ -67,7 +68,7 @@ describe("renderTaskDetailPage", () => {
     } as unknown as Database;
 
     const report = (await getTaskReport(db, "tenant-1", task.id))!;
-    const html = renderTaskDetailPage(task, report, NO_RELATED);
+    const html = renderTaskDetailPage(task, report, NO_RELATED, "tenant-1");
     for (const event of report.timeline) {
       expect(html).toContain(event.type);
       expect(html).toContain(event.at.toISOString());
@@ -86,11 +87,11 @@ describe("renderTaskDetailPage", () => {
       descendantCount: 2,
       siblings: [makeTask({ id: "sibling-1" })],
     };
-    const html = renderTaskDetailPage(task, report, related);
-    expect(html).toContain('href="/tasks/ancestor-1"');
-    expect(html).toContain('href="/tasks/descendant-1"');
+    const html = renderTaskDetailPage(task, report, related, "tenant-1");
+    expect(html).toContain('href="/tasks/ancestor-1?tenantId=tenant-1"');
+    expect(html).toContain('href="/tasks/descendant-1?tenantId=tenant-1"');
     expect(html).toContain("2 total");
-    expect(html).toContain('href="/tasks/sibling-1"');
+    expect(html).toContain('href="/tasks/sibling-1?tenantId=tenant-1"');
   });
 });
 
