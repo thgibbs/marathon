@@ -11,7 +11,7 @@ on Part B and vice versa.
 
 ---
 
-## Part A — Per-kernel-stage model routing
+## Part A — Event-scoped agent dispatch + per-kernel-stage model routing
 
 ### A.1 What exists today
 
@@ -39,48 +39,87 @@ is wired to a distinct role. The other three all collapse onto a single flat val
 
 So today an operator can already give BUILD its own model, but cannot give DRAFT a cheaper
 model, cannot give doc-REVIEW a different model than DRAFT, and cannot give a post-merge
-code-REVIEW pass a different (e.g. more careful/adversarial) model than BUILD itself.
+code-REVIEW pass a different (e.g. more careful/adversarial) model than BUILD itself. There is
+also, today, no notion of an agent *subscribing* to a kind of happening at all — one agent
+instance implicitly handles all four stages because the control flow in `handlers.ts`/
+`build.ts` hardcodes which function runs for which webhook. §A.2 names that gap explicitly.
 
-### A.2 Decision: four canonical stage roles
+### A.2 Three abstractions (per review feedback)
 
-Introduce four **reserved role names**, one per kernel stage, resolved via the existing
-`resolveModelRef` at each call site instead of a flat default:
+Talking only in terms of a flat "role" string undersold what's actually configurable here.
+Naming the pieces explicitly:
+
+- **Event** — something that happened and needs a response: an ask/mention on an issue with no
+  existing doc, a review comment on a design-doc PR, a plan PR merging, a review comment or
+  mention on a code PR. Broader event types (`pr_opened`, `label_added`, a plain `comment` with
+  no action requested, etc.) are conceivable in general, but this pass scopes to the four
+  events the kernel loop already produces end to end — see §A.3.
+- **Agent** — a `harness` + instructions + a `models` policy (`AgentSpec`, unchanged shape).
+- **Model** — `provider:model`, resolved per event via `resolveModelRef` (unchanged mechanism).
+
+Today's config already has agent and model as first-class concepts; it has no explicit,
+configurable notion of event — the mapping from "a GitHub webhook fired" to "which agent
+responds" is hardcoded, single-agent, no subscription list. §A.3–A.4 make that mapping
+explicit and let more than one agent subscribe to the same event.
+
+### A.3 Decision: four canonical events; agents subscribe via `on:`
+
+Introduce four **reserved event names**, one per kernel stage, resolved via the existing
+`resolveModelRef` at each call site instead of a flat default — and add an `on:` field to
+`AgentSpec` naming which events a given agent responds to:
 
 ```yaml
+name: forge
+harness: claude-code
+on: [draft, review, build, revise]   # events this agent responds to; omit = all four (today's behavior, unchanged)
 models:
-  default: openai:gpt-4o-mini   # required; fallback for any role not set below
+  default: openai:gpt-4o-mini   # required; fallback for any event not set below
   draft:   openai:gpt-4o        # drafting the design-doc PR
   review:  openai:gpt-4o        # revising the design doc from human review comments
   build:   openai:gpt-4o        # implementing the merged plan               (existing role)
   revise:  openai:gpt-4o        # revising the code PR from human review comments/mentions
 ```
 
-No config-schema change: `AgentModelPolicy`/`ModelPolicy` are already open maps, so this is a
-**naming convention**, not a new field. `forge.yaml` and `21-example-agents.md`'s Forge sample
-get these four roles documented explicitly (today they show only `default`); an agent that
-sets none of them keeps behaving exactly as it does today (everything resolves to `default`,
-same as `build` does now when unset).
+No config-schema change beyond the new `on:` field: `AgentModelPolicy`/`ModelPolicy` are
+already open maps, so the `models:` side is a **naming convention**, not a new field. `on:`
+defaults to all four events when omitted, so an agent that sets neither `on:` nor any
+model-policy entries keeps behaving exactly as it does today — one agent, every stage, every
+model resolving to `default`.
 
-**Why these four and not, say, a fifth "self-review before requesting human review" role:**
-the loop has no such step today — DRAFT hands straight to a human-reviewed PR, and BUILD hands
-straight to a human-reviewed PR (§29.9: native review is the review surface for both). "review"
-and "revise" name the *agent's own* response to that human review, which is the concrete,
-already-existing work each does. Stated assumption, open to renaming in review — no code
-depends on these four literal strings existing anywhere but the call sites below.
+A deployment can register more than one `AgentSpec` (already possible — `21-example-agents.md`
+shows several sample agents). Two or more specs may list the same event in `on:` — e.g. a
+`forge` agent handling `draft`/`build` alongside a separate, narrower `security-reviewer` agent
+that only lists `on: [review]` and runs with its own instructions/model against the same
+review event. §A.4 fans out to every subscribed agent when the event fires.
 
-### A.3 Wiring changes
+**Why these four events and not, say, a fifth "self-review before requesting human review"
+event:** the loop has no such step today — DRAFT hands straight to a human-reviewed PR, and
+BUILD hands straight to a human-reviewed PR (§29.9: native review is the review surface for
+both). "review" and "revise" name the *agent's own* response to that human review, which is
+the concrete, already-existing work each does. Stated assumption, open to renaming in review —
+no code depends on these four literal strings existing anywhere but the call sites below.
 
-Four call sites change from a flat/shared model ref to a role-resolved one:
+### A.4 Wiring changes
+
+Four call sites change from a flat/shared/single-agent model to an event-routed,
+multi-agent-capable one:
 
 1. **`GithubAppDeps.modelRef`** (`packages/github-app/src/handlers.ts`) — replace the single
-   `modelRef?: string` field with the agent's `AgentSpec.models` policy (already available
-   wherever `GithubAppDeps` is constructed, since the spec is loaded there), and resolve:
-   - `handleGithubMention` draft path → `resolveModelRef(models, "draft")`.
-   - `handleGithubMention` revise path (existing artifact branch) → `resolveModelRef(models, "review")`.
+   `modelRef?: string` field with, per fired event, the list of registered `AgentSpec`s whose
+   `on:` includes that event (today: exactly one, so this is a superset of current behavior),
+   each resolved independently via its own `models` policy:
+   - `handleGithubMention` draft path → for each subscribed spec, `resolveModelRef(models, "draft")`.
+   - `handleGithubMention` revise path (existing artifact branch) → for each subscribed spec,
+     `resolveModelRef(models, "review")`.
    - `handleGithubReview` doc-PR branch → same `"review"` resolution (it calls into the mention
      handler's revise path already, so this falls out of the change above for free).
+   - **Fan-out is safe here**: `draft` opens a new doc-PR branch per agent, and `review` posts a
+     revision/comment against the doc-PR branch the *same* agent opened — two agents responding
+     to the same `draft` event simply produce two independent doc PRs; two agents responding to
+     the same `review` event on two *different* doc PRs likewise don't collide.
 2. **`makeBuildWiring`** (`packages/github-app/src/build.ts`) — unchanged for fresh
-   implementation (`"build"` role stays as-is).
+   implementation (`"build"` role stays as-is), except it now resolves the set of specs
+   subscribed to `build` rather than assuming exactly one.
 3. **BUILD step runner role split** — `handleCodePrRevision` spawns a `code_revision` task that
    is currently routed by `isBuildTask`/`makeLoopStepRunner` to the *same* BUILD step runner
    instance, which was constructed with one baked-in `modelRef`. To give code-review/revision
@@ -92,12 +131,21 @@ Four call sites change from a flat/shared model ref to a role-resolved one:
    ```
    This is the one call site that isn't a straight one-line swap — everywhere else the role is
    known statically at the call site.
+
+   **`build`/`revise` do *not* get multi-agent fan-out in this pass**, unlike `draft`/`review`
+   above: both write commits to one shared PR branch (the code PR), and two agents pushing
+   concurrent commits to the same branch is a real conflict (racing pushes, overlapping edits),
+   not a cosmetic one. If more than one `AgentSpec` subscribes to `build` or `revise` for the
+   same repo, dispatch picks the first registered spec and logs a warning that the others were
+   skipped — full support (branch-per-agent, or serialized turns) is future work, tracked as a
+   non-goal in §A.5.
 4. **`validateHarnessConfig`** (`packages/config/src/index.ts`) — already iterates
    `Object.entries(spec.models)` generically for the `claude-code` Anthropic-only check, so the
    two new roles (`draft`, `review`, `revise` — `build` already covered) are validated for free;
-   no change needed there.
+   no change needed there. The new `on:` field gets a small validation of its own: unknown event
+   names fail closed with a config error (rather than silently never firing).
 
-### A.4 Non-goals (this pass)
+### A.5 Non-goals (this pass)
 
 - **Not** general per-step routing inside a single harness turn/session (§7.19's broader
   "classify_intent / plan_task / safety_check" vision stays open, unrelated to this ask).
@@ -107,13 +155,24 @@ Four call sites change from a flat/shared model ref to a role-resolved one:
   reasonable small follow-up, not required to satisfy the ask.
 - **Not** a fallback chain or constraint filter (§7.19 §Selection procedure steps 4–5) — out of
   scope; `resolveModelRef`'s existing default-fallback is all that's needed here.
+- **Not** a general event bus / pub-sub infrastructure — `on:` is a static subscription list
+  checked against the four fixed events the kernel loop already produces from GitHub webhooks
+  (issue mention, doc-PR review, plan-merge, code-PR review/mention). No new event sources, no
+  dynamic registration, no cross-repo fan-out in this pass.
+- **Not** multi-agent fan-out for `build`/`revise` — see the conflict note in §A.4 item 3;
+  first-registered-spec-wins plus a warning is the interim behavior, not a real solution.
+- **Not** any priority/exclusivity mechanism for events that *do* support fan-out (`draft`/
+  `review`) — if two specs subscribe, both run, unconditionally; there's no config knob to make
+  them mutually exclusive or to rank them.
 
-### A.5 Risk / cost note
+### A.6 Risk / cost note
 
 Splitting `review`/`revise` from `draft`/`build` lets an operator route the (usually shorter,
 more surgical) review/revise turns to a cheaper model than the (usually longer, more
 generative) draft/build turns, or vice versa — purely an operator choice; this doc does not
-recommend a specific split.
+recommend a specific split. Multi-agent fan-out on `draft`/`review` (§A.4 item 1) multiplies
+model spend by the number of subscribed agents for those two events specifically — worth
+calling out to operators in the docs, though not a reason to gate the feature.
 
 ---
 
@@ -337,18 +396,26 @@ mandatory pre-build homework, not optional polish:
 
 ## Rollout sequencing
 
-Part A (stage-scoped model roles) is small, additive, and has no external dependency — it can
-ship immediately, ahead of and independent from Part B. Part B (Codex harness) is a
-K7-sized milestone (**K8**) gated on the verify-on-pin items in §B.9, most importantly the
-open headless-MCP-approval issue (§B.4) — recommend a spike on that specifically before
-committing the rest of the build.
+Part A (event-scoped agent dispatch + stage-scoped model roles) is small, additive, and has no
+external dependency — it can ship immediately, ahead of and independent from Part B. Part B
+(Codex harness) is a K7-sized milestone (**K8**) gated on the verify-on-pin items in §B.9, most
+importantly the open headless-MCP-approval issue (§B.4) — recommend a spike on that
+specifically before committing the rest of the build.
 
 ## Open questions / stated assumptions (flagging for review, not blocking on them)
 
-- Role names `draft` / `review` / `build` / `revise` (§A.2) — easy to rename in review; no
-  code depends on the literal strings beyond the four call sites listed.
+- Event/role names `draft` / `review` / `build` / `revise` (§A.3) — easy to rename in review;
+  no code depends on the literal strings beyond the four call sites listed.
+- Multi-agent fan-out is in scope this pass only for `draft`/`review` (comment/PR-creation
+  events); `build`/`revise` (code-writing events) keep single-agent dispatch with a
+  first-registered-wins fallback and a warning if more than one spec subscribes (§A.4 item 3,
+  §A.5) — full concurrent-writer support (branch-per-agent or serialized turns) is future work.
+- Whether `on:` fan-out is scoped per-repo or globally across all deployments watching a repo —
+  assumed per-repo (the natural scope of an `AgentSpec` registration); flagging as a stated
+  assumption, not a decision.
+- Field name `on:` vs `listensTo:` vs `events:` — bikeshed, no code depends on the literal key.
 - Codex chat-surface (non-BUILD) support is out of scope for K8, matching K7's own initial
   scope (`claude-code-impl.md` §6: "chat/general-agent surface … stays on Pi").
-- The BUILD step runner's per-task role resolution (§A.3 item 3) is the one wiring change
+- The BUILD step runner's per-task role resolution (§A.4 item 3) is the one wiring change
   that isn't a one-line swap; exact shape ("modelRef" becoming a function of the task) is left
   to BUILD, not fixed here.
