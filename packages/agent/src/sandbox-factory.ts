@@ -53,6 +53,11 @@ export interface WorkspaceSandboxOptions {
    * grounding. The harness home stays writable; the repo checkout does not.
    */
   readonlyWorkspace?: boolean;
+  /**
+   * Owner tag stamped on containers so the boot reaper only removes THIS
+   * deployment's orphans, never a concurrent peer's live container (§3.1).
+   */
+  owner?: string;
 }
 
 /** Real code work (installs, builds, tests) needs more than the CLI-tool defaults. */
@@ -79,6 +84,7 @@ export function workspaceContainerOptions(
     pidsLimit: opts.pidsLimit ?? DEFAULT_PIDS,
     dockerPath: opts.dockerPath,
     readonlyWorkspace: opts.readonlyWorkspace,
+    sandboxOwner: opts.owner,
     mounts: extra?.mounts,
     extraHosts: extra?.extraHosts,
   };

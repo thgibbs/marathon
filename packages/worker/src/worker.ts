@@ -83,6 +83,18 @@ export class Worker {
       await this.queue.ack(job.id, token);
       return "completed";
     }
+    // A worker never drives an approval-gated task. `waiting_for_approval` is
+    // resolved out-of-band by a human action (merge/comment) through the surface
+    // handlers, not the queue — and the live mention flow completes some tasks
+    // INLINE, leaving an orphan job here. Ack it as an idempotent no-op instead
+    // of forcing the invalid `waiting_for_approval -> completed` transition
+    // (which otherwise dead-letters the job). Note: `waiting_for_input` is NOT
+    // skipped — the resume-with-answer flow enqueues a fresh job to advance it,
+    // handled by the recovery gate below.
+    if (task.status === "waiting_for_approval") {
+      await this.queue.ack(job.id, token);
+      return "completed";
+    }
 
     try {
       task = await this.ensureRunning(task);

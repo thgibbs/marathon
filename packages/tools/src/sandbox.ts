@@ -151,10 +151,26 @@ export interface DockerContainerOptions extends DockerSandboxOptions {
    * Docker Desktop, but harmless there.
    */
   extraHosts?: string[];
+  /** Owner label for orphan reaping (see {@link SANDBOX_OWNER_LABEL}). */
+  sandboxOwner?: string;
 }
 
 /** The sandbox HOME dir name inside the workspace mount (Track 11). */
 export const GUEST_HOME_DIRNAME = ".marathon-home";
+
+/**
+ * Docker label stamped on every persistent Marathon sandbox container so orphans
+ * (left behind when the host process is killed mid-task, before `stop()` runs)
+ * can be found and reaped. See {@link reapSandboxContainers}.
+ */
+export const SANDBOX_LABEL = "marathon.sandbox";
+
+/**
+ * Owner label: identifies WHICH deployment/role owns a container (e.g.
+ * `marathon-github-app`). The boot reaper scopes to its own owner so one
+ * Marathon process never kills a peer process's in-flight container.
+ */
+export const SANDBOX_OWNER_LABEL = "marathon.sandbox.owner";
 
 /** Build the persistent-container `docker run -d` argv (pure; CI-testable). */
 export function dockerStartArgs(image: string, opts: DockerContainerOptions): string[] {
@@ -175,6 +191,12 @@ export function dockerStartArgs(image: string, opts: DockerContainerOptions): st
     "run",
     "-d",
     "--rm",
+    // Identify Marathon sandbox containers so orphans can be reaped (a keep-alive
+    // container leaks if the host process dies before `stop()` runs), and stamp
+    // the OWNER so the reaper only touches its own deployment's containers.
+    "--label",
+    `${SANDBOX_LABEL}=1`,
+    ...(opts.sandboxOwner ? ["--label", `${SANDBOX_OWNER_LABEL}=${opts.sandboxOwner}`] : []),
     ...hardeningFlags(opts),
     ...addHosts,
     ...workspaceMounts,
@@ -186,6 +208,38 @@ export function dockerStartArgs(image: string, opts: DockerContainerOptions): st
     "-f",
     "/dev/null", // keep-alive; we exec commands into it
   ];
+}
+
+/**
+ * Reap orphaned Marathon sandbox containers at live-app startup. Task containers
+ * are created on demand DURING processing, never at boot, so anything labeled
+ * and lingering when a fresh process starts is a leak from a PREVIOUS run of the
+ * same deployment (e.g. the dev server was SIGKILL'd mid-task — a clean SIGINT
+ * is handled by {@link installSandboxShutdownHandler} instead).
+ *
+ * `owner` scopes the reap to a single deployment/role: a github-app boot passes
+ * its own owner and thus never removes a concurrently-running slack-app's
+ * in-flight container. Reaping ALL Marathon containers (no owner) is left as an
+ * explicit, opt-in local-dev convenience — not what the apps do. Returns the
+ * ids removed. Best-effort — an absent/erroring Docker must not block boot.
+ */
+/** The `docker ps --filter` value the reaper uses: owner-scoped, or global if unset. */
+export function sandboxReapFilter(owner?: string): string {
+  return owner ? `label=${SANDBOX_OWNER_LABEL}=${owner}` : `label=${SANDBOX_LABEL}`;
+}
+
+export async function reapSandboxContainers(opts: { owner?: string; dockerPath?: string } = {}): Promise<string[]> {
+  const dockerPath = opts.dockerPath ?? "docker";
+  const filter = sandboxReapFilter(opts.owner);
+  try {
+    const { stdout } = await execFileAsync(dockerPath, ["ps", "-aq", "--filter", filter], { timeout: 10_000 });
+    const ids = stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (!ids.length) return [];
+    await execFileAsync(dockerPath, ["rm", "-f", ...ids], { timeout: 30_000 }).catch(() => {});
+    return ids;
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -208,6 +262,9 @@ export class DockerContainer {
     const image = this.opts.image ?? "alpine:3.20";
     const { stdout } = await execFileAsync(this.docker(), dockerStartArgs(image, this.opts), { timeout: 60_000 });
     this.containerId = stdout.trim();
+    // Track for graceful shutdown: a signal handler stops these before exit so
+    // Ctrl-C mid-task doesn't leak a keep-alive container (see stopAllSandboxContainers).
+    ACTIVE_CONTAINERS.add(this);
   }
 
   async exec(bin: string, args: string[], opts?: { timeoutMs?: number }): Promise<SandboxResult> {
@@ -296,11 +353,53 @@ export class DockerContainer {
   }
 
   async stop(): Promise<void> {
+    ACTIVE_CONTAINERS.delete(this);
     if (!this.containerId) return;
     const id = this.containerId;
     this.containerId = undefined;
     await execFileAsync(this.docker(), ["rm", "-f", id], { timeout: 30_000 }).catch(() => {});
   }
+}
+
+/** Containers this process started and hasn't stopped — the graceful-shutdown set. */
+const ACTIVE_CONTAINERS = new Set<DockerContainer>();
+
+/**
+ * Stop every sandbox container this process started (graceful shutdown). Called
+ * from a SIGINT/SIGTERM handler so Ctrl-C during a task tears the container down
+ * cleanly instead of leaking it — the precise, concurrency-safe complement to
+ * the boot-time {@link reapSandboxContainers} backstop (which covers SIGKILL /
+ * crashes, where no handler runs). Returns how many were stopped.
+ */
+export async function stopAllSandboxContainers(): Promise<number> {
+  const containers = [...ACTIVE_CONTAINERS];
+  await Promise.all(containers.map((c) => c.stop().catch(() => {})));
+  return containers.length;
+}
+
+/**
+ * Install a one-shot SIGINT/SIGTERM handler that stops this process's sandbox
+ * containers, then exits. Idempotent; returns a disposer that removes it.
+ */
+export function installSandboxShutdownHandler(onStopped?: (count: number, signal: string) => void): () => void {
+  let shuttingDown = false;
+  const handle = (signal: NodeJS.Signals) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void stopAllSandboxContainers().then((count) => {
+      onStopped?.(count, signal);
+      // 128 + signal number is the conventional exit code for a signal.
+      process.exit(signal === "SIGINT" ? 130 : 143);
+    });
+  };
+  const onInt = () => handle("SIGINT");
+  const onTerm = () => handle("SIGTERM");
+  process.on("SIGINT", onInt);
+  process.on("SIGTERM", onTerm);
+  return () => {
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
+  };
 }
 
 /**
