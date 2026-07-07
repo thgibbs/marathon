@@ -466,11 +466,14 @@ export function grantFamilies(spec: AgentSpec, tool: string): string[] | undefin
  * claude-code` MUST route to an Anthropic model — Claude Code speaks only the
  * Anthropic API — so every model ref in its policy must be `anthropic:*`, and a
  * policy must be present (the deployment default is provider-agnostic and could
- * be OpenAI). `opts.proxyConfigured` additionally asserts the wiring supplies a
- * model proxy (the key-injecting endpoint); pass it from the wiring site.
- * A no-op for the Pi harness. Throws with a precise reason.
+ * be OpenAI). A no-op for the Pi harness. Throws with a precise reason.
+ *
+ * The model-proxy is NOT required here (model-proxy decision, §4.1): direct key
+ * injection is the default on `network: bridge`, and the proxy is only required
+ * under locked-down egress (`network: none`) — a posture-specific check the
+ * runtime enforces (`resolveModelAccessEnv`), not a config-load one.
  */
-export function validateHarnessConfig(spec: AgentSpec, opts: { proxyConfigured?: boolean } = {}): void {
+export function validateHarnessConfig(spec: AgentSpec): void {
   if (spec.harness !== "claude-code") return;
   const source = `agent '${spec.name}'`;
   if (!spec.models) {
@@ -485,8 +488,5 @@ export function validateHarnessConfig(spec: AgentSpec, opts: { proxyConfigured?:
         `${source}: harness 'claude-code' requires Anthropic models, but models.${role} is "${ref}" (§13.1)`,
       );
     }
-  }
-  if (opts.proxyConfigured === false) {
-    throw new Error(`${source}: harness 'claude-code' requires a configured model proxy (§4.1)`);
   }
 }

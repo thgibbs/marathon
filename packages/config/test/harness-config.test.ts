@@ -34,19 +34,17 @@ describe("validateHarnessConfig (K7 §13.1 fail-closed)", () => {
     ).toThrow(/models\.build/);
   });
 
-  it("rejects claude-code when the proxy is not configured", () => {
+  it("does NOT require a model proxy — direct key injection is the bridge default (§4.1)", () => {
+    // The proxy is only required under locked-down egress, which the runtime
+    // enforces (resolveModelAccessEnv) — not this config-load gate.
     expect(() =>
-      validateHarnessConfig(spec({ harness: "claude-code", models: { default: "anthropic:claude-sonnet-4-6" } }), {
-        proxyConfigured: false,
-      }),
-    ).toThrow(/requires a configured model proxy/);
+      validateHarnessConfig(spec({ harness: "claude-code", models: { default: "anthropic:claude-sonnet-4-6" } })),
+    ).not.toThrow();
   });
 
-  it("accepts claude-code with an Anthropic policy + proxy", () => {
+  it("accepts claude-code with an Anthropic policy", () => {
     expect(() =>
-      validateHarnessConfig(spec({ harness: "claude-code", models: { default: "anthropic:claude-sonnet-4-6" } }), {
-        proxyConfigured: true,
-      }),
+      validateHarnessConfig(spec({ harness: "claude-code", models: { default: "anthropic:claude-sonnet-4-6" } })),
     ).not.toThrow();
   });
 
@@ -58,6 +56,6 @@ describe("validateHarnessConfig (K7 §13.1 fail-closed)", () => {
       models: { default: "anthropic:claude-sonnet-4-6" },
     });
     expect(parsed.harness).toBe("claude-code");
-    expect(() => validateHarnessConfig(parsed, { proxyConfigured: true })).not.toThrow();
+    expect(() => validateHarnessConfig(parsed)).not.toThrow();
   });
 });
