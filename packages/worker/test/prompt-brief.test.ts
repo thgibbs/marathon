@@ -92,6 +92,7 @@ describe("buildAgentPrompt surface context (Track 12, §7.18)", () => {
     completedAt: null,
     failedAt: null,
     cancelledAt: null,
+    lastError: null,
   };
 
   it("fences thread context as untrusted, between memory and the request", async () => {

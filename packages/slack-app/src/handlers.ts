@@ -121,11 +121,33 @@ async function runAndReport(deps: AppDeps, taskId: string, fallbackRef: Record<s
   const fanout = deps.fanout ?? new DeliveryFanout({ slack: deps.delivery }, deps.db);
   const cost = await deps.db.sumModelCostUsd(taskId);
   const result: StructuredResult = {
-    summary: cp.findings.at(-1) ?? "(no response)",
+    summary:
+      finalTask?.status === "failed"
+        ? summarizeTaskFailure(finalTask.lastError)
+        : (cp.findings.at(-1) ?? "(no response)"),
     evidence: cp.findings.slice(0, -1),
     costUsd: cost,
   };
   await fanout.deliverResult(taskId, targets, result);
+}
+
+/**
+ * A `failed` task never appended a checkpoint finding when the failure
+ * happened pre-turn (e.g. budget exhaustion) — so `runAndReport` renders the
+ * persisted `lastError` instead of falling back to "(no response)"
+ * (design/30-task-failure-reporting.md §30.2). Matches `BudgetExceededError`
+ * the same way `classifyError` matches transient errors: by message pattern.
+ */
+export function summarizeTaskFailure(lastError: string | null): string {
+  // `lastError` is `String(err)` (worker.ts's safeFailTask), which stringifies
+  // as "BudgetExceededError: budget exceeded: spent $X of $Y" — match the
+  // substring, not an anchored prefix.
+  if (lastError && /budget exceeded/i.test(lastError)) {
+    return "Budget exhausted — this task's spending cap was reached before it could finish.";
+  }
+  return lastError
+    ? `This task failed: ${lastError}`
+    : "This task failed, but no error detail was recorded.";
 }
 
 /** Is this mention a status ask (Track 16, §15.3) rather than new work? */

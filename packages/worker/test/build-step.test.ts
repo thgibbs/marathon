@@ -59,6 +59,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     completedAt: null,
     failedAt: null,
     cancelledAt: null,
+    lastError: null,
     ...overrides,
   };
 }

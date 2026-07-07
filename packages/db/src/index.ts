@@ -313,7 +313,7 @@ export class Database implements AuditWriter, IdempotencyStore {
    * Move a task to a new status, enforcing the state machine. Stamps the
    * matching timestamp column. Throws InvalidTransitionError on a bad move.
    */
-  async transitionTask(id: Id, to: TaskStatus): Promise<Task> {
+  async transitionTask(id: Id, to: TaskStatus, opts?: { error?: string }): Promise<Task> {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
@@ -327,9 +327,11 @@ export class Database implements AuditWriter, IdempotencyStore {
 
       const stampCol = STATUS_TIMESTAMP[to];
       const setStamp = stampCol ? `, ${stampCol} = now()` : "";
+      const setError = opts?.error !== undefined ? `, last_error = $3` : "";
+      const params = opts?.error !== undefined ? [id, to, opts.error] : [id, to];
       const { rows } = await client.query(
-        `update task set status = $2${setStamp} where id = $1 returning *`,
-        [id, to],
+        `update task set status = $2${setStamp}${setError} where id = $1 returning *`,
+        params,
       );
       await client.query("commit");
       return rowToTask(rows[0]);
@@ -1229,6 +1231,7 @@ function rowToTask(r: any): Task {
     completedAt: r.completed_at,
     failedAt: r.failed_at,
     cancelledAt: r.cancelled_at,
+    lastError: r.last_error ?? null,
   };
 }
 
