@@ -82,7 +82,17 @@ scratch dir (Claude Code) or no workspace (Pi):
    (the §2b #10 checker). `no_link` / `stale` / `no_access` → **no repo**, and
    the task posts the `linkGithubCta()` note (`packages/slack-app/src/handlers.ts`)
    so the user can fix it. This bounds exposure to people who can actually read
-   the repo.
+   the repo — the service credential can clone a private repo, so without this
+   check the bot would lend that access to any workspace member who asked (a
+   confused-deputy leak). It requires identity linking to be configured (a GitHub
+   App + OAuth); until then every user is `no_link`.
+
+   **Escape hatch — `chat.trusted_deployment: true`.** A single-tenant/solo
+   deployment where everyone who can reach the surface is already trusted with
+   the repo can set this: the app wires `checkAccess` to `"ok"` for all users and
+   forces `audienceTrust` to `internal_confirmed`, so grounding works off the
+   service credential alone (no per-user linking). Default `false` — do NOT set it
+   on a shared/multi-user workspace, where it re-opens exactly the leak above.
 4. **Audience × visibility.** This is the one condition that must **not** be
    written as `audience.external !== true` — `undefined !== true` is `true`, so
    an *unknown* audience would silently pass, which is exactly backwards for a

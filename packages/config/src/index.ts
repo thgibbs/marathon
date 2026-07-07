@@ -193,6 +193,16 @@ export interface AgentChatConfig {
    * turn (chat-repo.md §3.3).
    */
   groundRef: "pinned" | "latest";
+  /**
+   * TRUSTED single-tenant deployment (chat-repo.md §3.1). When true, grounding
+   * treats the service credential's repo access as sufficient for EVERY invoking
+   * user and treats all audiences as internal — skipping the per-user GitHub-link
+   * check and the audience×visibility gate. Only safe when everyone who can reach
+   * this surface is already trusted with the repo (a solo/private deployment).
+   * Default false: verify each user (prevents a confused-deputy leak of private
+   * code to workspace members who lack their own access).
+   */
+  trustedDeployment: boolean;
 }
 
 /**
@@ -270,7 +280,7 @@ export function parseAgentSpec(value: unknown, source = "agent spec"): AgentSpec
     sandbox: { network: "bridge" },
     plans: { branch: DEFAULT_PLANS_BRANCH },
     // Default resolved after `repo` is parsed (grounding is on iff a repo is set).
-    chat: { groundOnRepo: false, groundRef: "pinned" },
+    chat: { groundOnRepo: false, groundRef: "pinned", trustedDeployment: false },
   };
   if (typeof v.display_name === "string") spec.displayName = v.display_name;
   if (typeof v.description === "string") spec.description = v.description;
@@ -341,6 +351,11 @@ export function parseAgentSpec(value: unknown, source = "agent spec"): AgentSpec
         throw new Error(`${source}: 'chat.ground_ref' must be "pinned" or "latest"`);
       }
       spec.chat.groundRef = ref;
+    }
+    const trusted = c.trusted_deployment ?? c.trustedDeployment;
+    if (trusted !== undefined) {
+      if (typeof trusted !== "boolean") throw new Error(`${source}: 'chat.trusted_deployment' must be a boolean`);
+      spec.chat.trustedDeployment = trusted;
     }
   }
   if (v.models !== undefined) {
