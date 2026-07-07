@@ -151,6 +151,8 @@ export interface DockerContainerOptions extends DockerSandboxOptions {
    * Docker Desktop, but harmless there.
    */
   extraHosts?: string[];
+  /** Owner label for orphan reaping (see {@link SANDBOX_OWNER_LABEL}). */
+  sandboxOwner?: string;
 }
 
 /** The sandbox HOME dir name inside the workspace mount (Track 11). */
@@ -162,6 +164,13 @@ export const GUEST_HOME_DIRNAME = ".marathon-home";
  * can be found and reaped. See {@link reapSandboxContainers}.
  */
 export const SANDBOX_LABEL = "marathon.sandbox";
+
+/**
+ * Owner label: identifies WHICH deployment/role owns a container (e.g.
+ * `marathon-github-app`). The boot reaper scopes to its own owner so one
+ * Marathon process never kills a peer process's in-flight container.
+ */
+export const SANDBOX_OWNER_LABEL = "marathon.sandbox.owner";
 
 /** Build the persistent-container `docker run -d` argv (pure; CI-testable). */
 export function dockerStartArgs(image: string, opts: DockerContainerOptions): string[] {
@@ -183,9 +192,11 @@ export function dockerStartArgs(image: string, opts: DockerContainerOptions): st
     "-d",
     "--rm",
     // Identify Marathon sandbox containers so orphans can be reaped (a keep-alive
-    // container leaks if the host process dies before `stop()` runs).
+    // container leaks if the host process dies before `stop()` runs), and stamp
+    // the OWNER so the reaper only touches its own deployment's containers.
     "--label",
     `${SANDBOX_LABEL}=1`,
+    ...(opts.sandboxOwner ? ["--label", `${SANDBOX_OWNER_LABEL}=${opts.sandboxOwner}`] : []),
     ...hardeningFlags(opts),
     ...addHosts,
     ...workspaceMounts,
@@ -200,22 +211,28 @@ export function dockerStartArgs(image: string, opts: DockerContainerOptions): st
 }
 
 /**
- * Reap orphaned Marathon sandbox containers (labeled by {@link SANDBOX_LABEL}).
- * Called at live-app startup: task containers are created on demand DURING
- * processing, never at boot, so anything labeled and lingering when a fresh
- * process starts is a leak from a previous run (e.g. the dev server was
- * Ctrl-C'd mid-task). Returns the container ids removed. Best-effort — a Docker
- * that is absent or erroring must not block boot.
+ * Reap orphaned Marathon sandbox containers at live-app startup. Task containers
+ * are created on demand DURING processing, never at boot, so anything labeled
+ * and lingering when a fresh process starts is a leak from a PREVIOUS run of the
+ * same deployment (e.g. the dev server was SIGKILL'd mid-task — a clean SIGINT
+ * is handled by {@link installSandboxShutdownHandler} instead).
  *
- * Single-host assumption: on a shared host running concurrent workers, scope by
- * a per-worker label instead (a boot-time reap here would kill a peer's live
- * container). Fine for the local dev deployment this targets.
+ * `owner` scopes the reap to a single deployment/role: a github-app boot passes
+ * its own owner and thus never removes a concurrently-running slack-app's
+ * in-flight container. Reaping ALL Marathon containers (no owner) is left as an
+ * explicit, opt-in local-dev convenience — not what the apps do. Returns the
+ * ids removed. Best-effort — an absent/erroring Docker must not block boot.
  */
-export async function reapSandboxContainers(dockerPath = "docker"): Promise<string[]> {
+/** The `docker ps --filter` value the reaper uses: owner-scoped, or global if unset. */
+export function sandboxReapFilter(owner?: string): string {
+  return owner ? `label=${SANDBOX_OWNER_LABEL}=${owner}` : `label=${SANDBOX_LABEL}`;
+}
+
+export async function reapSandboxContainers(opts: { owner?: string; dockerPath?: string } = {}): Promise<string[]> {
+  const dockerPath = opts.dockerPath ?? "docker";
+  const filter = sandboxReapFilter(opts.owner);
   try {
-    const { stdout } = await execFileAsync(dockerPath, ["ps", "-aq", "--filter", `label=${SANDBOX_LABEL}`], {
-      timeout: 10_000,
-    });
+    const { stdout } = await execFileAsync(dockerPath, ["ps", "-aq", "--filter", filter], { timeout: 10_000 });
     const ids = stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     if (!ids.length) return [];
     await execFileAsync(dockerPath, ["rm", "-f", ...ids], { timeout: 30_000 }).catch(() => {});

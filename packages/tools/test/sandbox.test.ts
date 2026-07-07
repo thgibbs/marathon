@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DockerContainer, DockerSandbox, dockerRunArgs, dockerStartArgs, LocalSubprocessSandbox, NoSandbox, SANDBOX_LABEL, sandboxFromEnv, stopAllSandboxContainers } from "../src/sandbox";
+import { DockerContainer, DockerSandbox, dockerRunArgs, dockerStartArgs, LocalSubprocessSandbox, NoSandbox, SANDBOX_LABEL, SANDBOX_OWNER_LABEL, sandboxFromEnv, sandboxReapFilter, stopAllSandboxContainers } from "../src/sandbox";
 
 describe("dockerRunArgs (isolation flags)", () => {
   const argv = dockerRunArgs("alpine:3.20", "echo", ["hi"]);
@@ -71,6 +71,13 @@ describe("dockerStartArgs (persistent container)", () => {
     expect(i).toBeGreaterThanOrEqual(0);
     expect(argv[i + 1]).toBe(`${SANDBOX_LABEL}=1`);
   });
+  it("stamps the owner label when set (so the reaper stays scoped)", () => {
+    const owned = dockerStartArgs("alpine:3.20", { workspaceDir: "/host/ws", sandboxOwner: "marathon-github-app" });
+    const labels = owned.filter((_, i) => owned[i - 1] === "--label");
+    expect(labels).toContain(`${SANDBOX_OWNER_LABEL}=marathon-github-app`);
+    // …and omits it when no owner is given.
+    expect(argv.filter((_, i) => argv[i - 1] === "--label")).not.toContainEqual(expect.stringContaining(SANDBOX_OWNER_LABEL));
+  });
 });
 
 describe("dockerStartArgs readonlyWorkspace (chat-repo.md §3.4)", () => {
@@ -106,6 +113,14 @@ describe("dockerStartArgs extraHosts (TCP broker on Linux Docker, §3.1)", () =>
   });
   it("emits no --add-host when none are given", () => {
     expect(dockerStartArgs("alpine:3.20", { workspaceDir: "/host/ws" })).not.toContain("--add-host");
+  });
+});
+
+describe("reaper scoping (avoids killing a peer process's containers)", () => {
+  it("scopes to the owner when given, else falls back to the global label", () => {
+    expect(sandboxReapFilter("marathon-github-app")).toBe(`label=${SANDBOX_OWNER_LABEL}=marathon-github-app`);
+    expect(sandboxReapFilter("marathon-slack-app")).toBe(`label=${SANDBOX_OWNER_LABEL}=marathon-slack-app`);
+    expect(sandboxReapFilter()).toBe(`label=${SANDBOX_LABEL}`);
   });
 });
 

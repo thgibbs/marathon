@@ -41,16 +41,19 @@ async function main(): Promise<void> {
   if (!owner) throw new Error("GITHUB_OWNER is required (repo owner for the tenant)");
 
   await migrate(cfg.databaseUrl);
+  // Owner tag for this deployment: the reaper only touches containers stamped
+  // with it, so booting here never kills a concurrent slack-app's live sandbox.
+  const sandboxOwner = process.env.MARATHON_SANDBOX_OWNER?.trim() || "marathon-github-app";
   // Graceful shutdown: on Ctrl-C/SIGTERM, tear down this process's sandbox
   // containers before exiting (the primary anti-leak). The boot reaper below is
   // the backstop for SIGKILL/crashes, where no handler runs.
   installSandboxShutdownHandler((n, sig) => {
     if (n) console.log(`[github-app] stopped ${n} sandbox container(s) on ${sig}`);
   });
-  // Reap sandbox containers orphaned by a previous run that couldn't clean up
-  // (SIGKILL/crash). Safe at boot: task containers are made on demand during
-  // processing, never here.
-  const reaped = await reapSandboxContainers();
+  // Reap OUR OWN orphans from a previous run that couldn't clean up
+  // (SIGKILL/crash). Owner-scoped so a peer process is untouched. Safe at boot:
+  // task containers are made on demand during processing, never here.
+  const reaped = await reapSandboxContainers({ owner: sandboxOwner });
   if (reaped.length) console.log(`[github-app] reaped ${reaped.length} orphaned sandbox container(s)`);
   const db = new Database(cfg.databaseUrl);
   const queue = new Queue(cfg.databaseUrl);
@@ -145,7 +148,7 @@ async function main(): Promise<void> {
         // Durable per-task sessions (K4) — same location the BUILD side uses.
         sessionDir: join(tmpdir(), "marathon-sessions"),
         governed: { gateway: toolGateway, tools: governedToolDefsFor(flagship.tools.map((t) => t.tool)) },
-        sandbox: flagship.harness === "claude-code" ? workspaceSandboxFromSpec(flagship) : undefined,
+        sandbox: flagship.harness === "claude-code" ? workspaceSandboxFromSpec(flagship, { owner: sandboxOwner }) : undefined,
         proxy:
           flagship.harness === "claude-code"
             ? (process.env.MARATHON_MODEL_PROXY_URL?.trim() ? { baseUrl: process.env.MARATHON_MODEL_PROXY_URL.trim() } : undefined)
@@ -190,6 +193,8 @@ async function main(): Promise<void> {
       const cloneToken = await secrets.get("secret/github");
       return `https://x-access-token:${cloneToken}@github.com/${repo}.git`;
     },
+    // BUILD containers carry the same owner so the boot reaper covers them too.
+    sandbox: { owner: sandboxOwner },
     sessionDir: join(tmpdir(), "marathon-sessions"),
   });
   const buildWorker = new Worker(queue, db, {

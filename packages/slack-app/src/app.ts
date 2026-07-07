@@ -41,16 +41,19 @@ export async function startSlackApp(): Promise<void> {
   if (!appToken) throw new Error("SLACK_APP_TOKEN (xapp-) is required");
 
   await migrate(cfg.databaseUrl);
+  // Owner tag for this deployment: the reaper only touches containers stamped
+  // with it, so booting here never kills a concurrent github-app's live sandbox.
+  const sandboxOwner = process.env.MARATHON_SANDBOX_OWNER?.trim() || "marathon-slack-app";
   // Graceful shutdown: on Ctrl-C/SIGTERM, tear down this process's sandbox
   // containers before exiting (the primary anti-leak). The boot reaper below is
   // the backstop for SIGKILL/crashes, where no handler runs.
   installSandboxShutdownHandler((n, sig) => {
     if (n) console.log(`[slack-app] stopped ${n} sandbox container(s) on ${sig}`);
   });
-  // Reap sandbox containers orphaned by a previous run that couldn't clean up
-  // (SIGKILL/crash). Safe at boot: task containers are made on demand during
-  // processing, never here.
-  const reaped = await reapSandboxContainers();
+  // Reap OUR OWN orphans from a previous run that couldn't clean up
+  // (SIGKILL/crash). Owner-scoped so a peer process is untouched. Safe at boot:
+  // task containers are made on demand during processing, never here.
+  const reaped = await reapSandboxContainers({ owner: sandboxOwner });
   if (reaped.length) console.log(`[slack-app] reaped ${reaped.length} orphaned sandbox container(s)`);
   const db = new Database(cfg.databaseUrl);
   const queue = new Queue(cfg.databaseUrl);
@@ -170,7 +173,9 @@ export async function startSlackApp(): Promise<void> {
       // disallowed, so grounding can never mutate the repo (governed doc/read
       // tools still flow over the broker). Changes go through the BUILD path.
       sandbox:
-        flagship.harness === "claude-code" ? workspaceSandboxFromSpec(flagship, { readonlyWorkspace: true }) : undefined,
+        flagship.harness === "claude-code"
+          ? workspaceSandboxFromSpec(flagship, { readonlyWorkspace: true, owner: sandboxOwner })
+          : undefined,
       readOnly: flagship.harness === "claude-code",
       proxy: flagship.harness === "claude-code" ? (chatProxyUrl ? { baseUrl: chatProxyUrl } : undefined) : undefined,
       lockedDownEgress: flagship.sandbox.network === "none",
