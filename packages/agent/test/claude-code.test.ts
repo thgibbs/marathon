@@ -101,22 +101,32 @@ function emit(onData: (b: Buffer) => void, ev: unknown): void {
   onData(Buffer.from(`${JSON.stringify(ev)}\n`));
 }
 
-/** The per-turn capability token the runtime wrote into the MCP config (§3.1). */
-function brokerTokenFromConfig(workspaceDir: string): string | undefined {
+/**
+ * The broker connect target the runtime wrote into the MCP config (§3.1) — the
+ * exact args the real shim receives (`--socket`/`--tcp` + `--token`). Reading
+ * them back is how the fake CLI reaches the broker over whichever transport the
+ * runtime chose, without the test hard-coding it.
+ */
+function brokerTargetFromConfig(workspaceDir: string): { socket?: string; tcp?: string; token?: string } {
   const cfg = JSON.parse(readFileSync(join(workspaceDir, ".marathon-home", "mcp.json"), "utf8"));
   const args: string[] = cfg.mcpServers?.marathon?.args ?? [];
-  const i = args.indexOf("--token");
-  return i >= 0 ? args[i + 1] : undefined;
+  const val = (name: string): string | undefined => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+  return { socket: val("--socket"), tcp: val("--tcp"), token: val("--token") };
 }
 
-async function callGoverned(socketPath: string, token?: string): Promise<{ status: string; content?: string }> {
-  const conn = connect(socketPath);
+async function callGoverned(target: { socket?: string; tcp?: string; token?: string }): Promise<{ status: string; content?: string }> {
+  const conn = target.tcp
+    ? connect(Number(target.tcp.slice(target.tcp.lastIndexOf(":") + 1)), target.tcp.slice(0, target.tcp.lastIndexOf(":")))
+    : connect(target.socket ?? "");
   await new Promise<void>((res, rej) => {
     conn.once("connect", res);
     conn.once("error", rej);
   });
   // Present the capability token first, exactly as the real shim does.
-  if (token) conn.write(`${JSON.stringify({ auth: token })}\n`);
+  if (target.token) conn.write(`${JSON.stringify({ auth: target.token })}\n`);
   const client = new ToolBrokerClient(conn, conn);
   const tools = await client.listTools();
   const resp = await client.request({ tool: tools[0]?.name ?? "", input: {} });
@@ -140,7 +150,9 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
 
     const script: CliScript = async ({ argv, onData, socketPath, workspaceDir }) => {
       const sid = sessionId(argv);
-      const resp = await callGoverned(socketPath, brokerTokenFromConfig(workspaceDir));
+      // Unix mode: the fake CLI (on the host) uses the HOST socket path from the
+      // mount; the config's --socket is the guest path. Token comes from config.
+      const resp = await callGoverned({ socket: socketPath, token: brokerTargetFromConfig(workspaceDir).token });
       writeSession(workspaceDir, sid, `${JSON.stringify({ role: "user", content: "go" })}\n${JSON.stringify({ role: "assistant", content: resp.content })}\n`);
       emit(onData, { type: "system", subtype: "init", session_id: sid, mcp_servers: [{ name: "marathon", status: "connected" }] });
       emit(onData, { type: "assistant", message: { content: [{ type: "tool_use", name: "github_read_file", input: {} }], usage: { input_tokens: 100, output_tokens: 20 } } });
@@ -185,6 +197,49 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
     expect(seen.env?.ANTHROPIC_API_KEY).toBe("marathon-proxy");
     expect(seen.env?.ANTHROPIC_BASE_URL).toBe("http://proxy.internal:8080");
     expect(JSON.stringify(seen.env)).not.toMatch(/sk-ant/);
+  });
+
+  it("brokers a governed tool over the TCP transport (brokerHost) end to end (§3.1)", async () => {
+    // The macOS-Docker path in a fake runtime: brokerHost set → the broker
+    // listens on TCP (no socket mount), the config carries --tcp host:port +
+    // --token, and the shim reaches it over 127.0.0.1 (loopback stands in for
+    // host.docker.internal, reachable because the fake container is in-process).
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const gov = governedGateway();
+
+    let usedTcp: string | undefined;
+    const script: CliScript = async ({ argv, onData, socketPath, workspaceDir }) => {
+      const sid = sessionId(argv);
+      const target = brokerTargetFromConfig(workspaceDir);
+      usedTcp = target.tcp; // prove the runtime chose TCP, not a socket
+      expect(socketPath).toBe(""); // no unix socket mounted in TCP mode
+      const resp = await callGoverned(target);
+      writeSession(workspaceDir, sid, `${JSON.stringify({ role: "assistant", content: resp.content })}\n`);
+      emit(onData, { type: "system", subtype: "init", session_id: sid, mcp_servers: [{ name: "marathon", status: "connected" }] });
+      emit(onData, { type: "result", subtype: "success", result: `read: ${resp.content}`, session_id: sid, total_cost_usd: 0.02, usage: { input_tokens: 10, output_tokens: 5 } });
+      return { exitCode: 0 };
+    };
+    const { sandbox } = fakeSandbox(script, ws);
+
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({ ANTHROPIC_API_KEY: "sk-ant-marathon" }),
+      registry,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+      brokerHost: "127.0.0.1",
+    });
+
+    const turn = await runtime.nextTurn({
+      request: { taskId: "task-tcp", instructions: "You are Forge.", input: "read the file", modelRef: "anthropic:claude-sonnet-4-6", tenantId: "tn1", agentId: "ag1" },
+      checkpoint: { completedSteps: [], findings: [] } as never,
+      workspace: ws,
+      onTurnCheckpoint: () => {},
+    });
+
+    expect(usedTcp).toMatch(/^127\.0\.0\.1:\d+$/); // TCP endpoint, ephemeral port
+    expect(gov.invocations.some((r) => r.toolName === "github.read_file" && r.status === "ok")).toBe(true);
+    expect(turn.text).toBe("read: FILE CONTENTS from host gateway");
+    expect(turn.done).toBe(true);
   });
 
   it("restores the snapshot OVER a partial JSONL on resume (§5.2 turn atomicity)", async () => {
