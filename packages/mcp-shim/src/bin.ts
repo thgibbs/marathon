@@ -17,13 +17,18 @@ import { handleMcpRequest, type JsonRpcRequest } from "./handler";
  */
 
 async function main(): Promise<void> {
-  const target = brokerConnectArg(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const target = brokerConnectArg(argv);
+  const ti = argv.indexOf("--token");
+  const token = (ti >= 0 ? argv[ti + 1] : undefined) ?? argv.find((a) => a.startsWith("--token="))?.slice("--token=".length);
   const sock = "path" in target ? connect(target.path) : connect(target.port, target.host);
   sock.on("error", (err) => {
     process.stderr.write(`marathon-mcp-shim: broker connection error: ${err}\n`);
     process.exit(1);
   });
   await new Promise<void>((resolve) => sock.once("connect", resolve));
+  // Present the per-turn capability token as the first line before any request.
+  if (token) sock.write(`${JSON.stringify({ auth: token })}\n`);
   const broker = new ToolBrokerClient(sock, sock);
 
   // Newline-delimited JSON-RPC on stdin → handler → stdout.

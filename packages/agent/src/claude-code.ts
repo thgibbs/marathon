@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -213,10 +213,11 @@ export function claudeArgv(p: ClaudeArgvParams): string[] {
  * latter for macOS Docker Desktop, where a bind-mounted socket is unconnectable.
  */
 export function mcpConfigJson(
-  connect: { socket: string } | { tcp: string },
+  connect: ({ socket: string } | { tcp: string }) & { token?: string },
   shim: { command: string; args?: string[] },
 ): string {
   const connectArgs = "socket" in connect ? ["--socket", connect.socket] : ["--tcp", connect.tcp];
+  if (connect.token) connectArgs.push("--token", connect.token);
   return JSON.stringify({
     mcpServers: {
       marathon: {
@@ -426,7 +427,7 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
     const tcpBroker = this.opts.brokerHost !== undefined;
     const question: { value?: string } = {};
     let hostSocket: string | undefined;
-    let broker: { close: () => void; port?: number };
+    let broker: { close: () => void; port?: number; token: string };
     if (tcpBroker) {
       broker = await this.startBroker({ tcp: true }, ctx, (q) => (question.value = q));
     } else {
@@ -456,7 +457,9 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       writeFileSync(
         mcpHostPath,
         mcpConfigJson(
-          tcpBroker ? { tcp: `${this.opts.brokerHost}:${broker.port}` } : { socket: GUEST_BROKER_SOCKET },
+          tcpBroker
+            ? { tcp: `${this.opts.brokerHost}:${broker.port}`, token: broker.token }
+            : { socket: GUEST_BROKER_SOCKET, token: broker.token },
           {
             command: this.opts.cli?.shimCommand ?? "marathon-mcp-shim",
             args: this.opts.cli?.shimArgs,
@@ -598,7 +601,7 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
     listen: { unixSocket: string } | { tcp: true },
     ctx: AgentTurnContext,
     onAskUser: (question: string) => void,
-  ): Promise<{ close: () => void; port?: number }> {
+  ): Promise<{ close: () => void; port?: number; token: string }> {
     const hostSocket = "unixSocket" in listen ? listen.unixSocket : undefined;
     // Fresh socket each turn (containers are never recovered, §11.2).
     if (hostSocket && existsSync(hostSocket)) {
@@ -615,6 +618,10 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       tenantId: ctx.request.tenantId ?? "",
       agentId: ctx.request.agentId,
     };
+    // Per-turn capability token: the shim must present it before any tool is
+    // served (§3.1), so a peer that merely reaches the TCP port cannot invoke a
+    // governed tool. Also authenticates the unix socket (defense in depth).
+    const token = randomBytes(24).toString("hex");
     const conns: Socket[] = [];
     let server: Server | undefined;
     let port: number | undefined;
@@ -624,21 +631,39 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
         serveToolBroker(conn, conn, gateway, govCtx, {
           tools: specs,
           onAskUser: this.opts.clarification ? onAskUser : undefined,
+          authToken: token,
         });
       });
-      // Await 'listening' so the broker is ready before the container's shim
-      // connects (and, for TCP, so the ephemeral port is assigned).
-      const listening = new Promise<void>((resolve) => server!.once("listening", () => resolve()));
+      // Resolve on 'listening' (the broker is ready before the shim connects,
+      // and, for TCP, the ephemeral port is assigned); reject on 'error' so a
+      // failed listen (EPERM, EADDRINUSE, bad path) fails fast instead of
+      // hanging nextTurn forever (P2). Exactly one of the two fires.
+      const listening = new Promise<void>((resolve, reject) => {
+        const onError = (err: Error) => {
+          server!.off("listening", onListening);
+          reject(err);
+        };
+        const onListening = () => {
+          server!.off("error", onError);
+          resolve();
+        };
+        server!.once("error", onError);
+        server!.once("listening", onListening);
+      });
       if (hostSocket) {
         server.listen(hostSocket);
       } else {
         // TCP mode (macOS Docker Desktop): bind an ephemeral port on all
         // interfaces so the container reaches it via host.docker.internal. The
-        // broker enforces tool policy and is up only for the turn; still a
-        // dev-oriented exposure (see brokerHost, §4.1).
+        // capability token above authenticates callers.
         server.listen(0, "0.0.0.0");
       }
-      await listening;
+      try {
+        await listening;
+      } catch (err) {
+        server.close();
+        throw err;
+      }
       const addr = server.address();
       port = addr && typeof addr === "object" ? addr.port : undefined;
     }
@@ -655,6 +680,7 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
         }
       },
       port,
+      token,
     };
   }
 }

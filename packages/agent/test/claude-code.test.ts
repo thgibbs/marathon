@@ -101,12 +101,22 @@ function emit(onData: (b: Buffer) => void, ev: unknown): void {
   onData(Buffer.from(`${JSON.stringify(ev)}\n`));
 }
 
-async function callGoverned(socketPath: string): Promise<{ status: string; content?: string }> {
+/** The per-turn capability token the runtime wrote into the MCP config (§3.1). */
+function brokerTokenFromConfig(workspaceDir: string): string | undefined {
+  const cfg = JSON.parse(readFileSync(join(workspaceDir, ".marathon-home", "mcp.json"), "utf8"));
+  const args: string[] = cfg.mcpServers?.marathon?.args ?? [];
+  const i = args.indexOf("--token");
+  return i >= 0 ? args[i + 1] : undefined;
+}
+
+async function callGoverned(socketPath: string, token?: string): Promise<{ status: string; content?: string }> {
   const conn = connect(socketPath);
   await new Promise<void>((res, rej) => {
     conn.once("connect", res);
     conn.once("error", rej);
   });
+  // Present the capability token first, exactly as the real shim does.
+  if (token) conn.write(`${JSON.stringify({ auth: token })}\n`);
   const client = new ToolBrokerClient(conn, conn);
   const tools = await client.listTools();
   const resp = await client.request({ tool: tools[0]?.name ?? "", input: {} });
@@ -130,7 +140,7 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
 
     const script: CliScript = async ({ argv, onData, socketPath, workspaceDir }) => {
       const sid = sessionId(argv);
-      const resp = await callGoverned(socketPath);
+      const resp = await callGoverned(socketPath, brokerTokenFromConfig(workspaceDir));
       writeSession(workspaceDir, sid, `${JSON.stringify({ role: "user", content: "go" })}\n${JSON.stringify({ role: "assistant", content: resp.content })}\n`);
       emit(onData, { type: "system", subtype: "init", session_id: sid, mcp_servers: [{ name: "marathon", status: "connected" }] });
       emit(onData, { type: "assistant", message: { content: [{ type: "tool_use", name: "github_read_file", input: {} }], usage: { input_tokens: 100, output_tokens: 20 } } });

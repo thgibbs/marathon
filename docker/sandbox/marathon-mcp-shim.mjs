@@ -20,6 +20,7 @@ const flag = (name) => {
 };
 const tcp = flag("--tcp");
 const socketPath = flag("--socket");
+const token = flag("--token");
 if (!tcp && !socketPath) {
   process.stderr.write("marathon-mcp-shim: --socket <path> or --tcp <host:port> is required\n");
   process.exit(1);
@@ -37,6 +38,8 @@ sock.on("error", (err) => {
   process.stderr.write(`marathon-mcp-shim: broker connection error: ${err}\n`);
   process.exit(1);
 });
+// Present the per-turn capability token as the first line (queued until connect).
+if (token) sock.write(`${JSON.stringify({ auth: token })}\n`);
 
 // --- broker client (line-delimited JSON over the socket) ---
 let nextId = 0;

@@ -124,7 +124,11 @@ this consumer. What's new is the MCP face:
   `MARATHON_BROKER_HOST=host.docker.internal` (`brokerHost`): the broker then listens on an
   ephemeral **TCP** port and the shim connects to `host.docker.internal:<port>` (the container
   gets `--add-host host.docker.internal:host-gateway`; auto on Docker Desktop, explicit on
-  Linux). Verified end-to-end on Docker Desktop.
+  Linux). Verified end-to-end on Docker Desktop. **Capability token:** because the TCP
+  broker is reachable beyond the sandbox, the runtime mints a **per-turn token**, passes it to
+  the shim in the MCP config (`--token`), and `serveToolBroker` requires it as the first line
+  (`{"auth":"<token>"}`) before serving any tool — an unauthenticated peer that merely reaches
+  the port gets nothing. The token also guards the unix socket (defense in depth).
 - **`tools/list` comes from the broker too** — extend the broker protocol with a
   `list_tools` request returning the task's registered governed tools (name, description,
   JSON-schema parameters, from the `ToolRegistry`). The shim carries **zero configuration

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import {
   type BrokerToolSpec,
@@ -48,6 +49,21 @@ export interface ServeToolBrokerOptions {
    * runtime turns a captured question into a durable wait after the turn ends.
    */
   onAskUser?: (question: string) => void;
+  /**
+   * Per-turn capability token (§3.1). When set, the connecting shim MUST present
+   * it as the first line (`{"auth":"<token>"}`) before any tool call is served;
+   * a missing/wrong token closes the connection. This authenticates the broker
+   * for the **TCP** transport (reachable beyond the sandbox) and is defense in
+   * depth for the unix socket. Unset → no handshake (legacy/tests).
+   */
+  authToken?: string;
+}
+
+/** Constant-time token compare that tolerates unequal lengths. */
+function tokenMatches(expected: string, got: string): boolean {
+  const a = Buffer.from(expected);
+  const b = Buffer.from(got);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 const ASK_USER_SPEC: BrokerToolSpec = {
@@ -85,7 +101,31 @@ export function serveToolBroker(
 
   const write = (obj: unknown) => output.write(`${JSON.stringify(obj)}\n`);
 
+  // Capability handshake (§3.1): with a token configured, the FIRST line must
+  // authenticate before anything is served. A bad/missing token ends the
+  // connection so an unauthenticated peer (e.g. reaching the TCP broker from
+  // outside the sandbox) can never invoke a governed tool.
+  let authed = opts.authToken === undefined;
+  let rejected = false;
+
   readLines(input, (line) => {
+    if (rejected) return;
+    if (!authed) {
+      let ok = false;
+      try {
+        const m = JSON.parse(line) as { auth?: unknown };
+        ok = typeof m.auth === "string" && tokenMatches(opts.authToken!, m.auth);
+      } catch {
+        ok = false;
+      }
+      if (!ok) {
+        rejected = true;
+        (output as Writable & { destroy?: () => void }).destroy?.();
+        return;
+      }
+      authed = true;
+      return;
+    }
     let msg: { id: number; op?: string; tool?: string; input?: ToolInput };
     try {
       msg = JSON.parse(line);

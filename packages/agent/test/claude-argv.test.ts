@@ -169,6 +169,13 @@ describe("mcpConfigJson", () => {
     const cfg = JSON.parse(mcpConfigJson({ tcp: "host.docker.internal:54321" }, { command: "marathon-mcp-shim", args: ["tsx", "bin.ts"] }));
     expect(cfg.mcpServers.marathon.args).toEqual(["tsx", "bin.ts", "--tcp", "host.docker.internal:54321"]);
   });
+
+  it("passes the per-turn capability token when set (§3.1)", () => {
+    const unix = JSON.parse(mcpConfigJson({ socket: "/s.sock", token: "abc123" }, { command: "sh" }));
+    expect(unix.mcpServers.marathon.args).toEqual(["--socket", "/s.sock", "--token", "abc123"]);
+    const tcp = JSON.parse(mcpConfigJson({ tcp: "h:1", token: "abc123" }, { command: "sh" }));
+    expect(tcp.mcpServers.marathon.args).toEqual(["--tcp", "h:1", "--token", "abc123"]);
+  });
 });
 
 describe("session ref + host path (K7 §5)", () => {
