@@ -15,7 +15,7 @@
 # Debian packages ride the pinned base snapshot; for byte-identical rebuilds,
 # publish the built image and pin consumers to its digest — that, not a
 # rebuild, is the production distribution path.
-ARG SANDBOX_VERSION=2
+ARG SANDBOX_VERSION=3
 FROM node:22.12.0-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -51,7 +51,7 @@ RUN npm install -g pnpm@10.6.1 && npm cache clean --force
 # `claude-code-impl.md` §10 checklist against this version before relying on it.
 # The CLI holds NO credentials in the image: the model call exits only through the
 # host-side proxy (ANTHROPIC_BASE_URL), governed tools go through the broker socket.
-ARG CLAUDE_CODE_VERSION=1.0.44
+ARG CLAUDE_CODE_VERSION=2.1.195
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && npm cache clean --force
 ENV DISABLE_AUTOUPDATER=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1

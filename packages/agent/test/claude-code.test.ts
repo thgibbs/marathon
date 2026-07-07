@@ -62,7 +62,7 @@ type CliScript = (args: {
   signal?: AbortSignal;
   socketPath: string;
   workspaceDir: string;
-}) => Promise<{ exitCode: number }>;
+}) => Promise<{ exitCode: number; stderr?: string; stdout?: string }>;
 
 function fakeSandbox(script: CliScript, workspace: AgentWorkspaceBinding) {
   const seen: { env?: Record<string, string>; argv?: string[] } = {};
@@ -83,7 +83,7 @@ function fakeSandbox(script: CliScript, workspace: AgentWorkspaceBinding) {
             socketPath,
             workspaceDir: workspace.dir,
           });
-          return { exitCode: r.exitCode, stdout: Buffer.from(""), stderr: Buffer.from("") };
+          return { exitCode: r.exitCode, stdout: Buffer.from(r.stdout ?? ""), stderr: Buffer.from(r.stderr ?? "") };
         },
       };
       return container;
@@ -294,6 +294,38 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
     expect(turn.text).toBe("ok"); // did not crash on listen EINVAL
     expect(sockLen).toBeGreaterThan(0);
     expect(sockLen).toBeLessThanOrEqual(103);
+  });
+
+  it("surfaces the CLI's stderr when the run exits non-zero with no result event", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+    // A CLI that writes an auth error to STDERR and exits 1, emitting no result.
+    // The stderr echoes a realistic-length token that redaction must scrub.
+    const leakToken = "sk-ant-oat01-AAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const script: CliScript = async () => ({
+      exitCode: 1,
+      stderr: `Invalid API key · Please run /login (token ${leakToken})\n`,
+    });
+    const { sandbox } = fakeSandbox(script, ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({ ANTHROPIC_API_KEY: "k" }),
+      registry,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+    });
+    const err = await runtime
+      .nextTurn({
+        request: { taskId: "t", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+        checkpoint: { completedSteps: [], findings: [] } as never,
+        workspace: ws,
+        onTurnCheckpoint: () => {},
+      })
+      .catch((e: Error) => e);
+    expect(String(err)).toContain("exit 1");
+    expect(String(err)).toContain("Invalid API key"); // the real reason is surfaced
+    expect(String(err)).not.toContain(leakToken); // …but the token is redacted
   });
 
   it("fails with an actionable error (not EINVAL) when a custom socketDir overflows the limit", async () => {

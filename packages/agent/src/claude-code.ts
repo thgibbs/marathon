@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { newId } from "@marathon/core";
+import { newId, redactSecrets } from "@marathon/core";
 import type { SecretStore } from "@marathon/config";
 import { ModelRegistry, parseModelRef, resolveApiKey } from "@marathon/model-gateway";
 import { type ContainerMount, serveToolBroker, type ToolGateway } from "@marathon/tools";
@@ -95,7 +95,12 @@ export interface ClaudeCodeAgentOptions {
    * (`AnthropicKeyProxy`) that injects the key host-side.
    */
   proxy?: { baseUrl?: string };
-  /** Checkpoint cadence (§2.1); default 10. */
+  /**
+   * Retained for API compatibility but **not applied**: Claude Code 2.x removed
+   * the `--max-turns` flag, so a `claude -p` invocation runs the full agentic
+   * loop and Marathon checkpoints at its result event (the turn = the whole
+   * invocation, §11.2). Kept so callers/wiring don't break; ignored by the run.
+   */
   maxTurnsPerInvocation?: number;
   /** Expose `ask_user` over MCP (§2.3). */
   clarification?: boolean;
@@ -163,7 +168,6 @@ export interface ClaudeArgvParams {
   /** `--resume <id>` when true, else `--session-id <id>` on the first turn (§5.2). */
   resume: boolean;
   instructions: string;
-  maxTurns: number;
   /** Guest path of the MCP config (§3.1). */
   mcpConfigPath: string;
   settingsPath?: string;
@@ -181,7 +185,9 @@ export function claudeArgv(p: ClaudeArgvParams): string[] {
   const argv = [p.bin, "-p", p.prompt];
   argv.push(p.resume ? "--resume" : "--session-id", p.sessionId);
   argv.push("--output-format", "stream-json", "--verbose");
-  argv.push("--max-turns", String(p.maxTurns));
+  // No `--max-turns`: Claude Code 2.x removed it — one `claude -p` invocation
+  // runs the full agentic loop and Marathon checkpoints at its result event
+  // (the "turn" is the whole invocation; turn atomicity holds, §11.2).
   argv.push("--model", p.model);
   if (p.fallbackModel) argv.push("--fallback-model", p.fallbackModel);
   argv.push("--append-system-prompt", p.instructions);
@@ -230,7 +236,6 @@ export function claudeSessionHostPath(params: {
   return join(hostConfigDir, "projects", slug, `${params.sessionId}.jsonl`);
 }
 
-const DEFAULT_MAX_TURNS = 10;
 
 /**
  * Secret ref for the Claude subscription OAuth token (§4.1). Resolves the
@@ -359,7 +364,6 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
     }
     const registry = this.opts.registry ?? new ModelRegistry();
     const spec = registry.get(ctx.request.modelRef);
-    const maxTurns = this.opts.maxTurnsPerInvocation ?? DEFAULT_MAX_TURNS;
 
     const workspace = ctx.workspace;
     if (!workspace) {
@@ -455,7 +459,6 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
         sessionId,
         resume,
         instructions: ctx.request.instructions,
-        maxTurns,
         mcpConfigPath: GUEST_MCP_CONFIG,
         settingsPath: this.opts.cli?.settingsPath,
         disallowedTools: disallowed,
@@ -495,9 +498,16 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       const env = modelAccessEnv;
 
       let exitCode: number | null = null;
+      let stderrText = "";
+      let stdoutTail = "";
       try {
         const r = await container.execStream(argv, { onData, env, cwd: GUEST_WORKSPACE, signal: abort.signal });
         exitCode = r.exitCode;
+        // Keep the CLI's own output so a failed run (exit≠0, no result event)
+        // reports WHY instead of a blind "no result event". Redact + cap: the
+        // token is in the env, and the CLI could echo it in an auth error.
+        stderrText = redactSecrets(r.stderr.toString("utf8"), { enabled: true }).trim();
+        stdoutTail = redactSecrets(r.stdout.toString("utf8"), { enabled: true }).trim();
       } catch (err) {
         if (budgetKilled) {
           throw new Error(
@@ -509,7 +519,15 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
 
       const decision = interpretResult(acc.result);
       if (decision.error) {
-        throw new Error(`${decision.error}${exitCode != null ? ` (exit ${exitCode})` : ""}`);
+        const cap = (s: string) => (s.length > 1500 ? `…${s.slice(-1500)}` : s);
+        const diag = [
+          stderrText && `stderr: ${cap(stderrText)}`,
+          // Only show stdout when the CLI emitted no parseable result event.
+          !acc.result && stdoutTail && `stdout: ${cap(stdoutTail)}`,
+        ]
+          .filter(Boolean)
+          .join("\n");
+        throw new Error(`${decision.error}${exitCode != null ? ` (exit ${exitCode})` : ""}${diag ? `\n${diag}` : ""}`);
       }
 
       // Snapshot the session JSONL at the turn boundary (§5.2): the snapshot IS

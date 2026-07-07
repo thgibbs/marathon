@@ -115,7 +115,6 @@ const base = {
   model: "claude-sonnet-4-6",
   sessionId: "sess-abc",
   instructions: "You are Forge.",
-  maxTurns: 10,
   mcpConfigPath: "/workspace/.marathon-home/mcp.json",
   disallowedTools: ["Task"],
 };
@@ -138,7 +137,9 @@ describe("claudeArgv (K7 §11)", () => {
     expect(argv.join(" ")).toContain("--permission-mode bypassPermissions");
     expect(argv.join(" ")).toContain("--disallowedTools Task");
     expect(argv.join(" ")).toContain("--settings /etc/marathon/claude-settings.json");
-    expect(argv.join(" ")).toContain("--max-turns 10");
+    // Claude Code 2.x removed --max-turns; Marathon must not emit it (unknown
+    // flag → the CLI exits non-zero with no result event).
+    expect(argv).not.toContain("--max-turns");
   });
 
   it("carries no secret material in the argv", () => {
