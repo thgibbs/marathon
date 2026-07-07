@@ -397,8 +397,8 @@ export class Database implements AuditWriter, IdempotencyStore {
       for (const mi of modelInvocations) {
         await client.query(
           `insert into model_invocation(task_id, task_step_id, provider, model, prompt_version,
-                                        input_tokens, output_tokens, cost_usd, latency_ms, status, error)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+                                        input_tokens, output_tokens, cost_usd, estimated_cost_usd, latency_ms, status, error)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
           [
             taskId,
             mi.taskStepId ?? stepId,
@@ -408,6 +408,10 @@ export class Database implements AuditWriter, IdempotencyStore {
             mi.inputTokens ?? null,
             mi.outputTokens ?? null,
             mi.costUsd ?? null,
+            // Default the estimate to the billable cost so recorders that don't
+            // distinguish (Pi, API-key runs) stay consistent; only subscription
+            // runs set estimated separately (cost 0, estimate > 0).
+            mi.estimatedCostUsd ?? mi.costUsd ?? null,
             mi.latencyMs ?? null,
             mi.status ?? null,
             mi.error ?? null,
