@@ -177,6 +177,22 @@ export interface AgentPlansConfig {
 }
 
 /**
+ * Chat-surface repo grounding (chat-repo.md). When on, a chat task materializes
+ * a read-only checkout of the agent's `repo` so the agent has local files to
+ * read — gated by the invoking user's access + the task's audience.
+ */
+export interface AgentChatConfig {
+  /** Materialize the agent's repo for chat tasks; default true when `repo` is set. */
+  groundOnRepo: boolean;
+  /**
+   * Which commit to ground on: `pinned` (default) pins a task to the first
+   * resolved sha across its turns (reproducible); `latest` re-resolves HEAD each
+   * turn (chat-repo.md §3.3).
+   */
+  groundRef: "pinned" | "latest";
+}
+
+/**
  * A YAML-defined agent (design §6.2 / §21.0; Track 14): identity +
  * instructions plus the full runtime config — harness, the ONE configured
  * repo, tool grants (including brokered `gh`/`git` command families), sandbox
@@ -198,6 +214,8 @@ export interface AgentSpec {
   sandbox: AgentSandboxConfig;
   /** Plans-branch settings (§29.1a); default `marathon-plans`. */
   plans: AgentPlansConfig;
+  /** Chat-surface repo grounding (chat-repo.md); default on when `repo` is set. */
+  chat: AgentChatConfig;
   /** Model routing; when omitted the deployment default policy applies. */
   models?: AgentModelPolicy;
   /** Hard spend cap; when omitted no budget is enforced. */
@@ -248,6 +266,8 @@ export function parseAgentSpec(value: unknown, source = "agent spec"): AgentSpec
     tools: [],
     sandbox: { network: "bridge" },
     plans: { branch: DEFAULT_PLANS_BRANCH },
+    // Default resolved after `repo` is parsed (grounding is on iff a repo is set).
+    chat: { groundOnRepo: false, groundRef: "pinned" },
   };
   if (typeof v.display_name === "string") spec.displayName = v.display_name;
   if (typeof v.description === "string") spec.description = v.description;
@@ -299,6 +319,25 @@ export function parseAgentSpec(value: unknown, source = "agent spec"): AgentSpec
         );
       }
       spec.plans.branch = branch;
+    }
+  }
+  // Chat grounding (chat-repo.md): default on when a repo is configured, and
+  // only meaningful then. Parse the explicit block after `repo` is known.
+  spec.chat.groundOnRepo = spec.repo !== undefined;
+  if (v.chat !== undefined) {
+    if (!v.chat || typeof v.chat !== "object") throw new Error(`${source}: 'chat' must be a mapping`);
+    const c = v.chat as Record<string, unknown>;
+    const ground = c.ground_on_repo ?? c.groundOnRepo;
+    if (ground !== undefined) {
+      if (typeof ground !== "boolean") throw new Error(`${source}: 'chat.ground_on_repo' must be a boolean`);
+      spec.chat.groundOnRepo = ground;
+    }
+    const ref = c.ground_ref ?? c.groundRef;
+    if (ref !== undefined) {
+      if (ref !== "pinned" && ref !== "latest") {
+        throw new Error(`${source}: 'chat.ground_ref' must be "pinned" or "latest"`);
+      }
+      spec.chat.groundRef = ref;
     }
   }
   if (v.models !== undefined) {

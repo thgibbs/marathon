@@ -3,9 +3,35 @@ import {
   claudeArgv,
   claudeSessionHostPath,
   decodeSessionRef,
+  disallowedTools,
   encodeSessionRef,
   mcpConfigJson,
 } from "../src/claude-code";
+
+describe("disallowedTools (chat-repo.md §3.4)", () => {
+  it("always denies Task; adds WebFetch only when egress is locked down", () => {
+    expect(disallowedTools({})).toEqual(["Task"]);
+    expect(disallowedTools({ lockedDownEgress: true })).toEqual(["Task", "WebFetch"]);
+  });
+
+  it("readOnly denies built-in file mutation + shell, leaving reads + governed MCP tools", () => {
+    const ro = disallowedTools({ readOnly: true });
+    expect(ro).toContain("Bash");
+    expect(ro).toContain("Write");
+    expect(ro).toContain("Edit");
+    expect(ro).toContain("NotebookEdit");
+    // Read-side built-ins are NOT denied — grounding needs them.
+    expect(ro).not.toContain("Read");
+    expect(ro).not.toContain("Grep");
+    expect(ro).not.toContain("Glob");
+  });
+
+  it("composes with locked-down egress", () => {
+    const both = disallowedTools({ readOnly: true, lockedDownEgress: true });
+    expect(both).toContain("WebFetch");
+    expect(both).toContain("Bash");
+  });
+});
 
 const base = {
   bin: "claude",

@@ -42,25 +42,76 @@ export class CodeWorkspace {
       await execFileAsync("git", ["clone", "--quiet", opts.source, dir], { maxBuffer: 16 * 1024 * 1024 });
       const ws = new CodeWorkspace(dir, opts.baseSha);
       await ws.git(["checkout", "--quiet", "--detach", opts.baseSha]);
-      // Strip remotes + credential helpers (§29.2): the sandbox never fetches, and a
-      // credentialed clone URL must not persist in .git/config.
-      for (const remote of await ws.remotes()) await ws.git(["remote", "remove", remote]);
-      await ws.git(["config", "--local", "--unset-all", "credential.helper"]).catch(() => {});
-      // Shadow any global/system helper for host-side git ops in this workspace.
-      await ws.git(["config", "--local", "credential.helper", ""]);
-      // Local scratch commits (advisory, §29.2) need an identity inside the sandbox.
-      await ws.git(["config", "--local", "user.name", "Marathon"]);
-      await ws.git(["config", "--local", "user.email", "marathon@localhost"]);
-      // The sandbox HOME lives inside the mount (Track 11) — keep its caches
-      // out of the workspace's git view (diffs, tree hash, commits) without
-      // touching the repo's own .gitignore.
-      await mkdir(join(dir, ".git", "info"), { recursive: true });
-      await appendFile(join(dir, ".git", "info", "exclude"), `\n${SANDBOX_HOME_DIRNAME}/\n`);
+      await ws.stripAndSeal();
       return ws;
     } catch (err) {
       await rm(dir, { recursive: true, force: true });
       throw err;
     }
+  }
+
+  /**
+   * A **read-only** chat-grounding workspace (chat-repo.md §3.3): a shallow
+   * clone of the repo at `ref` (the default branch when omitted), remotes +
+   * credential helpers stripped, mounted read-only. Unlike {@link materialize}
+   * it carries no diff/commit machinery and is not pinned to a plan — its whole
+   * job is to give a chat agent local files to read. Returns the exact resolved
+   * commit `sha` so the caller can pin the task to it and record it as a source
+   * (§7.8). The clone stays shallow (`--depth 1`): history is never needed.
+   */
+  static async materializeReadonly(opts: {
+    source: string;
+    /**
+     * What to check out: an exact commit sha (pinned mode — a full clone, then
+     * `checkout --detach <sha>`, since a shallow clone can't name an arbitrary
+     * commit), a branch/tag name, or — when omitted — the remote's default
+     * branch at HEAD (shallow, the common single-turn case).
+     */
+    ref?: string;
+    prefix?: string;
+  }): Promise<{ workspace: CodeWorkspace; sha: string }> {
+    const dir = await mkdtemp(join(tmpdir(), opts.prefix ?? "marathon-chat-"));
+    try {
+      const pinnedSha = opts.ref && /^[0-9a-f]{7,40}$/i.test(opts.ref) ? opts.ref : undefined;
+      if (pinnedSha) {
+        await execFileAsync("git", ["clone", "--quiet", opts.source, dir], { maxBuffer: 16 * 1024 * 1024 });
+        await execFileAsync("git", ["-C", dir, "checkout", "--quiet", "--detach", pinnedSha]);
+      } else {
+        const cloneArgs = ["clone", "--quiet", "--depth", "1"];
+        if (opts.ref) cloneArgs.push("--branch", opts.ref);
+        cloneArgs.push(opts.source, dir);
+        await execFileAsync("git", cloneArgs, { maxBuffer: 16 * 1024 * 1024 });
+      }
+      // The resolved commit — what the agent actually read (pin + source ledger).
+      const sha = (await execFileAsync("git", ["-C", dir, "rev-parse", "HEAD"])).stdout.trim();
+      const ws = new CodeWorkspace(dir, sha);
+      await ws.stripAndSeal();
+      return { workspace: ws, sha };
+    } catch (err) {
+      await rm(dir, { recursive: true, force: true });
+      throw err;
+    }
+  }
+
+  /**
+   * Strip remotes + credential helpers (§29.2 — the sandbox never fetches, and a
+   * credentialed clone URL must not persist in `.git/config`), set a local
+   * identity for advisory scratch commits, and keep the sandbox HOME out of the
+   * workspace's git view. Shared by both materialization paths.
+   */
+  private async stripAndSeal(): Promise<void> {
+    for (const remote of await this.remotes()) await this.git(["remote", "remove", remote]);
+    await this.git(["config", "--local", "--unset-all", "credential.helper"]).catch(() => {});
+    // Shadow any global/system helper for host-side git ops in this workspace.
+    await this.git(["config", "--local", "credential.helper", ""]);
+    // Local scratch commits (advisory, §29.2) need an identity inside the sandbox.
+    await this.git(["config", "--local", "user.name", "Marathon"]);
+    await this.git(["config", "--local", "user.email", "marathon@localhost"]);
+    // The sandbox HOME lives inside the mount (Track 11) — keep its caches out
+    // of the workspace's git view (diffs, tree hash, commits) without touching
+    // the repo's own .gitignore.
+    await mkdir(join(this.dir, ".git", "info"), { recursive: true });
+    await appendFile(join(this.dir, ".git", "info", "exclude"), `\n${SANDBOX_HOME_DIRNAME}/\n`);
   }
 
   private async git(args: string[]): Promise<string> {

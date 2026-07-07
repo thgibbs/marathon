@@ -46,6 +46,14 @@ describe("workspaceContainerOptions (Track 11)", () => {
     expect(argv).toContain("--read-only");
     expect(argv).toContain("--cap-drop");
   });
+
+  it("carries readonlyWorkspace into the container options (chat grounding, §3.4)", () => {
+    const opts = workspaceContainerOptions(ws, { readonlyWorkspace: true }, {});
+    expect(opts.readonlyWorkspace).toBe(true);
+    const argv = dockerStartArgs(opts.image ?? "", opts);
+    expect(argv).toContain("/host/task-ws:/workspace:ro");
+    expect(argv).not.toContain("/host/task-ws:/workspace:rw");
+  });
 });
 
 describe("workspaceSandbox (Track 11)", () => {

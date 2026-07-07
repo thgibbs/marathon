@@ -5,6 +5,7 @@ import type { MemoryStore } from "@marathon/memory";
 import { assertWithinBudget, assertWithinTaskBudget, type BudgetPolicy } from "@marathon/observability";
 import type { AgentRequest, AgentRuntime, AgentTurn } from "@marathon/agent";
 import type { SurfaceMessage } from "@marathon/surface";
+import type { ResolvedChatWorkspace } from "./chat-workspace-provider";
 import { docDraftContract, docPathSlug } from "./documents";
 import { buildAgentPrompt } from "./prompt";
 
@@ -112,6 +113,18 @@ export interface AgentTaskStepOptions {
     /** Directory drafted docs land in; default "docs". */
     docBasePath?: string;
   };
+  /**
+   * Chat-surface repo grounding (chat-repo.md §3.2). When set, each turn asks
+   * the provider for a read-only checkout of the agent's repo (gated by access +
+   * audience); the resolved binding is passed into `nextTurn` and disposed
+   * afterwards, and the resolved commit is pinned on the checkpoint so a
+   * `pinned`-mode task sees one consistent tree across its turns. Returns
+   * `undefined` when the gate declines — the task simply runs ungrounded.
+   */
+  resolveWorkspace?: (
+    task: Task,
+    opts: { pinnedSha?: string },
+  ) => Promise<ResolvedChatWorkspace | undefined>;
 }
 
 /** Is this task in the deterministic doc-draft shape (§2b #16)? */
@@ -169,7 +182,23 @@ export function makeAgentTaskStepRunner(db: Database, runtime: AgentRuntime, opt
       agentId: task?.agentId ?? undefined,
     };
     const turnIndex = checkpoint.completedSteps.length;
-    const turn = await runtime.nextTurn({ request, checkpoint });
+
+    // Chat-surface repo grounding (chat-repo.md §3.2): materialize a read-only
+    // checkout for this turn (gated by the provider), pin its sha, dispose after.
+    let grounded: ResolvedChatWorkspace | undefined;
+    let groundedSha = checkpoint.groundedSha;
+    if (task && opts.resolveWorkspace) {
+      grounded = await opts.resolveWorkspace(task, { pinnedSha: checkpoint.groundedSha });
+      if (grounded) groundedSha = grounded.sha; // pin on first resolve; re-affirm on resume
+    }
+
+    let turn: AgentTurn;
+    try {
+      turn = await runtime.nextTurn({ request, checkpoint, workspace: grounded?.workspace });
+    } finally {
+      // The checkout is per-turn (§3.3, turn atomicity) — always torn down.
+      await grounded?.dispose();
+    }
     let text = redactSecrets(turn.text ?? "", { enabled: opts.redactTrace !== false });
     // Deterministic post-turn evidence check (§2b #16): the doc exists only if
     // the agent's own document.create left an artifact (written by the
@@ -190,6 +219,8 @@ export function makeAgentTaskStepRunner(db: Database, runtime: AgentRuntime, opt
         ...checkpoint,
         completedSteps: [...checkpoint.completedSteps, `turn:${turnIndex}`],
         findings: [...checkpoint.findings, text],
+        // Pin the grounded commit so a `pinned`-mode resume re-materializes it.
+        ...(groundedSha !== undefined ? { groundedSha } : {}),
       },
       turn,
     );

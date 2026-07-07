@@ -1,7 +1,7 @@
 import { FakeAgentRuntime, type AgentRequest, type AgentRuntime, type AgentTurnContext } from "@marathon/agent";
 import { emptyCheckpoint, type Task } from "@marathon/core";
 import type { Database } from "@marathon/db";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { makeAgentStepRunner, makeAgentTaskStepRunner } from "../src/agent-step";
 
 const request: AgentRequest = {
@@ -183,5 +183,104 @@ describe("makeAgentTaskStepRunner doc-task mode (§2b #16)", () => {
     await makeAgentTaskStepRunner(db, rt, { modelRef: "openai:gpt-4o-mini" })({ taskId: "t1", checkpoint: emptyCheckpoint() });
     expect(requests[0]!.instructions).not.toContain("document_create");
     expect(artifactLookups).toHaveLength(0);
+  });
+});
+
+/** chat-repo.md §3.2 — repo grounding threaded through the step runner. */
+describe("makeAgentTaskStepRunner repo grounding (chat-repo.md §3.2)", () => {
+  const chatTask: Task = {
+    id: "t1",
+    tenantId: "tn1",
+    agentId: "a1",
+    agentVersionId: null,
+    invokingUserId: "u1",
+    sourceTaskId: null,
+    sourceType: "slack",
+    sourceRef: { channel: "C1", thread_ts: "1.1" },
+    deliveryTargets: null,
+    status: "running",
+    inputText: "what does the limiter do?",
+    summary: null,
+    checkpoint: null,
+    costUsd: 0,
+    createdAt: new Date(),
+    startedAt: null,
+    completedAt: null,
+    failedAt: null,
+    cancelledAt: null,
+  };
+  // Stubs are `as never` at the test boundary (see AGENTS.md rule 1).
+  const db = { getTask: async () => chatTask, getLatestAgentVersion: async () => null } as never as Database;
+
+  function workspaceRuntime() {
+    const seen: Array<{ dir: string; baseSha: string } | undefined> = [];
+    const rt: AgentRuntime = {
+      async nextTurn(ctx: AgentTurnContext) {
+        seen.push(ctx.workspace);
+        return { text: "grounded reply", done: true };
+      },
+    };
+    return { rt, seen };
+  }
+
+  it("passes the resolved read-only workspace into the turn, pins the sha, and disposes after", async () => {
+    const { rt, seen } = workspaceRuntime();
+    let disposed = 0;
+    const resolveWorkspace = vi.fn(async (_t: Task, o: { pinnedSha?: string }) => ({
+      workspace: { dir: "/tmp/ws", baseSha: "sha-abc" },
+      sha: "sha-abc",
+      dispose: async () => void disposed++,
+      _pinnedIn: o.pinnedSha,
+    }));
+    const result = await makeAgentTaskStepRunner(db, rt, { modelRef: "openai:gpt-4o-mini", resolveWorkspace })({
+      taskId: "t1",
+      checkpoint: emptyCheckpoint(),
+    });
+    expect(seen[0]).toEqual({ dir: "/tmp/ws", baseSha: "sha-abc" });
+    expect(disposed).toBe(1);
+    // The resolved commit is pinned on the checkpoint for a later resume.
+    expect(result.checkpoint.groundedSha).toBe("sha-abc");
+  });
+
+  it("passes the pinned sha from the checkpoint into the provider on resume", async () => {
+    const { rt } = workspaceRuntime();
+    const resolveWorkspace = vi.fn(async () => ({
+      workspace: { dir: "/tmp/ws", baseSha: "sha-pinned" },
+      sha: "sha-pinned",
+      dispose: async () => {},
+    }));
+    await makeAgentTaskStepRunner(db, rt, { modelRef: "openai:gpt-4o-mini", resolveWorkspace })({
+      taskId: "t1",
+      checkpoint: { ...emptyCheckpoint(), groundedSha: "sha-pinned" },
+    });
+    expect(resolveWorkspace).toHaveBeenCalledWith(chatTask, { pinnedSha: "sha-pinned" });
+  });
+
+  it("disposes the workspace even when the turn throws", async () => {
+    let disposed = 0;
+    const rt: AgentRuntime = { async nextTurn() { throw new Error("model boom"); } };
+    const resolveWorkspace = async () => ({
+      workspace: { dir: "/tmp/ws", baseSha: "s" },
+      sha: "s",
+      dispose: async () => void disposed++,
+    });
+    await expect(
+      makeAgentTaskStepRunner(db, rt, { modelRef: "openai:gpt-4o-mini", resolveWorkspace })({
+        taskId: "t1",
+        checkpoint: emptyCheckpoint(),
+      }),
+    ).rejects.toThrow(/model boom/);
+    expect(disposed).toBe(1);
+  });
+
+  it("runs ungrounded (no workspace) when the provider declines", async () => {
+    const { rt, seen } = workspaceRuntime();
+    const resolveWorkspace = async () => undefined;
+    const result = await makeAgentTaskStepRunner(db, rt, { modelRef: "openai:gpt-4o-mini", resolveWorkspace })({
+      taskId: "t1",
+      checkpoint: emptyCheckpoint(),
+    });
+    expect(seen[0]).toBeUndefined();
+    expect(result.checkpoint.groundedSha).toBeUndefined();
   });
 });

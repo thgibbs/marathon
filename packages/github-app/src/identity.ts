@@ -17,7 +17,6 @@
  * the user*; a dead token marks the link `stale` → deny until re-link.
  */
 import {
-  decryptSecret,
   encryptSecret,
   verifyLinkToken,
   type Id,
@@ -25,7 +24,6 @@ import {
   type UserIdentity,
 } from "@marathon/core";
 import {
-  checkRepoAsUser,
   exchangeOAuthCode,
   fetchGithubLogin,
   githubAuthorizeUrl,
@@ -143,34 +141,7 @@ export async function handleIdentityRequest(
   return null;
 }
 
-/**
- * The per-user access checker (§7.20): "can this Marathon user read repo R?",
- * answered as the user via their stored token. Outcomes:
- *   ok | no_access  — a live answer from GitHub;
- *   no_link         — the user has no verified GitHub link (deny; offer /marathon link github);
- *   stale           — the stored token no longer works; the link was JUST
- *                     marked stale (audited) — deny until re-link.
- */
-export function makeUserRepoAccessChecker(deps: IdentityLinkDeps) {
-  return async (tenantId: Id, userId: Id, repo: string): Promise<"ok" | "no_access" | "no_link" | "stale"> => {
-    const identity = await deps.db.findUserIdentityByUser(tenantId, userId, "github");
-    if (!identity?.credentialRef || identity.status !== "active" || identity.verificationMethod !== "oauth") {
-      return identity?.status === "stale" ? "stale" : "no_link";
-    }
-    const token = decryptSecret(identity.credentialRef, deps.masterSecret);
-    const result = await checkRepoAsUser(deps.oauth, token, repo);
-    if (result === "bad_token") {
-      await deps.db.setUserIdentityStatus(identity.id, "stale");
-      await deps.db.write({
-        tenantId,
-        actorUserId: userId,
-        eventType: "identity.stale",
-        targetType: "user_identity",
-        targetId: identity.id,
-        summary: `GitHub link '${identity.externalId}' marked stale — stored token rejected`,
-      });
-      return "stale";
-    }
-    return result;
-  };
-}
+// The per-user access checker (§7.20) now lives in @marathon/connector-github
+// (`makeUserRepoAccessChecker`) so the chat surfaces can gate on it too without
+// a package cycle. Re-exported here for the existing call sites.
+export { makeUserRepoAccessChecker } from "@marathon/connector-github";

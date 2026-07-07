@@ -681,6 +681,9 @@ importers:
       '@marathon/agent':
         specifier: workspace:*
         version: link:../agent
+      '@marathon/code-handoff':
+        specifier: workspace:*
+        version: link:../code-handoff
       '@marathon/config':
         specifier: workspace:*
         version: link:../config

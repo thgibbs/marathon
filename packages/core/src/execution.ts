@@ -31,6 +31,11 @@ export interface Checkpoint {
   pendingQuestion?: string;
   /** The user's answer, staged for the next turn to consume (cleared once used). */
   pendingUserInput?: string;
+  /**
+   * The repo commit a chat task was grounded on (chat-repo.md §3.3): pinned on
+   * the first turn so later turns of a `pinned`-mode task see one consistent tree.
+   */
+  groundedSha?: string;
 }
 
 export const emptyCheckpoint = (): Checkpoint => ({ completedSteps: [], findings: [] });
@@ -70,6 +75,7 @@ export function parseCheckpoint(value: unknown): Checkpoint {
   if (Array.isArray(v.completedEffects)) set("completedEffects", strings(v.completedEffects));
   set("pendingQuestion", str(v.pendingQuestion));
   set("pendingUserInput", str(v.pendingUserInput));
+  set("groundedSha", str(v.groundedSha));
   return cp;
 }
 

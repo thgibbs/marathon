@@ -130,8 +130,15 @@ export interface ContainerMount {
 }
 
 export interface DockerContainerOptions extends DockerSandboxOptions {
-  /** Host dir mounted read-write at /workspace (required). */
+  /** Host dir mounted at /workspace (required). Read-write unless `readonlyWorkspace`. */
   workspaceDir: string;
+  /**
+   * Mount the workspace **read-only** (chat-repo.md §3.4): the agent can read
+   * the checkout but not mutate it, even via a shell. The harness's own
+   * scratch/session under `.marathon-home` is layered back as a writable mount
+   * so it can still be written. Used for chat-surface repo grounding.
+   */
+  readonlyWorkspace?: boolean;
   /**
    * Extra bind mounts beyond the workspace (K7: the per-task broker unix socket,
    * `claude-code-impl.md` §3.1). These carry no secrets — the socket is the
@@ -140,16 +147,29 @@ export interface DockerContainerOptions extends DockerSandboxOptions {
   mounts?: ContainerMount[];
 }
 
+/** The sandbox HOME dir name inside the workspace mount (Track 11). */
+export const GUEST_HOME_DIRNAME = ".marathon-home";
+
 /** Build the persistent-container `docker run -d` argv (pure; CI-testable). */
 export function dockerStartArgs(image: string, opts: DockerContainerOptions): string[] {
   const mounts = (opts.mounts ?? []).flatMap((m) => ["-v", `${m.source}:${m.target}${m.readonly ? ":ro" : ""}`]);
+  const workspaceMounts = opts.readonlyWorkspace
+    ? [
+        // The repo checkout is read-only; the harness home is layered back as a
+        // writable mount over the read-only workspace (Docker honors the inner,
+        // more-specific mount) so the session/config/caches can still be written.
+        "-v",
+        `${opts.workspaceDir}:/workspace:ro`,
+        "-v",
+        `${opts.workspaceDir}/${GUEST_HOME_DIRNAME}:/workspace/${GUEST_HOME_DIRNAME}:rw`,
+      ]
+    : ["-v", `${opts.workspaceDir}:/workspace:rw`];
   return [
     "run",
     "-d",
     "--rm",
     ...hardeningFlags(opts),
-    "-v",
-    `${opts.workspaceDir}:/workspace:rw`,
+    ...workspaceMounts,
     ...mounts,
     "-w",
     "/workspace",

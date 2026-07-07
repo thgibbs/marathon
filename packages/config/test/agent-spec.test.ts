@@ -17,7 +17,35 @@ describe("parseAgentSpec (Tracks 12 + 14)", () => {
       tools: [],
       sandbox: { network: "bridge" },
       plans: { branch: "marathon-plans" },
+      // Chat grounding is off by default when no repo is configured.
+      chat: { groundOnRepo: false, groundRef: "pinned" },
     });
+  });
+
+  it("chat grounding defaults on when a repo is set, and parses the explicit block (chat-repo.md)", () => {
+    // Default: a repo makes grounding on.
+    expect(parseAgentSpec({ name: "forge", instructions: "x", repo: "o/r" }).chat).toEqual({
+      groundOnRepo: true,
+      groundRef: "pinned",
+    });
+    // No repo → off (nothing to ground on).
+    expect(parseAgentSpec({ name: "forge", instructions: "x" }).chat.groundOnRepo).toBe(false);
+    // Explicit opt-out even with a repo.
+    expect(
+      parseAgentSpec({ name: "forge", instructions: "x", repo: "o/r", chat: { ground_on_repo: false } }).chat.groundOnRepo,
+    ).toBe(false);
+    // ground_ref: latest.
+    expect(
+      parseAgentSpec({ name: "forge", instructions: "x", repo: "o/r", chat: { ground_ref: "latest" } }).chat.groundRef,
+    ).toBe("latest");
+    // Validation.
+    expect(() => parseAgentSpec({ name: "forge", instructions: "x", chat: { ground_on_repo: "yes" } })).toThrow(
+      /chat.ground_on_repo/,
+    );
+    expect(() => parseAgentSpec({ name: "forge", instructions: "x", chat: { ground_ref: "head" } })).toThrow(
+      /chat.ground_ref/,
+    );
+    expect(() => parseAgentSpec({ name: "forge", instructions: "x", chat: "on" })).toThrow(/'chat' must be a mapping/);
   });
 
   it("parses plans.branch and refuses the agent push namespace (§29.1a)", () => {

@@ -1,6 +1,7 @@
 export { makeSyntheticStepRunner } from "./steps";
 export * from "./agent-step";
 export * from "./build-step";
+export * from "./chat-workspace-provider";
 export * from "./agents";
 export * from "./approvals";
 export * from "./continuity";

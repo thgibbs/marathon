@@ -68,6 +68,27 @@ describe("dockerStartArgs (persistent container)", () => {
   });
 });
 
+describe("dockerStartArgs readonlyWorkspace (chat-repo.md §3.4)", () => {
+  const roArgv = dockerStartArgs("alpine:3.20", { workspaceDir: "/host/ws", readonlyWorkspace: true });
+  const has = (...seq: string[]) => {
+    const i = roArgv.indexOf(seq[0]!);
+    return i >= 0 && seq.every((s, k) => roArgv[i + k] === s);
+  };
+  it("mounts /workspace read-only with a writable .marathon-home layered over it", () => {
+    // Each mount value is preceded by a `-v` flag.
+    const mountValues = roArgv.filter((_, i) => roArgv[i - 1] === "-v");
+    expect(mountValues).toContain("/host/ws:/workspace:ro");
+    expect(mountValues).toContain("/host/ws/.marathon-home:/workspace/.marathon-home:rw");
+    // The read-write workspace mount from the default posture must NOT appear.
+    expect(roArgv).not.toContain("/host/ws:/workspace:rw");
+  });
+  it("stays hardened and kept alive", () => {
+    expect(roArgv).toContain("--read-only");
+    expect(has("--cap-drop", "ALL")).toBe(true);
+    expect(roArgv.slice(-4)).toEqual(["alpine:3.20", "tail", "-f", "/dev/null"]);
+  });
+});
+
 describe("sandboxFromEnv", () => {
   it("defaults to NoSandbox (fail closed)", () => {
     expect(sandboxFromEnv({}).name).toBe("none");

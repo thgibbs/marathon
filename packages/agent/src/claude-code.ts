@@ -91,6 +91,14 @@ export interface ClaudeCodeAgentOptions {
   clarification?: boolean;
   /** Disallow client-side `WebFetch` (locked-down egress posture, §3.3/§7.1). */
   lockedDownEgress?: boolean;
+  /**
+   * Read-only tool surface (chat-repo.md §3.4): disallow the built-in
+   * file-*mutating* tools so a grounded chat agent can read the checkout but
+   * not change it, even via a shell. Governed MCP tools (`document.*`,
+   * `github.read_*`) are unaffected — they route through the gateway. Pairs
+   * with the `:ro` workspace mount; each guard stands alone.
+   */
+  readOnly?: boolean;
   cli?: {
     /** The `claude` binary inside the container (default "claude"; a fake stub via demos). */
     bin?: string;
@@ -214,6 +222,20 @@ export function claudeSessionHostPath(params: {
 
 const DEFAULT_MAX_TURNS = 10;
 
+/**
+ * The `--disallowedTools` list for a turn (pure + exported for tests). `Task`
+ * is always denied (no sub-agent spawning); `WebFetch` under locked-down
+ * egress (§3.3); and under `readOnly` the built-in file-mutating tools + shell
+ * (chat-repo.md §3.4), leaving Read/Grep/Glob/LS and the governed MCP tools.
+ */
+export function disallowedTools(opts: { lockedDownEgress?: boolean; readOnly?: boolean }): string[] {
+  return [
+    "Task",
+    ...(opts.lockedDownEgress ? ["WebFetch"] : []),
+    ...(opts.readOnly ? ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"] : []),
+  ];
+}
+
 export class ClaudeCodeAgentRuntime implements AgentRuntime {
   constructor(private readonly opts: ClaudeCodeAgentOptions) {}
 
@@ -289,7 +311,10 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       // A run that stopped on --max-turns resumes with a neutral continuation
       // prompt; a normal resume (e.g. a durable-wait answer) uses the given input.
       const prompt = resume && prior?.continued ? CONTINUATION_PROMPT : ctx.request.input;
-      const disallowed = ["Task", ...(this.opts.lockedDownEgress ? ["WebFetch"] : [])];
+      const disallowed = disallowedTools({
+        lockedDownEgress: this.opts.lockedDownEgress,
+        readOnly: this.opts.readOnly,
+      });
       const argv = claudeArgv({
         bin: this.opts.cli?.bin ?? "claude",
         prompt,
