@@ -17,7 +17,7 @@ function makeSpec(overrides: Partial<AgentSpec> = {}): AgentSpec {
     ],
     sandbox: { network: "bridge" },
     plans: { branch: "marathon-plans" },
-    chat: { groundOnRepo: false, groundRef: "pinned" },
+    chat: { groundOnRepo: false, groundRef: "pinned", trustedDeployment: false },
     models: { default: "openai:gpt-4o-mini" },
     budget: { limitUsd: 5 },
     ...overrides,

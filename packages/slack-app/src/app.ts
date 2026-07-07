@@ -19,9 +19,9 @@ import {
   makeWaitingNotifier,
   Orchestrator,
   Worker,
-  type RepoAccessResult,
 } from "@marathon/worker";
 import { bootstrapSlackApp } from "./bootstrap";
+import { resolveChatAccessWiring } from "./chat-access";
 import { dispatchEnvelope, type AppDeps } from "./handlers";
 
 // Pi definitions for the governed tools this app can register live in
@@ -199,9 +199,14 @@ export async function startSlackApp(): Promise<void> {
   // grounding degrades safely to ungrounded (with the link CTA).
   const groundingEnabled =
     flagship.harness === "claude-code" && flagship.chat.groundOnRepo && Boolean(flagship.repo) && Boolean(ghToken);
-  const checkAccess: (t: string, u: string, r: string) => Promise<RepoAccessResult> = cfg.secretKey
-    ? makeUserRepoAccessChecker({ db, masterSecret: cfg.secretKey })
-    : async () => "no_link";
+  // Chat-grounding access wiring (chat-repo.md §3.1), extracted + unit-tested in
+  // chat-access.ts: trusted deployment → "ok" + internal_confirmed; otherwise the
+  // per-user identity checker, or "no_link" when the master secret is unset.
+  const trustedDeployment = flagship.chat.trustedDeployment;
+  const { checkAccess, audienceTrust } = resolveChatAccessWiring(
+    trustedDeployment,
+    cfg.secretKey ? makeUserRepoAccessChecker({ db, masterSecret: cfg.secretKey }) : undefined,
+  );
   const visibilityClient = ghToken ? new HttpGithubClient(ghAuth.tokenSource ?? ghToken) : undefined;
   const resolveWorkspace = groundingEnabled
     ? makeRepoChatWorkspaceProvider({
@@ -210,6 +215,9 @@ export async function startSlackApp(): Promise<void> {
         groundRef: flagship.chat.groundRef,
         source: async (repo) => `https://x-access-token:${await secrets.get("secret/github")}@github.com/${repo}.git`,
         checkAccess,
+        // Trusted deployment forces internal_confirmed (grounds private repos in
+        // channels too); otherwise undefined → the provider's default gate.
+        audienceTrust,
         // Visibility that cannot be PROVEN (a mis-scoped App/token can't see the
         // repo → getRepo returns null) must NOT pass as public — throw so the
         // provider degrades to ungrounded rather than bypassing the private rule.
@@ -242,7 +250,7 @@ export async function startSlackApp(): Promise<void> {
     : undefined;
   console.log(
     resolveWorkspace
-      ? `[slack-app] chat grounding: ${flagship.repo} (claude-code, read-only)`
+      ? `[slack-app] chat grounding: ${flagship.repo} (claude-code, read-only${trustedDeployment ? ", trusted deployment — per-user access check OFF" : ""})`
       : `[slack-app] chat grounding: off (${flagship.harness !== "claude-code" ? "pi harness" : !flagship.chat.groundOnRepo ? "disabled" : "no repo/token"})`,
   );
 
