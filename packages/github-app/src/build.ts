@@ -183,9 +183,9 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
     // note); containers stay credential-free by construction.
     sandbox: workspaceSandboxFromSpec(spec, opts.sandbox),
     governed: { gateway, tools: governedTools },
-    // Claude Code only (ignored by Pi): the container-reachable proxy endpoint
-    // (required — undefined fails validation closed), locked-down egress posture
-    // from the YAML network mode, the image's managed settings, and a
+    // Claude Code only (ignored by Pi): the OPTIONAL model proxy endpoint (unset
+    // → direct key injection, the bridge default, §4.1), locked-down egress
+    // posture from the YAML network mode, the image's managed settings, and a
     // mid-invocation budget kill against this task's accrued spend (§4.3).
     proxy: spec.harness === "claude-code" ? (proxyUrl ? { baseUrl: proxyUrl } : undefined) : undefined,
     lockedDownEgress: spec.sandbox.network === "none",

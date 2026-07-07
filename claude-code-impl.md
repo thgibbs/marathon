@@ -50,8 +50,10 @@ the process lives in the container and only governed calls come out.
        ledger → egress → creds → execute →      │        tools/call over the socket)
        redact → audit)                          │
                                                 │
-  model proxy (injects tenant key,  ◄───────────┼─── ANTHROPIC_BASE_URL=http://proxy:8080
-    allowlists api.anthropic.com)  ──► Anthropic│      (bridge or internal-only — §7.1)
+  model access (§4.1):                          │
+    bridge default → direct ANTHROPIC_API_KEY ──┼──► Anthropic  (no proxy)
+    locked-down / opt-in → key-injecting proxy ◄┼─── ANTHROPIC_BASE_URL=http://proxy:8080
+      (allowlists api.anthropic.com) ──► Anthropic│     (proxy is the sole egress — §7.1)
 ```
 
 ---
@@ -329,13 +331,16 @@ New file `packages/agent/src/claude-code.ts`, sibling of `pi.ts`:
 
 ```ts
 export interface ClaudeCodeAgentOptions {
-  secrets: SecretStore;                    // resolved host-side; feeds the proxy, never the env
+  secrets: SecretStore;                    // host-side; feeds the proxy (proxy mode) OR the
+                                           //   container env directly (direct mode, §4.1)
   sessionDir?: string;                     // per-task snapshots, as PiAgentOptions.sessionDir
   sandbox: {                               // REQUIRED — this harness has no host mode
     createContainer(req, workspace): DockerContainer;
   };
   governed?: GovernedToolsConfig;          // same spec list; served via broker+shim, not defineTool
-  proxy: { baseUrl: string };              // the model proxy endpoint on the internal network
+  proxy?: { baseUrl?: string };            // OPTIONAL on bridge (direct is default); REQUIRED
+                                           //   under locked-down egress (§4.1)
+  lockedDownEgress?: boolean;              // network:none — proxy becomes required
   maxTurnsPerInvocation?: number;          // checkpoint cadence, default ~10
   clarification?: boolean;                 // expose ask_user over MCP (§2.3)
   cli?: { bin?: string; settingsPath?: string };
@@ -343,7 +348,12 @@ export interface ClaudeCodeAgentOptions {
 
 export class ClaudeCodeAgentRuntime implements AgentRuntime {
   async nextTurn(ctx: AgentTurnContext): Promise<AgentTurn> {
+    // 0. resolveModelAccessEnv (§4.1) FIRST — fail closed on a misconfig before
+    //    provisioning the broker/container: proxy mode → placeholder key + BASE_URL;
+    //    direct mode (bridge default) → real ANTHROPIC_API_KEY, no BASE_URL;
+    //    locked-down-without-proxy / direct-without-key → throw.
     // 1. container + workspace up (as pi.ts:244); bind the broker unix socket into it
+    //    (everything after the broker starts is inside a try/finally that closes it)
     // 2. serveToolBroker(socket, gateway, { taskId, tenantId, agentId })  — host side
     // 3. restore session snapshot if ctx.checkpoint.sessionRef (§5.2)
     // 4. argv: claude -p <prompt> [--resume <sid> | --session-id <uuid>]
@@ -352,9 +362,11 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
     //      --mcp-config <shim config> --strict-mcp-config
     //      --permission-mode bypassPermissions --disallowedTools "WebFetch,WebSearch,Task"
     //      --settings /etc/marathon/claude-settings.json
-    //    env: ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY=placeholder,
-    //         CLAUDE_CONFIG_DIR=/workspace/.marathon-home/.claude,
-    //         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+    //    env: from resolveModelAccessEnv (§4.1) —
+    //         proxy mode: ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY=placeholder
+    //         direct mode: ANTHROPIC_API_KEY=<real Marathon key>, no BASE_URL
+    //         + CLAUDE_CONFIG_DIR=/workspace/.marathon-home/.claude,
+    //           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
     // 5. parse stream-json lines → onEvent progress + usage accumulation (budget kill)
     // 6. on result: snapshot session → onTurnCheckpoint → return AgentTurn (§2.2)
     // 7. finally: container.stop(); teardown never persists anything locally
@@ -420,15 +432,19 @@ lockdown.
 ### 7.2 Phone-home lockdown
 
 Set `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (disables telemetry, error reporting,
-update checks, and the autoupdater in one). Result: the CLI's only network dependency is
-`ANTHROPIC_BASE_URL` — which is the proxy. The internal network makes this *enforced*, the
-env var makes it *quiet* (no hanging retries against unreachable telemetry hosts).
+update checks, and the autoupdater in one). Result: the CLI's only network dependency is the
+model API — reached directly on bridge, or via `ANTHROPIC_BASE_URL` (the proxy) under the
+locked-down posture, where the internal network makes it *enforced* (the proxy is the sole
+route). The env var makes it *quiet* either way (no hanging retries against unreachable
+telemetry hosts).
 
 ### 7.3 What is and isn't the boundary
 
 - **Boundary:** the container (code/FS containment), the broker + gateway (governed
-  effects, credentials, audit, redaction), the proxy (model access + key custody), branch
-  protection (nothing lands without a human merge).
+  effects, business credentials, audit, redaction), branch protection (nothing lands without
+  a human merge). Model-key custody is the proxy under lockdown, or a deliberately low-value
+  direct key on bridge (§4.1) — either way it's a spend credential, not part of the data
+  boundary.
 - **Not the boundary:** Claude Code's permission modes, allow/deny lists, and settings —
   defense-in-depth only (§3.3). An injected agent that talks the model into ignoring them
   still can't reach credentials, the host, or unaudited egress.
@@ -514,7 +530,9 @@ claude -p "<prompt>" \
   --settings /etc/marathon/claude-settings.json
 ```
 
-**Container env:** `ANTHROPIC_BASE_URL=<proxy>` · `ANTHROPIC_API_KEY=<placeholder>` ·
+**Container env (§4.1):** direct mode (bridge default) → `ANTHROPIC_API_KEY=<real Marathon
+key>` (no `ANTHROPIC_BASE_URL`); proxy mode (opt-in / locked-down) →
+`ANTHROPIC_BASE_URL=<proxy>` + `ANTHROPIC_API_KEY=<placeholder>`. Plus
 `CLAUDE_CONFIG_DIR=/workspace/.marathon-home/.claude` ·
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` · `HOME=/workspace/.marathon-home` (image).
 

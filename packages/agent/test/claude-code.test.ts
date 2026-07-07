@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -285,6 +285,60 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
         onTurnCheckpoint: () => {},
       }),
     ).rejects.toThrow(/needs a Marathon Anthropic key/);
+  });
+
+  it("fails closed BEFORE provisioning the broker — no leaked socket (review)", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+    const script: CliScript = async () => ({ exitCode: 0 });
+    const { sandbox } = fakeSandbox(script, ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({}), // no key → direct mode fails closed
+      registry,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+    });
+    await expect(
+      runtime.nextTurn({
+        request: { taskId: "task0", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+        checkpoint: { completedSteps: [], findings: [] } as never,
+        workspace: ws,
+        onTurnCheckpoint: () => {},
+      }),
+    ).rejects.toThrow(/needs a Marathon Anthropic key/);
+    // Model access is resolved before the broker socket is created — nothing leaks.
+    expect(existsSync(socketDir) ? readdirSync(socketDir).filter((f) => f.endsWith(".sock")) : []).toEqual([]);
+  });
+
+  it("closes the broker when container creation fails after it started (review)", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+    // A sandbox that starts the broker (via the runtime) then fails to create the container.
+    const sandbox = {
+      createContainer: () => {
+        throw new Error("docker daemon unavailable");
+      },
+    } as never;
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({ ANTHROPIC_API_KEY: "sk-ant-marathon" }),
+      registry,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+    });
+    await expect(
+      runtime.nextTurn({
+        request: { taskId: "task0", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+        checkpoint: { completedSteps: [], findings: [] } as never,
+        workspace: ws,
+        onTurnCheckpoint: () => {},
+      }),
+    ).rejects.toThrow(/docker daemon unavailable/);
+    // The finally ran broker.close(), which removes the socket — no leak.
+    expect(readdirSync(socketDir).filter((f) => f.endsWith(".sock"))).toEqual([]);
   });
 
   it("locked-down egress requires the proxy — a key can't reach the model with no egress (§4.1)", async () => {

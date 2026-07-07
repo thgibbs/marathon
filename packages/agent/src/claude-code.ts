@@ -312,6 +312,21 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       throw new Error("claude-code harness requires a code workspace binding (§29.2)");
     }
 
+    // Model access (§4.1, model-proxy decision): DIRECT key injection is the
+    // default on `network: bridge` (the sandbox already has open outbound, so a
+    // proxy adds no data boundary — see resolveModelAccessEnv); the proxy is
+    // opt-in there and REQUIRED under locked-down egress. Resolve a direct key
+    // only when no proxy is wired, and build the env NOW — BEFORE any resource
+    // (session restore, broker socket, container) is provisioned — so a
+    // misconfiguration fails closed without leaking a broker or container.
+    const proxyBaseUrl = this.opts.proxy?.baseUrl;
+    const directKey = proxyBaseUrl ? undefined : await resolveApiKey(this.opts.secrets, provider);
+    const modelAccessEnv = resolveModelAccessEnv({
+      proxyBaseUrl,
+      directKey,
+      lockedDownEgress: this.opts.lockedDownEgress,
+    });
+
     // Resume vs first turn (§5.2): a decoded session ref carries the Claude
     // session id and the snapshot to restore over any partial JSONL.
     const prior = decodeSessionRef(ctx.checkpoint.sessionRef);
@@ -336,38 +351,28 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       question.value = q;
     });
 
-    // Model access (§4.1, model-proxy decision): DIRECT key injection is the
-    // default on `network: bridge` (the sandbox already has open outbound, so a
-    // proxy adds no data boundary — see resolveModelAccessEnv); the proxy is
-    // opt-in there and REQUIRED under locked-down egress. Resolve a direct key
-    // only when no proxy is wired, and build the env NOW so a misconfiguration
-    // fails closed before a container is ever provisioned.
-    const proxyBaseUrl = this.opts.proxy?.baseUrl;
-    const directKey = proxyBaseUrl ? undefined : await resolveApiKey(this.opts.secrets, provider);
-    const modelAccessEnv = resolveModelAccessEnv({
-      proxyBaseUrl,
-      directKey,
-      lockedDownEgress: this.opts.lockedDownEgress,
-    });
-
-    // MCP config into the workspace home (host-visible → readable in-container).
-    const mcpHostPath = join(workspace.dir, ".marathon-home", "mcp.json");
-    mkdirSync(dirname(mcpHostPath), { recursive: true });
-    writeFileSync(
-      mcpHostPath,
-      mcpConfigJson(GUEST_BROKER_SOCKET, {
-        command: this.opts.cli?.shimCommand ?? "marathon-mcp-shim",
-        args: this.opts.cli?.shimArgs,
-      }),
-    );
-
-    const container = await this.opts.sandbox.createContainer(ctx.request, workspace, {
-      mounts: [{ source: hostSocket, target: GUEST_BROKER_SOCKET }],
-    });
-    await container.start();
-
+    // Everything after the broker starts is inside the try/finally, so a
+    // failure in workspace/MCP setup, container creation, or start still closes
+    // the broker (and stops a started container) — no leaked socket/server.
+    let container: AgentContainer | undefined;
     const start = Date.now();
     try {
+      // MCP config into the workspace home (host-visible → readable in-container).
+      const mcpHostPath = join(workspace.dir, ".marathon-home", "mcp.json");
+      mkdirSync(dirname(mcpHostPath), { recursive: true });
+      writeFileSync(
+        mcpHostPath,
+        mcpConfigJson(GUEST_BROKER_SOCKET, {
+          command: this.opts.cli?.shimCommand ?? "marathon-mcp-shim",
+          args: this.opts.cli?.shimArgs,
+        }),
+      );
+
+      container = await this.opts.sandbox.createContainer(ctx.request, workspace, {
+        mounts: [{ source: hostSocket, target: GUEST_BROKER_SOCKET }],
+      });
+      await container.start();
+
       // A run that stopped on --max-turns resumes with a neutral continuation
       // prompt; a normal resume (e.g. a durable-wait answer) uses the given input.
       const prompt = resume && prior?.continued ? CONTINUATION_PROMPT : ctx.request.input;
@@ -464,7 +469,7 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
       };
     } finally {
       broker.close();
-      await container.stop().catch(() => {});
+      await container?.stop().catch(() => {});
     }
   }
 

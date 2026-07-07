@@ -138,8 +138,8 @@ export async function startSlackApp(): Promise<void> {
       governed: { gateway: toolGateway, tools: governedTools },
       // Claude Code only (ignored by Pi — chat Pi keeps running containerless
       // with governed tools only): the per-task container factory, the
-      // container-reachable proxy (required — undefined fails closed), the
-      // image's managed settings, and the mid-invocation budget kill (§4.3).
+      // OPTIONAL model proxy (unset → direct key injection, the bridge default,
+      // §4.1), the image's managed settings, and the mid-invocation budget kill.
       // The chat surface is read-only by construction (chat-repo.md §3.4): the
       // repo checkout is mounted `:ro` and the built-in file/shell tools are
       // disallowed, so grounding can never mutate the repo (governed doc/read
