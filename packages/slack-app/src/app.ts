@@ -12,7 +12,6 @@ import { DeliveryFanout } from "@marathon/surface";
 import { RealSlackClient, SlackDelivery, SocketModeClient } from "@marathon/surface-slack";
 import { InMemorySourceLedger, installSandboxShutdownHandler, reapSandboxContainers, ToolGateway, ToolRegistry, toolPolicyFromSpec } from "@marathon/tools";
 import {
-  type AudienceTrust,
   InvocationRouter,
   makeAgentTaskStepRunner,
   makeDocumentPrRecorder,
@@ -20,9 +19,9 @@ import {
   makeWaitingNotifier,
   Orchestrator,
   Worker,
-  type RepoAccessResult,
 } from "@marathon/worker";
 import { bootstrapSlackApp } from "./bootstrap";
+import { resolveChatAccessWiring } from "./chat-access";
 import { dispatchEnvelope, type AppDeps } from "./handlers";
 
 // Pi definitions for the governed tools this app can register live in
@@ -200,16 +199,14 @@ export async function startSlackApp(): Promise<void> {
   // grounding degrades safely to ungrounded (with the link CTA).
   const groundingEnabled =
     flagship.harness === "claude-code" && flagship.chat.groundOnRepo && Boolean(flagship.repo) && Boolean(ghToken);
-  // Trusted single-tenant deployment (chat-repo.md §3.1): the service credential's
-  // repo access authorizes grounding for everyone here, so skip the per-user
-  // GitHub-link check. Otherwise verify each user (and fall back to "no_link"
-  // when the master secret needed to read links isn't configured).
+  // Chat-grounding access wiring (chat-repo.md §3.1), extracted + unit-tested in
+  // chat-access.ts: trusted deployment → "ok" + internal_confirmed; otherwise the
+  // per-user identity checker, or "no_link" when the master secret is unset.
   const trustedDeployment = flagship.chat.trustedDeployment;
-  const checkAccess: (t: string, u: string, r: string) => Promise<RepoAccessResult> = trustedDeployment
-    ? async () => "ok"
-    : cfg.secretKey
-      ? makeUserRepoAccessChecker({ db, masterSecret: cfg.secretKey })
-      : async () => "no_link";
+  const { checkAccess, audienceTrust } = resolveChatAccessWiring(
+    trustedDeployment,
+    cfg.secretKey ? makeUserRepoAccessChecker({ db, masterSecret: cfg.secretKey }) : undefined,
+  );
   const visibilityClient = ghToken ? new HttpGithubClient(ghAuth.tokenSource ?? ghToken) : undefined;
   const resolveWorkspace = groundingEnabled
     ? makeRepoChatWorkspaceProvider({
@@ -218,10 +215,9 @@ export async function startSlackApp(): Promise<void> {
         groundRef: flagship.chat.groundRef,
         source: async (repo) => `https://x-access-token:${await secrets.get("secret/github")}@github.com/${repo}.git`,
         checkAccess,
-        // Trusted deployment: treat every audience as internal so a private repo
-        // grounds in channels too (not just DMs). Otherwise the default gate
-        // applies (DM → internal, channel → unknown → private denied).
-        audienceTrust: trustedDeployment ? (): AudienceTrust => "internal_confirmed" : undefined,
+        // Trusted deployment forces internal_confirmed (grounds private repos in
+        // channels too); otherwise undefined → the provider's default gate.
+        audienceTrust,
         // Visibility that cannot be PROVEN (a mis-scoped App/token can't see the
         // repo → getRepo returns null) must NOT pass as public — throw so the
         // provider degrades to ungrounded rather than bypassing the private rule.
