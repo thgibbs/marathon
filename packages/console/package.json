@@ -1,0 +1,15 @@
+{
+  "name": "@marathon/console",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "start": "tsx src/serve.ts"
+  },
+  "dependencies": {
+    "@marathon/core": "workspace:*",
+    "@marathon/db": "workspace:*",
+    "@marathon/observability": "workspace:*"
+  }
+}

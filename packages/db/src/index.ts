@@ -265,6 +265,37 @@ export class Database implements AuditWriter, IdempotencyStore {
     return rows[0] ? rowToTask(rows[0]) : null;
   }
 
+  /**
+   * Full Slack-thread history (design/recent-commands-view.md): the list
+   * counterpart of `findLatestTaskByThread` — same match, no limit.
+   */
+  async listTasksByThread(tenantId: Id, channel: string, threadTs: string): Promise<Task[]> {
+    const { rows } = await this.pool.query(
+      `select * from task
+       where tenant_id = $1 and source_type = 'slack'
+         and source_ref->>'channel' = $2 and source_ref->>'thread_ts' = $3
+       order by created_at asc`,
+      [tenantId, channel, threadTs],
+    );
+    return rows.map(rowToTask);
+  }
+
+  /**
+   * Full PR-revision-chain history (design/recent-commands-view.md): the list
+   * counterpart of `findActiveRevisionTask` — same match, no status filter.
+   */
+  async listTasksByRevisionPr(tenantId: Id, repo: string, prNumber: number): Promise<Task[]> {
+    const { rows } = await this.pool.query(
+      `select * from task
+       where tenant_id = $1 and source_type = 'github'
+         and source_ref->>'kind' = 'code_revision'
+         and source_ref->>'repo' = $2 and (source_ref->>'prNumber')::int = $3
+       order by created_at asc`,
+      [tenantId, repo, prNumber],
+    );
+    return rows.map(rowToTask);
+  }
+
   async countTasksBySourceTask(sourceTaskId: Id): Promise<number> {
     const { rows } = await this.pool.query(
       `select count(*)::int as n from task where source_task_id = $1`,
@@ -996,6 +1027,25 @@ export class Database implements AuditWriter, IdempotencyStore {
     const { rows } = await this.pool.query(
       `select * from audit_event where target_type = 'task' and target_id = $1 order by created_at asc`,
       [taskId],
+    );
+    return rows;
+  }
+
+  /**
+   * Most recent `tool_invocation` rows across a tenant's tasks, newest first
+   * (design/recent-commands-view.md — the recent-commands list page).
+   * `tool_invocation` carries no `tenant_id` of its own; scoping is via a join
+   * to its owning task.
+   */
+  async listRecentToolInvocations(tenantId: Id, limit = 100): Promise<Array<Record<string, unknown>>> {
+    const { rows } = await this.pool.query(
+      `select ti.*, t.status as task_status
+       from tool_invocation ti
+       join task t on t.id = ti.task_id
+       where t.tenant_id = $1
+       order by ti.created_at desc
+       limit $2`,
+      [tenantId, limit],
     );
     return rows;
   }
