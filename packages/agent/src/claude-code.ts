@@ -572,7 +572,7 @@ export class ClaudeCodeAgentRuntime implements AgentRuntime {
         copyFileSync(sessionHostPath, snapshot);
       }
 
-      const modelInvocation = resultInvocation(acc, provider, model, Date.now() - start);
+      const modelInvocation = resultInvocation(acc, provider, model, Date.now() - start, subscription);
       const sessionRef = encodeSessionRef({ sessionId, snapshot, continued: decision.continued });
 
       ctx.onEvent?.({ type: "turn_end", summary: `turn ${turnIndex} complete` });
@@ -690,14 +690,21 @@ function resultInvocation(
   provider: string,
   model: string,
   latencyMs: number,
+  subscription: boolean,
 ): ModelInvocationData {
   const usage = acc.result?.usage;
+  // The CLI reports an API-equivalent `total_cost_usd` even under a subscription
+  // token. That is the ESTIMATE (observability). Under subscription no per-token
+  // dollars are actually spent, so BILLABLE `costUsd` is 0 — otherwise phantom
+  // cost would deplete the dollar budget for runs that cost nothing (§4.1).
+  const estimatedCostUsd = acc.result?.total_cost_usd ?? null;
   return {
     provider,
     model,
     inputTokens: usage?.input_tokens ?? acc.usage.input,
     outputTokens: usage?.output_tokens ?? acc.usage.output,
-    costUsd: acc.result?.total_cost_usd ?? null,
+    costUsd: subscription ? 0 : estimatedCostUsd,
+    estimatedCostUsd,
     latencyMs: acc.result?.duration_api_ms ?? latencyMs,
     status: acc.result?.is_error ? "error" : "ok",
   };

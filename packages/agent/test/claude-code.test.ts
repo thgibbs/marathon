@@ -448,6 +448,69 @@ describe("ClaudeCodeAgentRuntime (K7 — real broker/gateway, fake CLI)", () => 
     expect(seen.env?.ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
+  it("subscription: records the estimate but bills $0 so the dollar budget isn't depleted (§4.1)", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+    const script: CliScript = async ({ argv, onData, workspaceDir }) => {
+      const sid = sessionId(argv);
+      writeSession(workspaceDir, sid, `${JSON.stringify({ role: "assistant", content: "ok" })}\n`);
+      emit(onData, { type: "system", subtype: "init", session_id: sid });
+      // The CLI reports an API-equivalent cost even on a subscription token.
+      emit(onData, { type: "result", subtype: "success", result: "ok", session_id: sid, total_cost_usd: 0.5, usage: { input_tokens: 100, output_tokens: 20 } });
+      return { exitCode: 0 };
+    };
+    const { sandbox } = fakeSandbox(script, ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat-xyz" }), // subscription
+      registry,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+    });
+    const checkpoints: AgentTurnCheckpoint[] = [];
+    await runtime.nextTurn({
+      request: { taskId: "t-sub", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+      checkpoint: { completedSteps: [], findings: [] } as never,
+      workspace: ws,
+      onTurnCheckpoint: (cp) => void checkpoints.push(cp),
+    });
+    const mi = checkpoints[0]?.modelInvocation;
+    expect(mi?.costUsd).toBe(0); // billable dollars — none under subscription
+    expect(mi?.estimatedCostUsd).toBe(0.5); // …but the estimate is still tracked
+  });
+
+  it("direct (API key): billable cost equals the estimate (§4.1)", async () => {
+    const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
+    const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));
+    const gov = governedGateway();
+    const script: CliScript = async ({ argv, onData, workspaceDir }) => {
+      const sid = sessionId(argv);
+      writeSession(workspaceDir, sid, `${JSON.stringify({ role: "assistant", content: "ok" })}\n`);
+      emit(onData, { type: "system", subtype: "init", session_id: sid });
+      emit(onData, { type: "result", subtype: "success", result: "ok", session_id: sid, total_cost_usd: 0.5, usage: { input_tokens: 100, output_tokens: 20 } });
+      return { exitCode: 0 };
+    };
+    const { sandbox } = fakeSandbox(script, ws);
+    const runtime = new ClaudeCodeAgentRuntime({
+      secrets: new EnvSecretStore({ ANTHROPIC_API_KEY: "sk-ant-marathon" }), // direct billing
+      registry,
+      socketDir,
+      sandbox,
+      governed: { gateway: gov.gateway, tools: gov.tools },
+    });
+    const checkpoints: AgentTurnCheckpoint[] = [];
+    await runtime.nextTurn({
+      request: { taskId: "t-dir", instructions: "i", input: "go", modelRef: "anthropic:claude-sonnet-4-6" },
+      checkpoint: { completedSteps: [], findings: [] } as never,
+      workspace: ws,
+      onTurnCheckpoint: (cp) => void checkpoints.push(cp),
+    });
+    const mi = checkpoints[0]?.modelInvocation;
+    expect(mi?.costUsd).toBe(0.5); // real dollars spent
+    expect(mi?.estimatedCostUsd).toBe(0.5);
+  });
+
   it("direct mode fails closed when no Anthropic key is configured (§4.1)", async () => {
     const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "ccws-")), baseSha: "base" };
     const socketDir = mkdtempSync(join(tmpdir(), "ccsock-"));

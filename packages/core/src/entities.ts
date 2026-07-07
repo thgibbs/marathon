@@ -164,7 +164,10 @@ export interface ModelInvocation {
   promptVersion: string | null;
   inputTokens: number | null;
   outputTokens: number | null;
+  /** Actual billable dollars (0 under subscription auth); the budget sums this. */
   costUsd: number | null;
+  /** API-equivalent estimate — what the run would cost at API prices (§4.1). */
+  estimatedCostUsd: number | null;
   latencyMs: number | null;
   status: string | null;
   error: string | null;
@@ -180,6 +183,7 @@ export type NewModelInvocation = {
   inputTokens?: number | null;
   outputTokens?: number | null;
   costUsd?: number | null;
+  estimatedCostUsd?: number | null;
   latencyMs?: number | null;
   status?: string | null;
   error?: string | null;
