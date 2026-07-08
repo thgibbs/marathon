@@ -102,6 +102,7 @@ describe("makeAgentTaskStepRunner doc-task mode (§2b #16)", () => {
       completedAt: null,
       failedAt: null,
       cancelledAt: null,
+      lastError: null,
     };
   }
 
@@ -208,6 +209,7 @@ describe("makeAgentTaskStepRunner repo grounding (chat-repo.md §3.2)", () => {
     completedAt: null,
     failedAt: null,
     cancelledAt: null,
+    lastError: null,
   };
   // Stubs are `as never` at the test boundary (see AGENTS.md rule 1).
   const db = { getTask: async () => chatTask, getLatestAgentVersion: async () => null } as never as Database;

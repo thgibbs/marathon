@@ -46,6 +46,7 @@ function makeHarness() {
     completedAt: null,
     failedAt: null,
     cancelledAt: null,
+    lastError: null,
   };
   const db = {
     getTask: async () => task,

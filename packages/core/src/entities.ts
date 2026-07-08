@@ -153,6 +153,8 @@ export interface Task {
   completedAt: Date | null;
   failedAt: Date | null;
   cancelledAt: Date | null;
+  /** Why the task ended in `failed` (design/30-task-failure-reporting.md). */
+  lastError: string | null;
 }
 
 export interface ModelInvocation {

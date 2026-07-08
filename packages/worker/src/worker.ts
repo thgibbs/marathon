@@ -231,9 +231,9 @@ export class Worker {
     return "waiting";
   }
 
-  private async safeFailTask(taskId: Id, _error: string): Promise<void> {
+  private async safeFailTask(taskId: Id, error: string): Promise<void> {
     try {
-      await this.db.transitionTask(taskId, "failed");
+      await this.db.transitionTask(taskId, "failed", { error });
     } catch {
       // best-effort; the task may not be in a failable state
     }

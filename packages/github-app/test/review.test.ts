@@ -67,6 +67,7 @@ function makeImplTask(): Task {
     completedAt: null,
     failedAt: null,
     cancelledAt: null,
+    lastError: null,
   };
 }
 
