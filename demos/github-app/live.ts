@@ -18,7 +18,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { assertSubscriptionAckIfNeeded, makeAgentRuntime, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
-import { EnvSecretStore, loadAgentSpecs, loadConfig, warnUnknownMarathonEnv } from "@marathon/config";
+import { agentSubscribesTo, EnvSecretStore, loadAgentSpecs, loadConfig, warnUnknownMarathonEnv } from "@marathon/config";
 import { ensureBranch, githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
 import { WebhookProxyClient } from "@marathon/surface-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
@@ -181,41 +181,48 @@ async function main(): Promise<void> {
   // (families from the YAML), delivery.report_pr — model + hard per-task
   // budget from the same spec. The clone source carries the credential
   // host-side only; the sandbox never sees it.
-  const build = makeBuildWiring({
-    db,
-    spec: flagship,
-    secrets,
-    getClient: httpGithubClientFactory(),
-    fanout,
-    source: async (task) => {
-      const repo = flagship.repo!;
-      void task;
-      // Resolved per task so a fresh installation token (§2b #15) rides each
-      // clone; the credential stays host-side only (§29.2).
-      const cloneToken = await secrets.get("secret/github");
-      return `https://x-access-token:${cloneToken}@github.com/${repo}.git`;
-    },
-    // BUILD containers carry the same owner so the boot reaper covers them too.
-    sandbox: { owner: sandboxOwner },
-    sessionDir: join(tmpdir(), "marathon-sessions"),
-  });
-  const buildWorker = new Worker(queue, db, {
-    stepRunner: build.stepRunner,
-    // Partitioned dequeue (Track 15): this worker only LEASES BUILD-kind jobs,
-    // so it can never consume the document-task jobs the webhook handlers
-    // drive inline — those stay on the queue for whichever worker owns them.
-    kinds: [BUILD_JOB_KIND],
-    visibilityMs: 120_000,
-  });
-  const pollBuild = async (): Promise<void> => {
-    try {
-      await buildWorker.drain();
-    } catch (e) {
-      console.error("[github-app] build worker error:", e);
-    }
-    setTimeout(() => void pollBuild(), 2_000);
-  };
-  void pollBuild();
+  // codex-impl.md §A.3/§A.4: `makeBuildWiring` refuses to wire when `on:`
+  // excludes `build` — skip starting the worker entirely rather than crash
+  // boot for a valid doc-only configuration (e.g. `on: [draft, design-review]`).
+  if (agentSubscribesTo(flagship, "build")) {
+    const build = makeBuildWiring({
+      db,
+      spec: flagship,
+      secrets,
+      getClient: httpGithubClientFactory(),
+      fanout,
+      source: async (task) => {
+        const repo = flagship.repo!;
+        void task;
+        // Resolved per task so a fresh installation token (§2b #15) rides each
+        // clone; the credential stays host-side only (§29.2).
+        const cloneToken = await secrets.get("secret/github");
+        return `https://x-access-token:${cloneToken}@github.com/${repo}.git`;
+      },
+      // BUILD containers carry the same owner so the boot reaper covers them too.
+      sandbox: { owner: sandboxOwner },
+      sessionDir: join(tmpdir(), "marathon-sessions"),
+    });
+    const buildWorker = new Worker(queue, db, {
+      stepRunner: build.stepRunner,
+      // Partitioned dequeue (Track 15): this worker only LEASES BUILD-kind jobs,
+      // so it can never consume the document-task jobs the webhook handlers
+      // drive inline — those stay on the queue for whichever worker owns them.
+      kinds: [BUILD_JOB_KIND],
+      visibilityMs: 120_000,
+    });
+    const pollBuild = async (): Promise<void> => {
+      try {
+        await buildWorker.drain();
+      } catch (e) {
+        console.error("[github-app] build worker error:", e);
+      }
+      setTimeout(() => void pollBuild(), 2_000);
+    };
+    void pollBuild();
+  } else {
+    console.log("[github-app] 'on' excludes 'build' — BUILD worker not started (doc-only configuration)");
+  }
 
   // Identity linking (§7.20 / §2b #10): the OAuth start/callback endpoints.
   // Needs the GitHub App's OAuth client credentials + the shared master

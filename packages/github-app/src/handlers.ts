@@ -424,8 +424,15 @@ export async function handleGithubReview(
   };
   if (ownsCode) return handleCodePrRevision(deps, invocation);
 
-  // Doc PR: run the same tool-driven revise flow a mention takes (it re-finds
-  // the artifact and lands `document.revise` on the draft branch). The draft
+  // Doc PR: review-triggered dispatch (no explicit summon) is silent when the
+  // configured agent doesn't subscribe to design-review — routing through
+  // handleGithubMention here would still create a task and post a visible
+  // "not configured" reply on every unsubscribed review, which is spam for an
+  // event this deployment explicitly opted out of.
+  if (!agentSubscribesTo({ on: deps.on }, "design-review")) return true;
+
+  // Run the same tool-driven revise flow a mention takes (it re-finds the
+  // artifact and lands `document.revise` on the draft branch). The draft
   // fallthrough is unreachable — ownsDoc verified the artifact + branch above.
   await handleGithubMention(deps, invocation);
   return true;

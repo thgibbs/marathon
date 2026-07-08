@@ -37,6 +37,24 @@ Per the rollout sequencing below, this PR ships the smaller, dependency-free hal
   sequencing below already recommends confirming those items "before committing the rest of
   the build." Tracked as its own follow-up milestone, unchanged from the plan as merged.
 
+### Review fixups (PR #35)
+
+Two boot/webhook-time bugs surfaced in review, both from the `on:`-gating added above:
+
+- `makeBuildWiring` correctly refuses to wire when `on:` excludes `build` (§A.4 item 3), but
+  `demos/github-app/live.ts` still called it unconditionally — a valid doc-only config like
+  `on: [draft, design-review]` crashed at boot instead of booting without the BUILD worker.
+  Fixed by gating the BUILD worker's construction on `agentSubscribesTo(flagship, "build")`;
+  when absent, the process logs that the worker was skipped and continues serving the doc flow.
+- `handleGithubReview`'s doc-PR path (review submitted with no `@marathon` mention) routed
+  into `handleGithubMention` unconditionally, which — for an agent not subscribed to
+  `design-review` — created a task and posted a visible "not configured" reply on every such
+  review. Since review-triggered dispatch is never an explicit summon, that reply is spam.
+  Fixed by checking `agentSubscribesTo(deps.on, "design-review")` before routing/creating a
+  task for that path and returning a silent no-op when unsubscribed; an explicit `@mention` on
+  the same PR still gets the visible "not configured" reply (unchanged, inside
+  `handleGithubMention`) since that path IS a summon.
+
 ---
 
 ## Part A — Event-scoped agent dispatch + per-kernel-stage model routing
