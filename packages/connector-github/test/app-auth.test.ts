@@ -1,10 +1,14 @@
 import { generateKeyPairSync, verify as cryptoVerify } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createAppJwt,
   githubAuthFromEnv,
   InstallationTokenProvider,
   normalizePrivateKey,
+  resolveAppPrivateKey,
   withInstallationToken,
 } from "../src/app-auth";
 import { HttpGithubClient } from "../src/client";
@@ -169,6 +173,39 @@ describe("withInstallationToken (§2b #15 — the secret-store seam)", () => {
   });
 });
 
+describe("resolveAppPrivateKey (key source: inline or .pem path)", () => {
+  it("reads inline GITHUB_APP_PRIVATE_KEY (trimmed)", () => {
+    expect(resolveAppPrivateKey({ GITHUB_APP_PRIVATE_KEY: PRIVATE_PEM } as NodeJS.ProcessEnv)).toBe(PRIVATE_PEM.trim());
+  });
+
+  it("reads GITHUB_APP_PRIVATE_KEY_PATH and lets it win over inline", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gh-key-"));
+    const file = join(dir, "app.pem");
+    writeFileSync(file, `${PRIVATE_PEM}\n`);
+    const key = resolveAppPrivateKey({
+      GITHUB_APP_PRIVATE_KEY_PATH: file,
+      GITHUB_APP_PRIVATE_KEY: "SHA256:ignored-because-path-wins",
+    } as NodeJS.ProcessEnv);
+    expect(key).toBe(PRIVATE_PEM.trim());
+  });
+
+  it("returns undefined when neither is set", () => {
+    expect(resolveAppPrivateKey({} as NodeJS.ProcessEnv)).toBeUndefined();
+  });
+
+  it("rejects the SHA256 fingerprint with a clear message (the common mistake)", () => {
+    expect(() =>
+      resolveAppPrivateKey({ GITHUB_APP_PRIVATE_KEY: "SHA256:z8wH5zg/SVvBJ1Gd/WGoZCCkoDYisoqwkVN6zQ" } as NodeJS.ProcessEnv),
+    ).toThrow(/not a PEM private key.*fingerprint/s);
+  });
+
+  it("reports an unreadable key path clearly", () => {
+    expect(() =>
+      resolveAppPrivateKey({ GITHUB_APP_PRIVATE_KEY_PATH: "/no/such/key.pem" } as NodeJS.ProcessEnv),
+    ).toThrow(/cannot read '\/no\/such\/key\.pem'/);
+  });
+});
+
 describe("githubAuthFromEnv (§2b #15)", () => {
   it("selects App auth when both App vars are set, PAT mode otherwise", () => {
     const inner = { get: async () => undefined };
@@ -183,6 +220,27 @@ describe("githubAuthFromEnv (§2b #15)", () => {
     expect(pat.mode).toBe("token");
     expect(pat.tokenSource).toBeUndefined();
     expect(pat.secrets).toBe(inner);
+  });
+
+  it("selects App auth from a .pem path too", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gh-key-"));
+    const file = join(dir, "app.pem");
+    writeFileSync(file, PRIVATE_PEM);
+    const app = githubAuthFromEnv({ get: async () => undefined }, "acme", {
+      GITHUB_APP_ID: "1",
+      GITHUB_APP_PRIVATE_KEY_PATH: file,
+    } as NodeJS.ProcessEnv);
+    expect(app.mode).toBe("app");
+    expect(app.tokenSource).toBeDefined();
+  });
+
+  it("fails loud when an App ID is set with a bogus (fingerprint) key", () => {
+    expect(() =>
+      githubAuthFromEnv({ get: async () => undefined }, "acme", {
+        GITHUB_APP_ID: "1",
+        GITHUB_APP_PRIVATE_KEY: "SHA256:z8wH5zg/SVvBJ1Gd/WGoZCCkoDYisoqwkVN6zQ",
+      } as NodeJS.ProcessEnv),
+    ).toThrow(/not a PEM private key/);
   });
 });
 
