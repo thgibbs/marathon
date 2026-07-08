@@ -13,6 +13,7 @@
  * The PAT path (`GITHUB_TOKEN`) stays the quickstart fallback.
  */
 import { createSign } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { SecretStore } from "@marathon/config";
 
 /** Anything that can produce a current token (force = discard the cache). */
@@ -45,6 +46,45 @@ export function createAppJwt(appId: string, privateKeyPem: string, nowSeconds = 
  */
 export function normalizePrivateKey(pem: string): string {
   return pem.includes("\\n") ? pem.replace(/\\n/g, "\n") : pem;
+}
+
+/** A PEM private key block of any flavor (PKCS#1 `RSA PRIVATE KEY`, PKCS#8 `PRIVATE KEY`). */
+const PEM_PRIVATE_KEY_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/;
+
+/**
+ * Resolve the App private key from the environment. `GITHUB_APP_PRIVATE_KEY_PATH`
+ * (a path to the downloaded `.pem`) takes precedence — the ergonomic local-dev
+ * form; otherwise `GITHUB_APP_PRIVATE_KEY` holds the PEM inline (the
+ * production / secret-manager form). Returns `undefined` when neither is set.
+ *
+ * Throws a precise error when the resolved value is not a PEM private key. The
+ * classic mistake is pasting the key's **`SHA256:…` fingerprint** (shown in the
+ * GitHub App UI next to each key) instead of the downloaded `.pem` contents —
+ * that surfaces here at boot, not as an opaque OpenSSL `DECODER unsupported`
+ * failure deep in the first API call. Exported for tests.
+ */
+export function resolveAppPrivateKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const path = env.GITHUB_APP_PRIVATE_KEY_PATH?.trim();
+  let key: string | undefined;
+  if (path) {
+    try {
+      key = readFileSync(path, "utf8").trim();
+    } catch (e) {
+      throw new Error(`GITHUB_APP_PRIVATE_KEY_PATH: cannot read '${path}': ${(e as Error).message}`);
+    }
+  } else {
+    key = env.GITHUB_APP_PRIVATE_KEY?.trim() || undefined;
+  }
+  if (key === undefined) return undefined;
+  if (!PEM_PRIVATE_KEY_RE.test(normalizePrivateKey(key))) {
+    const src = path ? `GITHUB_APP_PRIVATE_KEY_PATH ('${path}')` : "GITHUB_APP_PRIVATE_KEY";
+    throw new Error(
+      `${src} is not a PEM private key (expected a "-----BEGIN … PRIVATE KEY-----" block). ` +
+        "Download the key from the GitHub App settings (Private keys → Generate a private key) and use the .pem " +
+        "file's contents — NOT the \"SHA256:…\" fingerprint shown in the UI.",
+    );
+  }
+  return key;
 }
 
 export interface InstallationTokenOptions {
@@ -154,10 +194,13 @@ export function withInstallationToken(
 
 /**
  * Build the deployment's GitHub auth from the environment (§2b #15): when
- * `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` are set, App installation auth
- * (posts author as `<app-slug>[bot]`); otherwise the PAT from the inner store
- * (quickstart fallback). Returns the (possibly decorated) secret store plus a
- * token source for consumers that hold a client across token expiries.
+ * `GITHUB_APP_ID` + a private key (`GITHUB_APP_PRIVATE_KEY` inline, or
+ * `GITHUB_APP_PRIVATE_KEY_PATH` pointing at the downloaded `.pem`) are set, App
+ * installation auth (posts author as `<app-slug>[bot]`); otherwise the PAT from
+ * the inner store (quickstart fallback). Returns the (possibly decorated) secret
+ * store plus a token source for consumers that hold a client across token
+ * expiries. A malformed key with an App ID present fails loud here at boot
+ * ({@link resolveAppPrivateKey}), not at the first API call.
  */
 export function githubAuthFromEnv(
   inner: SecretStore,
@@ -165,8 +208,9 @@ export function githubAuthFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): { secrets: SecretStore; tokenSource: GithubTokenSource | undefined; mode: "app" | "token" } {
   const appId = env.GITHUB_APP_ID?.trim();
-  const privateKey = env.GITHUB_APP_PRIVATE_KEY?.trim();
-  if (appId && privateKey) {
+  const hasKeySource = Boolean(env.GITHUB_APP_PRIVATE_KEY_PATH?.trim() || env.GITHUB_APP_PRIVATE_KEY?.trim());
+  if (appId && hasKeySource) {
+    const privateKey = resolveAppPrivateKey(env)!;
     const provider = new InstallationTokenProvider({ appId, privateKey, owner });
     return { secrets: withInstallationToken(inner, provider), tokenSource: provider, mode: "app" };
   }
