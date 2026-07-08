@@ -87,10 +87,14 @@ model-policy entries keeps behaving exactly as it does today — one agent, ever
 model resolving to `default`.
 
 A deployment can register more than one `AgentSpec` (already possible — `21-example-agents.md`
-shows several sample agents). Two or more specs may list the same event in `on:` — e.g. a
-`forge` agent handling `draft`/`build` alongside a separate, narrower `security-reviewer` agent
-that only lists `on: [review]` and runs with its own instructions/model against the same
-review event. §A.4 fans out to every subscribed agent when the event fires.
+shows several sample agents). Two or more specs may list `draft` in `on:` — e.g. a `forge`
+agent handling `draft`/`build` alongside a separate `security-reviewer` agent that also lists
+`on: [draft, review]` and drafts its own independent doc PR from the same ask, with its own
+instructions/model. Each drafted artifact is owned by the agent that drafted it; §A.4 fans out
+`draft` to every subscribed agent, but routes each artifact's `review` events only back to its
+owning agent — never to every agent subscribed to `review` in general. A spec that subscribes
+to `review` without also subscribing to `draft` will never own an artifact and so is never
+invoked; see the validation note in §A.4 item 4.
 
 **Why these four events and not, say, a fifth "self-review before requesting human review"
 event:** the loop has no such step today — DRAFT hands straight to a human-reviewed PR, and
@@ -105,18 +109,33 @@ Four call sites change from a flat/shared/single-agent model to an event-routed,
 multi-agent-capable one:
 
 1. **`GithubAppDeps.modelRef`** (`packages/github-app/src/handlers.ts`) — replace the single
-   `modelRef?: string` field with, per fired event, the list of registered `AgentSpec`s whose
-   `on:` includes that event (today: exactly one, so this is a superset of current behavior),
-   each resolved independently via its own `models` policy:
-   - `handleGithubMention` draft path → for each subscribed spec, `resolveModelRef(models, "draft")`.
-   - `handleGithubMention` revise path (existing artifact branch) → for each subscribed spec,
-     `resolveModelRef(models, "review")`.
-   - `handleGithubReview` doc-PR branch → same `"review"` resolution (it calls into the mention
-     handler's revise path already, so this falls out of the change above for free).
-   - **Fan-out is safe here**: `draft` opens a new doc-PR branch per agent, and `review` posts a
-     revision/comment against the doc-PR branch the *same* agent opened — two agents responding
-     to the same `draft` event simply produce two independent doc PRs; two agents responding to
-     the same `review` event on two *different* doc PRs likewise don't collide.
+   `modelRef?: string` field with an event-routed dispatch:
+   - `handleGithubMention` draft path → fan out to every registered `AgentSpec` whose `on:`
+     includes `draft` (today: exactly one, so this is a superset of current behavior), each
+     resolved independently via `resolveModelRef(models, "draft")`. Each spec's draft run opens
+     its own doc-PR branch; that branch is stamped with the drafting agent's id (spec name) in
+     the branch's tracked metadata (alongside whatever else the draft path already records for
+     the branch → task mapping).
+   - `handleGithubMention` revise path (existing artifact branch) / `handleGithubReview` doc-PR
+     branch → **ownership-routed, not fanned out**: look up the agent id stamped on the target
+     branch at draft time and resolve `resolveModelRef(models, "review")` for *that one spec
+     only*, regardless of how many other specs list `review` in their `on:`. A spec that lists
+     `review` without ever having drafted the artifact under review is simply never invoked for
+     it — see the validation note below.
+   - **Why draft fans out safely but review must not**: `draft` opens an independent doc-PR
+     branch per subscribed agent, so two agents responding to the same `draft` event produce
+     two independent PRs with no shared state. `review`, in contrast, is always about one
+     specific existing branch; if it fanned out to every agent subscribed to `review` the way
+     `draft` fans out, two agents could both call `document.revise` against that one branch and
+     race/overwrite each other's commits — the exact hazard §A.4 item 3 already calls out for
+     `build`/`revise`, just reachable through `review` too if left unfixed. Routing by the
+     branch's recorded owner instead of by subscription list closes that gap without needing
+     branch-per-agent machinery for review.
+   - **Config-validation consequence**: an `AgentSpec` that lists `review` but not `draft` (or
+     `revise` but not `build`) can never be dispatched to under ownership routing, since it will
+     never own an artifact. `validateHarnessConfig` (item 4 below) warns on this combination
+     rather than failing closed, since it's a likely misconfiguration (e.g. a typo'd `on:` list)
+     but not an unsafe one.
 2. **`makeBuildWiring`** (`packages/github-app/src/build.ts`) — unchanged for fresh
    implementation (`"build"` role stays as-is), except it now resolves the set of specs
    subscribed to `build` rather than assuming exactly one.
@@ -132,18 +151,22 @@ multi-agent-capable one:
    This is the one call site that isn't a straight one-line swap — everywhere else the role is
    known statically at the call site.
 
-   **`build`/`revise` do *not* get multi-agent fan-out in this pass**, unlike `draft`/`review`
-   above: both write commits to one shared PR branch (the code PR), and two agents pushing
-   concurrent commits to the same branch is a real conflict (racing pushes, overlapping edits),
-   not a cosmetic one. If more than one `AgentSpec` subscribes to `build` or `revise` for the
-   same repo, dispatch picks the first registered spec and logs a warning that the others were
+   **`build`/`revise` do *not* get multi-agent fan-out in this pass**, unlike `draft` above:
+   both write commits to one shared PR branch (the code PR), and two agents pushing concurrent
+   commits to the same branch is a real conflict (racing pushes, overlapping edits), not a
+   cosmetic one. If more than one `AgentSpec` subscribes to `build` or `revise` for the same
+   repo, dispatch picks the first registered spec and logs a warning that the others were
    skipped — full support (branch-per-agent, or serialized turns) is future work, tracked as a
    non-goal in §A.5.
 4. **`validateHarnessConfig`** (`packages/config/src/index.ts`) — already iterates
    `Object.entries(spec.models)` generically for the `claude-code` Anthropic-only check, so the
    two new roles (`draft`, `review`, `revise` — `build` already covered) are validated for free;
    no change needed there. The new `on:` field gets a small validation of its own: unknown event
-   names fail closed with a config error (rather than silently never firing).
+   names fail closed with a config error (rather than silently never firing). It also warns
+   (not fails) when a spec lists `review` without `draft`, or `revise` without `build` —
+   ownership routing (item 1) and first-registered-wins (item 3) mean such a spec can never
+   actually be dispatched to, which is more likely a typo than an intentional read-only
+   listener.
 
 ### A.5 Non-goals (this pass)
 
@@ -161,18 +184,21 @@ multi-agent-capable one:
   dynamic registration, no cross-repo fan-out in this pass.
 - **Not** multi-agent fan-out for `build`/`revise` — see the conflict note in §A.4 item 3;
   first-registered-spec-wins plus a warning is the interim behavior, not a real solution.
-- **Not** any priority/exclusivity mechanism for events that *do* support fan-out (`draft`/
-  `review`) — if two specs subscribe, both run, unconditionally; there's no config knob to make
-  them mutually exclusive or to rank them.
+- **Not** any priority/exclusivity mechanism for `draft`, the one event that fans out to every
+  subscriber — if two specs subscribe to `draft`, both run, unconditionally; there's no config
+  knob to make them mutually exclusive or to rank them. (`review`/`revise`/`build` don't need
+  this: `review` is ownership-routed to a single agent per artifact, §A.4 item 1; `build`/
+  `revise` use first-registered-wins, §A.4 item 3.)
 
 ### A.6 Risk / cost note
 
 Splitting `review`/`revise` from `draft`/`build` lets an operator route the (usually shorter,
 more surgical) review/revise turns to a cheaper model than the (usually longer, more
 generative) draft/build turns, or vice versa — purely an operator choice; this doc does not
-recommend a specific split. Multi-agent fan-out on `draft`/`review` (§A.4 item 1) multiplies
-model spend by the number of subscribed agents for those two events specifically — worth
-calling out to operators in the docs, though not a reason to gate the feature.
+recommend a specific split. Multi-agent fan-out on `draft` (§A.4 item 1) multiplies model spend
+by the number of subscribed agents for that event specifically — `review` doesn't add this
+cost since it's ownership-routed to one agent per artifact, not fanned out — worth calling out
+to operators in the docs, though not a reason to gate the feature.
 
 ---
 
@@ -262,35 +288,43 @@ to need a new isolation pattern — it reuses `marathon-mcp-shim`, `serveToolBro
   | `sessionRef` | the Codex session id (from `thread.started`) + the turn-snapshot path |
   | `turnIndex` | Marathon's own counter, same as both existing harnesses |
 
-### B.4 Governed tools over MCP — the one load-bearing risk
+### B.4 Governed tools over MCP
 
 Codex attaches Marathon's governed tools exactly like Claude Code: `marathon-mcp-shim` as a
 stdio MCP server in `config.toml`'s `[mcp_servers.marathon]`, forwarding every `tools/call` to
 the host broker. **Reused verbatim — no new shim.**
 
-**But headless MCP tool-call approval is currently broken upstream.** In `codex exec`
-(non-interactive), MCP tool calls are auto-cancelled — stdin is closed so there's no one to
-answer an approval prompt, and no documented config key suppresses it
-([openai/codex#24135](https://github.com/openai/codex/issues/24135)). The only documented
-workaround is `--dangerously-bypass-approvals-and-sandbox` (`--yolo`), which also disables the
-CLI's **own** sandbox policy.
+**Default: `--ask-for-approval never` with the Marathon MCP server pre-approved, not `--yolo`.**
+The current non-interactive-mode docs document `--ask-for-approval never` as the intended flag
+for headless runs, and the MCP configuration reference documents a `default_tools_approval_mode
+= "approve"` setting (plus a narrower per-tool `approval_mode` override) for marking specific
+MCP servers/tools as pre-approved rather than prompted. The primary invocation shape is:
 
-This is the same trade Claude Code already made with `--permission-mode bypassPermissions`
-(`claude-code-impl.md` §3.3: "the harness's own permission machinery is defense-in-depth, never
-the security boundary — containment (the container) and the gateway (host-side) are the
-boundary"). The identical argument covers Codex: Marathon's Docker container is the file/process
-boundary, and `ToolGateway.run` is the effect boundary, regardless of whether the CLI's *own*
-sandbox layer is active. So `--yolo` is safe to pass **because** the container still contains
-it — same reasoning, not a new exception.
+```
+codex exec --json --sandbox workspace-write --ask-for-approval never
+```
 
-What's different from Claude Code, and must be stated as an accepted risk rather than glossed
-over: Claude Code's `bypassPermissions` is a documented, intended flag for exactly this use
-case; Codex's `--dangerously-bypass-approvals-and-sandbox` is explicitly named to discourage
-non-`--yolo`-audited use, and the upstream issue is open, meaning the maintainers consider this
-a gap, not a feature. **Ship gated on containment being airtight** (no network egress path that
-bypasses the broker; `--sandbox` flag passed anyway as defense-in-depth even though bypassed,
-so a future fix that respects it costs nothing) and revisit if/when upstream ships a proper
-non-interactive MCP-approval config key (*verify-on-pin* #3).
+with `config.toml`'s `[mcp_servers.marathon]` entry setting `default_tools_approval_mode =
+"approve"` (or per-tool `approval_mode` entries scoped to the specific governed tools) so every
+`marathon-mcp-shim` tool call is pre-approved instead of prompted or auto-cancelled. This keeps
+the CLI's own `--sandbox workspace-write` policy active as real defense-in-depth, rather than
+disabling it — no `--yolo` needed on the happy path.
+
+**Fallback, not default: `--yolo` if the pinned CLI still reproduces the auto-cancel bug.**
+[openai/codex#24135](https://github.com/openai/codex/issues/24135) reported that, on earlier
+CLI builds, `codex exec` auto-cancelled MCP tool calls in non-interactive mode regardless of
+approval mode — stdin closed, nothing to answer a prompt, and the pre-approval config above
+didn't help. If *verify-on-pin* #3 finds the pinned version still reproduces that bug, fall
+back to `--dangerously-bypass-approvals-and-sandbox` (`--yolo`), which also disables the CLI's
+own sandbox policy. The same argument Claude Code already relies on for `--permission-mode
+bypassPermissions` (`claude-code-impl.md` §3.3: "the harness's own permission machinery is
+defense-in-depth, never the security boundary — containment (the container) and the gateway
+(host-side) are the boundary") covers this fallback too: Marathon's Docker container is the
+file/process boundary and `ToolGateway.run` is the effect boundary, regardless of whether the
+CLI's own sandbox layer is active. But treat it as a degraded posture specific to whichever
+pinned version needed it, not the design's default — log/flag it per deployment if triggered,
+and drop back to `--ask-for-approval never` on the next CLI pin where the bug is confirmed
+fixed.
 
 ### B.5 Model access — provider constraint + auth modes
 
@@ -309,12 +343,17 @@ non-interactive MCP-approval config key (*verify-on-pin* #3).
   (`MARATHON_CODEX_SUBSCRIPTION_DEV=1`, mirroring `MARATHON_CLAUDE_SUBSCRIPTION_DEV`) until the
   credential-persistence behavior is confirmed safe for the host mount (*verify-on-pin* #4).
 - **Proxy (locked-down egress)** — Claude Code's proxy relies on `ANTHROPIC_BASE_URL` being a
-  documented, redirectable endpoint. Whether Codex CLI honors an equivalent base-URL override
-  for the OpenAI API is **not confirmed** in the sources reviewed here — *verify-on-pin* #5.
-  Until confirmed, `harness: codex` paired with `sandbox.network: none` should **fail closed**
-  at BUILD wiring, exactly like `claude-code` does today for the same posture
-  (`packages/github-app/src/build.ts`'s existing `network === "none"` guard gets a `codex` arm
-  with the same refusal message).
+  documented, redirectable endpoint. Codex CLI's config reference documents the equivalent
+  surface: `openai_base_url` overrides the base URL for the built-in OpenAI provider, and a
+  custom `model_providers.<id>.base_url` entry (with `wire_api = "responses"`, plus `env_key`
+  or `env_key_command` for auth) defines an arbitrary named provider. K8 should wire the
+  Marathon key-injecting proxy through a custom `model_providers.marathon` entry (or
+  `openai_base_url` if the built-in provider's shape is sufficient) the same way Claude Code
+  uses `ANTHROPIC_BASE_URL`. `harness: codex` paired with `sandbox.network: none` does **not**
+  need to fail closed by default on this basis anymore; confirm the exact `base_url`/
+  `wire_api`/auth-field combination against the pinned CLI version (*verify-on-pin* #5) and
+  only add a `network === "none"` guard for `codex` in `packages/github-app/src/build.ts` if
+  that confirmation turns up a version-specific gap.
 
 ### B.6 Security lockdown — same shape as §12.6 Pattern 1
 
@@ -324,8 +363,10 @@ the boundary) applies unchanged to Codex, with one substitution and one addition
 - Substitute `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` for whatever Codex's equivalent
   telemetry/autoupdate-disable env var or config key is (*verify-on-pin* #6 — not found in the
   sources reviewed).
-- Add: `--sandbox workspace-write` is passed even though `--yolo` bypasses it (§B.4) — free
-  defense-in-depth if a future CLI version respects both flags together, harmless if not.
+- Add: `--sandbox workspace-write` is passed on the primary path (§B.4) and stays enforced
+  there, since `--ask-for-approval never` doesn't disable the CLI's own sandbox; on the
+  `--yolo` fallback path it's still passed anyway — harmless if bypassed, free defense-in-depth
+  if a future CLI version respects both flags together.
 - Unchanged: read-only root, tmpfs scratch, cap-drop ALL, no-new-privileges, non-root uid,
   cpu/mem/pids limits, no business secrets forwarded (§12.6, `sandbox.ts:69`).
 
@@ -367,12 +408,16 @@ mandatory pre-build homework, not optional polish:
    not, confirm the Marathon-side watchdog approach (§B.3) is sufficient.
 2. Exact `turn.completed` JSON schema — does it carry token usage / cost fields, and are they
    per-invocation or cumulative across `resume`?
-3. Status of [openai/codex#24135](https://github.com/openai/codex/issues/24135) (headless MCP
-   approval) at pin time — does a non-`--yolo` path exist yet?
+3. Confirm `--ask-for-approval never` + `default_tools_approval_mode = "approve"` (§B.4)
+   actually pre-approves `marathon-mcp-shim` tool calls on the pinned CLI version, rather than
+   auto-cancelling them; check the status of
+   [openai/codex#24135](https://github.com/openai/codex/issues/24135) to see whether the
+   auto-cancel bug it reported still reproduces, and fall back to `--yolo` only if it does.
 4. Whether ChatGPT-subscription auth persists a token to a host-visible path under `CODEX_HOME`
    (parallel to Claude Code's `.credentials.json` question, `claude-code-impl.md` §4.1).
-5. Whether Codex CLI supports a redirectable API base URL for a key-injecting proxy under
-   locked-down egress.
+5. Confirm the exact `openai_base_url` / `model_providers.<id>.base_url` (+ `wire_api`,
+   `env_key`/`env_key_command`) shape (§B.5) against the pinned CLI version, so the Marathon
+   proxy config can be finalized.
 6. Exact env var / config key to disable telemetry/autoupdate/phone-home traffic.
 7. On-disk session/rollout file layout under `CODEX_HOME` (needed for the per-turn snapshot
    copy, §11.2).
@@ -384,9 +429,10 @@ mandatory pre-build homework, not optional polish:
 
 - **Unit:** JSON-event reducer → `AgentTurn`/progress/usage mapping (incl. `turn.failed` →
   not-done, malformed lines); `codexArgv` builder (resume vs first turn, no secrets in argv);
-  model access (`CODEX_API_KEY` injection, no key when proxy mode is wired instead); config
-  cross-validation (`codex` + non-OpenAI model policy fails closed; `codex` + `network: none`
-  without confirmed proxy support fails closed, §B.5).
+  model access (`CODEX_API_KEY` injection, no key when proxy mode is wired instead via
+  `model_providers.marathon`/`openai_base_url`); config cross-validation (`codex` + non-OpenAI
+  model policy fails closed; `codex` + `network: none` fails closed only if pin-time
+  verification turns up a proxy-config gap, §B.5).
 - **`make demo-k8`:** a recorded/fake `codex` binary emitting a canned JSON-event script drives
   the same task pipeline through the real broker/gateway/container — same philosophy as
   `make demo-k7`.
@@ -398,18 +444,22 @@ mandatory pre-build homework, not optional polish:
 
 Part A (event-scoped agent dispatch + stage-scoped model roles) is small, additive, and has no
 external dependency — it can ship immediately, ahead of and independent from Part B. Part B
-(Codex harness) is a K7-sized milestone (**K8**) gated on the verify-on-pin items in §B.9, most
-importantly the open headless-MCP-approval issue (§B.4) — recommend a spike on that
+(Codex harness) is a K7-sized milestone (**K8**) gated on the verify-on-pin items in §B.9 —
+most importantly confirming that `--ask-for-approval never` plus MCP pre-approval (§B.4)
+actually works on the pinned CLI version, since that determines whether Codex ships with its
+own sandbox active by default or needs the `--yolo` fallback — recommend confirming that
 specifically before committing the rest of the build.
 
 ## Open questions / stated assumptions (flagging for review, not blocking on them)
 
 - Event/role names `draft` / `review` / `build` / `revise` (§A.3) — easy to rename in review;
   no code depends on the literal strings beyond the four call sites listed.
-- Multi-agent fan-out is in scope this pass only for `draft`/`review` (comment/PR-creation
-  events); `build`/`revise` (code-writing events) keep single-agent dispatch with a
-  first-registered-wins fallback and a warning if more than one spec subscribes (§A.4 item 3,
-  §A.5) — full concurrent-writer support (branch-per-agent or serialized turns) is future work.
+- Multi-agent fan-out is in scope this pass only for `draft` (a comment/PR-creation event);
+  `review` subscribes multiple agents but routes each event to a single owning agent per
+  artifact rather than fanning out (§A.4 item 1); `build`/`revise` (code-writing events) keep
+  single-agent dispatch with a first-registered-wins fallback and a warning if more than one
+  spec subscribes (§A.4 item 3, §A.5) — full concurrent-writer support (branch-per-agent or
+  serialized turns) is future work.
 - Whether `on:` fan-out is scoped per-repo or globally across all deployments watching a repo —
   assumed per-repo (the natural scope of an `AgentSpec` registration); flagging as a stated
   assumption, not a decision.
