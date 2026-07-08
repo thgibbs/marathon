@@ -12,6 +12,9 @@ node_modules/
 # Local reference (third-party copyrighted blog) — do not commit
 design/Meta-harness.md
 
+# Obsidian per-editor state (pane layout / open files) — noise, not shared config.
+design/.obsidian/workspace.json
+
 # Per-developer agent overrides (e.g. a dogfood `repo:`) — never shipped.
 # A `<agent>.local.yaml` replaces the committed spec of the same name at load.
 agents/*.local.yaml

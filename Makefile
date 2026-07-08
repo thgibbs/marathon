@@ -5,7 +5,7 @@ MARATHON_DB_PORT ?= 5432
 DATABASE_URL ?= postgres://marathon:marathon@localhost:$(MARATHON_DB_PORT)/marathon
 export DATABASE_URL MARATHON_DB_PORT
 
-.PHONY: install hooks secret-scan sandbox-image db-up db-down migrate typecheck test demo demo-kernel demo-k1 demo-k1-brokered demo-k1-network demo-k2 demo-k3 demo-k4 demo-k5 demo-k7 demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-github-app demo-slack-app slack-app github-app smoke-pi smoke-github smoke-github-write smoke-github-doc smoke-pi-tools smoke-mem0 smoke-sandbox smoke-broker smoke-container smoke-pi-sandbox smoke-k4 smoke-slack down
+.PHONY: install hooks secret-scan sandbox-image db-up db-down migrate typecheck test demo demo-kernel demo-k1 demo-k1-brokered demo-k1-network demo-k2 demo-k3 demo-k4 demo-k5 demo-k7 demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-floor demo-github-app demo-slack-app slack-app github-app smoke-pi smoke-github smoke-github-write smoke-github-doc smoke-pi-tools smoke-mem0 smoke-sandbox smoke-broker smoke-container smoke-pi-sandbox smoke-k4 smoke-slack down
 
 install:
 	pnpm install
@@ -122,6 +122,11 @@ demo-m8: db-up migrate
 demo-m9: db-up migrate
 	pnpm --filter @marathon/demo-m9 start
 
+# The floor contract (design §30.3): one deterministic case per invariant.
+# Fully in-memory (no Postgres, no Docker), so it needs no db prereqs.
+demo-floor:
+	pnpm --filter @marathon/demo-floor start
+
 demo-github-app: db-up migrate
 	pnpm --filter @marathon/demo-github-app start
 
@@ -178,6 +183,6 @@ smoke-slack:
 
 # Runs the full demo chain — kernel demos first (they are the critical path),
 # then the milestone regressions.
-demo: demo-k1 demo-k1-brokered demo-k1-network demo-k2 demo-k3 demo-k4 demo-k5 demo-k7 demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-github-app demo-slack-app
+demo: demo-k1 demo-k1-brokered demo-k1-network demo-k2 demo-k3 demo-k4 demo-k5 demo-k7 demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-floor demo-github-app demo-slack-app
 
 down: db-down

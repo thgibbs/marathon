@@ -109,6 +109,18 @@ describe("ToolGateway", () => {
     expect(audits.map((a) => a.eventType)).toContain("egress.denied");
   });
 
+  it("records the effective internal egress mode (§30.4) on the egress audit", async () => {
+    const { audits, recorder } = makeRecorder();
+    const poster: Tool = {
+      ...echoTool,
+      name: "post.external",
+      egress: () => ({ destination: "slack-connect:C1", audience: "external", external: true }),
+    };
+    await gw([poster], { recorder, internalEgressMode: "audience" }).run("post.external", {}, ctx).catch((e) => e);
+    const egress = audits.find((a) => a.eventType === "egress.denied");
+    expect(egress?.summary).toContain("[egress audience]");
+  });
+
   it("blocks internal egress after reading a restricted source; allows company_viewable", async () => {
     const ledger = new InMemorySourceLedger();
     const reader: Tool = {

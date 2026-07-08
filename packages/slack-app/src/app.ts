@@ -1,7 +1,18 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EnvSecretStore, loadAgentSpecs, loadConfig, warnUnknownMarathonEnv } from "@marathon/config";
-import { assertSubscriptionAckIfNeeded, makeAgentRuntime, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
+import {
+  EnvSecretStore,
+  loadAgentSpecs,
+  loadConfig,
+  looseningAuditEvent,
+  renderPostureBanner,
+  renderSandboxResidualNote,
+  resolveEffectiveBudget,
+  resolveEffectiveTrustedDeployment,
+  resolvePosture,
+  warnUnknownMarathonEnv,
+} from "@marathon/config";
+import { assertSubscriptionAckIfNeeded, makeAgentRuntime, resolveSandboxNetwork, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
 import { ensureBranch, githubAuthFromEnv, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools, makeUserRepoAccessChecker } from "@marathon/connector-github";
 import { CodeWorkspace } from "@marathon/code-handoff";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
@@ -35,6 +46,10 @@ export async function startSlackApp(): Promise<void> {
   // §2b #13: a misspelled MARATHON_* variable fails silently otherwise.
   warnUnknownMarathonEnv();
   const cfg = loadConfig();
+  // §30.5 startup posture banner: state the effective trust posture at boot so a
+  // team deployment silently running a solo default is impossible to miss.
+  const posture = resolvePosture();
+  for (const line of renderPostureBanner(posture)) console.log(`[slack-app] ${line}`);
   const botToken = process.env.SLACK_BOT_TOKEN?.trim();
   const appToken = process.env.SLACK_APP_TOKEN?.trim();
   if (!botToken) throw new Error("SLACK_BOT_TOKEN (xoxb-) is required");
@@ -73,7 +88,15 @@ export async function startSlackApp(): Promise<void> {
   // model policy, and the budget cap.
   const specs = await loadAgentSpecs(cfg.agentsDir);
   const flagship = specs[0]!;
+  // Floor #7 (§30.3): the effective per-task cap — the agent's own `budget:` or,
+  // when omitted, the trust profile's default (never unlimited).
+  const effectiveBudget = resolveEffectiveBudget(flagship.budget, posture);
+  // §30.3 fail-loud: state the one solo residual (bridge repo-text egress) at boot.
+  for (const line of renderSandboxResidualNote(resolveSandboxNetwork(flagship.sandbox))) console.log(`[slack-app] ${line}`);
   const boot = await bootstrapSlackApp(db, { teamId, teamName: auth.team, tenantName: cfg.tenant, specs });
+  // §30.5: persist an audit event for each acknowledged loosening so it survives
+  // log rotation (the banner is transient; the acknowledgment is a security fact).
+  for (const d of posture.loosenings) await db.write(looseningAuditEvent(boot.tenantId, posture.profile, d));
 
   // GitHub auth (§2b #15): App installation tokens when GITHUB_APP_ID +
   // GITHUB_APP_PRIVATE_KEY are set, so doc PRs drafted from Slack are also
@@ -123,6 +146,9 @@ export async function startSlackApp(): Promise<void> {
     secrets,
     recorder: dbToolRecorder(db),
     sourceLedger,
+    // §7.8 / §30.4: the gateway reads the profile's internal egress mode and
+    // records it on the egress audit trail.
+    internalEgressMode: posture.internalEgressMode,
   });
   const governedTools = governedToolDefsFor(flagship.tools.map((t) => t.tool));
   // Harness from the spec (§2b #17): the chat surface now runs EITHER harness
@@ -182,9 +208,9 @@ export async function startSlackApp(): Promise<void> {
       cli: { settingsPath: "/etc/marathon/claude-settings.json" },
       // TCP broker for macOS Docker Desktop (§3.1): set MARATHON_BROKER_HOST=host.docker.internal.
       brokerHost: process.env.MARATHON_BROKER_HOST?.trim() || undefined,
-      getRemainingBudgetUsd: flagship.budget
-        ? async (ctx) => flagship.budget!.limitUsd - (await db.sumModelCostUsd(ctx.request.taskId))
-        : undefined,
+      // Floor #7 (§30.3): an omitted `budget:` means the profile default cap,
+      // never unlimited — so the remaining-budget kill is always wired.
+      getRemainingBudgetUsd: async (ctx) => effectiveBudget.limitUsd - (await db.sumModelCostUsd(ctx.request.taskId)),
     }),
     { root: join(tmpdir(), "marathon-chat-workspaces") },
   );
@@ -202,7 +228,23 @@ export async function startSlackApp(): Promise<void> {
   // Chat-grounding access wiring (chat-repo.md §3.1), extracted + unit-tested in
   // chat-access.ts: trusted deployment → "ok" + internal_confirmed; otherwise the
   // per-user identity checker, or "no_link" when the master secret is unset.
-  const trustedDeployment = flagship.chat.trustedDeployment;
+  // Effective trusted_deployment is profile-implied (§30.4): unset → the profile
+  // default (solo → on); an explicit `true` looser than the default needs an ack,
+  // and `hosted` forbids it — both fail closed/loud in the resolver.
+  const { value: trustedDeployment, loosening: trustedDeploymentLoosened } = resolveEffectiveTrustedDeployment(
+    flagship.chat.trustedDeployment,
+    posture,
+  );
+  // §30.5: a per-agent trusted_deployment loosening is a security fact too — audit it.
+  if (trustedDeploymentLoosened) {
+    await db.write(
+      looseningAuditEvent(boot.tenantId, posture.profile, {
+        knob: "chat.trusted_deployment",
+        profileDefault: "off",
+        effective: "on",
+      }),
+    );
+  }
   const { checkAccess, audienceTrust } = resolveChatAccessWiring(
     trustedDeployment,
     cfg.secretKey ? makeUserRepoAccessChecker({ db, masterSecret: cfg.secretKey }) : undefined,
@@ -250,7 +292,7 @@ export async function startSlackApp(): Promise<void> {
     : undefined;
   console.log(
     resolveWorkspace
-      ? `[slack-app] chat grounding: ${flagship.repo} (claude-code, read-only${trustedDeployment ? ", trusted deployment — per-user access check OFF" : ""})`
+      ? `[slack-app] chat grounding: ${flagship.repo} (claude-code, read-only${trustedDeployment ? `, trusted deployment — per-user access check OFF${trustedDeploymentLoosened ? " (LOOSENED below profile default, acknowledged §30.5)" : ""}` : ""})`
       : `[slack-app] chat grounding: off (${flagship.harness !== "claude-code" ? "pi harness" : !flagship.chat.groundOnRepo ? "disabled" : "no repo/token"})`,
   );
 
@@ -262,11 +304,12 @@ export async function startSlackApp(): Promise<void> {
       // Persona comes from the seeded AgentVersion (the YAML instructions);
       // this is only the fallback for tasks without an agent.
       instructions: flagship.instructions,
-      // Hard per-agent spend cap from the YAML (fails closed when exceeded).
-      budget: flagship.budget ? { policy: flagship.budget } : undefined,
+      // Hard per-agent spend cap (fails closed when exceeded): the agent's own
+      // `budget:` or, when omitted, the profile default (floor #7, §30.3).
+      budget: { policy: effectiveBudget },
       // The same limit as a hard per-task cap (Track 15, §0.4): one runaway
       // task cannot spend the whole agent budget.
-      taskBudget: flagship.budget,
+      taskBudget: effectiveBudget,
       // Track 12: thread history rides into the prompt, fenced as untrusted.
       loadContext: (task) => delivery.loadContext(task.sourceRef, { limit: 30 }),
       // Doc-task mode (§2b #16): "@marathon draft …" tasks get the doc-tool
