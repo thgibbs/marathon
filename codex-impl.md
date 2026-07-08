@@ -96,12 +96,57 @@ owning agent — never to every agent subscribed to `review` in general. A spec 
 to `review` without also subscribing to `draft` will never own an artifact and so is never
 invoked; see the validation note in §A.4 item 4.
 
-**Why these four events and not, say, a fifth "self-review before requesting human review"
-event:** the loop has no such step today — DRAFT hands straight to a human-reviewed PR, and
-BUILD hands straight to a human-reviewed PR (§29.9: native review is the review surface for
-both). "review" and "revise" name the *agent's own* response to that human review, which is
-the concrete, already-existing work each does. Stated assumption, open to renaming in review —
-no code depends on these four literal strings existing anywhere but the call sites below.
+**Why still four events, not five:** an earlier draft of this doc argued against a fifth
+"self-review before requesting human review" event on the grounds that the loop has no such
+step today. Per Slack clarification (2026-07-08, resolving the review-stages question this doc
+originally left open), that step is in fact wanted — but it's added by giving `review`/`revise`
+a second, automatic *trigger* rather than by adding a fifth event name: see §A.3a. `review` and
+`revise` still name exactly two things — the agent's own response to feedback on the design doc
+/ code PR respectively — whether that feedback comes from a human's PR comments or from the
+agent's own automatic pass over its freshly-opened PR. No code depends on these four literal
+strings existing anywhere but the call sites below.
+
+### A.3a Decision: automated review gate — failing review kicks back to the agent, never auto-merges
+
+Resolved via Slack clarification (2026-07-08): the two review stages named in the original ask
+(reviewing the design-doc PR, reviewing the implementation once the code PR exists) are not
+just differently-modeled *responses to human comments* — they are an automated review the
+*agent* runs on its own output, gating whether an automatic revision cycle fires. The rule, as
+stated by the requester: **a failing review kicks the draft/build back to the agent
+automatically, without a human confirming; a passing review still requires a human to merge.**
+Concretely:
+
+- No fifth event is added. `review` and `revise` keep the same two definitions from §A.2/§A.3
+  (agent's own response to feedback on the design doc / code PR respectively) — they simply
+  gain a **second trigger** alongside "a human posted PR review comments": immediately after
+  `draft` (for `review`) or `build` (for `revise`) completes and opens/updates the PR, the
+  owning agent automatically runs one review pass over its own diff, using the same
+  `review`/`revise` model role.
+- **Verdict, not comment-and-wait:** the review pass produces a pass/fail verdict (native
+  GitHub PR review: `APPROVE` or `REQUEST_CHANGES`), posted under the agent's identity so it's
+  visually distinguishable from a human review in the PR's review list (this reuses the
+  existing bot identity used for `document.create`/build-PR commits — no new identity needed).
+  - **Fail (`REQUEST_CHANGES`):** the same code path that already handles a human
+    review-comment-triggered revision (§A.4 items 1/3) fires immediately, treating the agent's
+    own `REQUEST_CHANGES` review as the triggering event — no human confirmation gates this
+    step. The revision run's own PR update then triggers another automatic review pass,
+    forming a loop.
+  - **Pass (`APPROVE`):** no automatic action follows. The PR sits exactly as it does today,
+    waiting on a human's merge decision — this is unchanged from current behavior and is the
+    concrete answer to "should it be advisory or blocking": the *kickback* is unconditional
+    (a fail always produces another revision round without asking a human first), but the
+    *merge* stays advisory-to-human always (an approve verdict never merges anything, and
+    nothing in this design ever merges a PR automatically).
+- **Loop cap, to bound cost/runaway cycles:** the auto-kickback loop above is capped at a small
+  fixed number of automatic rounds per PR (proposed: 2 — i.e., up to 2 automatic
+  fail-then-revise cycles before the agent stops retrying on its own). If the cap is hit while
+  still failing, the agent stops, leaves its last `REQUEST_CHANGES` review plus a note on the
+  PR explaining the cap was hit, and waits for a human — same "never merges without a human"
+  floor as the passing case, just reached via a different path. Exact cap value is a stated
+  assumption, easy to make configurable later; not fixed by this design.
+- **Cost consequence:** every `draft` and every `build` now unconditionally costs one extra
+  `review`/`revise`-role model call (the automatic self-review pass), even when no human ever
+  comments — see updated §A.6.
 
 ### A.4 Wiring changes
 
@@ -121,7 +166,10 @@ multi-agent-capable one:
      branch at draft time and resolve `resolveModelRef(models, "review")` for *that one spec
      only*, regardless of how many other specs list `review` in their `on:`. A spec that lists
      `review` without ever having drafted the artifact under review is simply never invoked for
-     it — see the validation note below.
+     it — see the validation note below. This same ownership-routed dispatch also handles the
+     automatic post-draft review pass (§A.3a) — the only difference is what triggers it (a
+     human's PR review vs. the agent's own scheduled follow-up immediately after `draft`
+     completes).
    - **Why draft fans out safely but review must not**: `draft` opens an independent doc-PR
      branch per subscribed agent, so two agents responding to the same `draft` event produce
      two independent PRs with no shared state. `review`, in contrast, is always about one
@@ -149,7 +197,9 @@ multi-agent-capable one:
    modelRef: (task) => resolveModelRef(models, task.sourceRef.kind === "code_revision" ? "revise" : "build"),
    ```
    This is the one call site that isn't a straight one-line swap — everywhere else the role is
-   known statically at the call site.
+   known statically at the call site. The automatic post-build review pass (§A.3a) spawns a
+   `code_revision`-shaped task the same way a human-triggered revision does, so it reaches this
+   same per-task role resolution with no separate code path.
 
    **`build`/`revise` do *not* get multi-agent fan-out in this pass**, unlike `draft` above:
    both write commits to one shared PR branch (the code PR), and two agents pushing concurrent
@@ -167,6 +217,13 @@ multi-agent-capable one:
    ownership routing (item 1) and first-registered-wins (item 3) mean such a spec can never
    actually be dispatched to, which is more likely a typo than an intentional read-only
    listener.
+5. **Automatic review scheduling** (§A.3a) — the draft path (item 1) and the build path
+   (items 2/3) each enqueue an automatic review-role follow-up task addressed to the owning
+   agent immediately after opening/updating their PR, instead of only ever running `review`/
+   `revise` in response to an inbound webhook. The per-PR automatic-round counter that
+   implements the loop cap is stamped on the branch's tracked metadata alongside the owning-
+   agent id already recorded in item 1, and is reset only when a *human* comment/review arrives
+   (a human requesting changes doesn't count against the agent's own automatic-retry budget).
 
 ### A.5 Non-goals (this pass)
 
@@ -189,6 +246,11 @@ multi-agent-capable one:
   knob to make them mutually exclusive or to rank them. (`review`/`revise`/`build` don't need
   this: `review` is ownership-routed to a single agent per artifact, §A.4 item 1; `build`/
   `revise` use first-registered-wins, §A.4 item 3.)
+- **Not** unconditional auto-merge — an `APPROVE` verdict from the agent's automatic review
+  (§A.3a) never triggers a merge; a human merge decision remains required in every case, pass
+  or fail.
+- **Not** an unbounded auto-kickback loop — capped at a small fixed number of automatic rounds
+  (§A.3a); beyond the cap the agent stops and waits on a human rather than retrying forever.
 
 ### A.6 Risk / cost note
 
@@ -199,6 +261,15 @@ recommend a specific split. Multi-agent fan-out on `draft` (§A.4 item 1) multip
 by the number of subscribed agents for that event specifically — `review` doesn't add this
 cost since it's ownership-routed to one agent per artifact, not fanned out — worth calling out
 to operators in the docs, though not a reason to gate the feature.
+
+The automatic review gate (§A.3a) adds a second, distinct cost dimension: every `draft` and
+every `build` now unconditionally spends one extra `review`/`revise`-role call for the
+self-review pass, even on runs a human never comments on — previously `review`/`revise` only
+ran when a human triggered them. A failing verdict compounds this up to the loop cap (§A.3a,
+proposed 2 rounds), so a single `draft` can cost up to 1 (draft) + up to 4 more (2 rounds of
+review + revise pairs) model calls before a human ever looks at it. Worth surfacing in the
+operator docs alongside the existing multi-agent fan-out note above, and a reason to keep the
+loop cap low rather than making it generous by default.
 
 ---
 
@@ -469,3 +540,5 @@ specifically before committing the rest of the build.
 - The BUILD step runner's per-task role resolution (§A.4 item 3) is the one wiring change
   that isn't a one-line swap; exact shape ("modelRef" becoming a function of the task) is left
   to BUILD, not fixed here.
+- Automatic-review loop cap (§A.3a) proposed at 2 rounds — a stated assumption, easy to tune
+  or make configurable later; not fixed by this design.
