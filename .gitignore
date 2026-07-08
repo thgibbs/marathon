@@ -5,6 +5,10 @@ node_modules/
 .env.*
 !.env.example
 
+# Local GitHub App private keys (.pem) — GITHUB_APP_PRIVATE_KEY_PATH points here.
+# Never commit a private key.
+.keys/
+
 # Local reference (third-party copyrighted blog) — do not commit
 design/Meta-harness.md
 
