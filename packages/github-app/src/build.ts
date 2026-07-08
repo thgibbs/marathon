@@ -1,6 +1,13 @@
 import { makeAgentRuntime, workspaceSandboxFromSpec, type WorkspaceSandboxOptions } from "@marathon/agent";
 import { CodeTaskRegistry } from "@marathon/code-handoff";
-import { agentSubscribesTo, grantFamilies, type AgentSpec, type SecretStore } from "@marathon/config";
+import {
+  agentSubscribesTo,
+  grantFamilies,
+  resolveEffectiveBudget,
+  type AgentSpec,
+  type ResolvedPosture,
+  type SecretStore,
+} from "@marathon/config";
 import {
   ghFamiliesForNames,
   makeDeliveryReportTool,
@@ -102,6 +109,13 @@ export interface BuildWiringOptions {
   modelProxyUrl?: string;
   defaultBranch?: string;
   diffDir?: string;
+  /**
+   * The deployment's resolved trust posture (§30). When set, the gateway reads
+   * the internal egress mode and an omitted `budget:` falls back to the profile
+   * default cap (floor #7). Optional so non-live callers (demos/tests) keep the
+   * bare-spec behavior.
+   */
+  posture?: ResolvedPosture;
 }
 
 export interface BuildWiring {
@@ -118,6 +132,9 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
   const { db, spec, secrets } = opts;
   const repo = spec.repo;
   if (!repo) throw new Error(`agent '${spec.name}': BUILD wiring requires the ONE configured repo (spec.repo)`);
+  // Floor #7 (§30.3): with a posture, an omitted `budget:` becomes the profile
+  // default cap (never unlimited); without one, keep the bare-spec value.
+  const effectiveBudget = opts.posture ? resolveEffectiveBudget(spec.budget, opts.posture) : spec.budget;
   // codex-impl.md §A.3/§A.4: an agent whose `on:` excludes `build` doesn't run
   // the BUILD loop at all — refuse to wire it rather than silently ignoring
   // the subscription list.
@@ -164,6 +181,8 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
     secrets,
     recorder: dbToolRecorder(db),
     sourceLedger: new InMemorySourceLedger(),
+    // §7.8 / §30.4: the gateway reads the profile's internal egress mode.
+    internalEgressMode: opts.posture?.internalEgressMode,
   });
 
   const governedTools = tools
@@ -198,8 +217,8 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
     cli: { settingsPath: "/etc/marathon/claude-settings.json" },
     // TCP broker for macOS Docker Desktop (§3.1): set MARATHON_BROKER_HOST=host.docker.internal.
     brokerHost: process.env.MARATHON_BROKER_HOST?.trim() || undefined,
-    getRemainingBudgetUsd: spec.budget
-      ? async (ctx) => spec.budget!.limitUsd - (await db.sumModelCostUsd(ctx.request.taskId))
+    getRemainingBudgetUsd: effectiveBudget
+      ? async (ctx) => effectiveBudget.limitUsd - (await db.sumModelCostUsd(ctx.request.taskId))
       : undefined,
   });
 
@@ -218,8 +237,9 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
     source: opts.source,
     modelRef: perTaskModelRef,
     instructions: spec.instructions,
-    // Hard per-task cost cap from the YAML (fails closed — Track 15).
-    taskBudget: spec.budget,
+    // Hard per-task cost cap (fails closed — Track 15): the spec's `budget:` or,
+    // under a posture, the profile default (floor #7, §30.3).
+    taskBudget: effectiveBudget,
     // §29.1a: the plan lives on the plans branch, not in the tree at base_sha —
     // fresh provisioning materializes it at its doc_path so it is readable AND
     // rides the diff into the code PR (main only carries shipped plans).

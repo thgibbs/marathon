@@ -1,4 +1,4 @@
-import type { SecretStore } from "@marathon/config";
+import type { InternalEgressMode, SecretStore } from "@marathon/config";
 import { redactSecrets, type RiskAxes } from "@marathon/core";
 import type { SourceLedger } from "./ledger";
 import { enforce, type PolicyDecision, type PolicyResult } from "./policy";
@@ -95,6 +95,15 @@ export interface ToolGatewayOptions {
   sourceLedger?: SourceLedger;
   /** Redact secrets from recorded summaries (on by default). */
   redactTrace?: boolean;
+  /**
+   * The deployment's internal egress mode (§7.8), set by the trust profile
+   * (§30.4). The gateway reads it and records the effective mode on the egress
+   * audit trail; `open` (the default) is today's behavior. Stricter modes'
+   * additional internal-audience enforcement binds at their tier (`team`/`org`),
+   * where identity linking supplies the acting-user + audience inputs — it is
+   * not silently enforced here.
+   */
+  internalEgressMode?: InternalEgressMode;
 }
 
 export interface RunOptions {
@@ -166,8 +175,9 @@ export class ToolGateway {
       const prior = this.opts.sourceLedger ? await this.opts.sourceLedger.list(ctx.taskId) : [];
       const violation = checkEgress(egressTarget, [...prior, ...sourcesRead]);
       if (violation) {
+        const mode = this.opts.internalEgressMode ?? "open";
         await this.record({ taskId: ctx.taskId, toolName, status: "blocked", riskAxes: tool.riskAxes, inputSummary, error: violation });
-        await this.audit(ctx, "egress.denied", `${toolName} -> ${egressTarget.destination}: ${violation}`);
+        await this.audit(ctx, "egress.denied", `[egress ${mode}] ${toolName} -> ${egressTarget.destination}: ${violation}`);
         throw new ToolBlockedError(violation, "deny", "egress_blocked");
       }
     }

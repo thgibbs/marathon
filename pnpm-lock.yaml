@@ -24,6 +24,30 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@22.20.0)
 
+  demos/floor:
+    dependencies:
+      '@marathon/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@marathon/connector-github':
+        specifier: workspace:*
+        version: link:../../packages/connector-github
+      '@marathon/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@marathon/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@marathon/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
+      '@marathon/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+      '@marathon/worker':
+        specifier: workspace:*
+        version: link:../../packages/worker
+
   demos/github-app:
     dependencies:
       '@marathon/agent':

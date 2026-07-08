@@ -18,16 +18,18 @@ describe("parseAgentSpec (Tracks 12 + 14)", () => {
       sandbox: { network: "bridge" },
       plans: { branch: "marathon-plans" },
       // Chat grounding is off by default when no repo is configured.
-      chat: { groundOnRepo: false, groundRef: "pinned", trustedDeployment: false },
+      // trusted_deployment is left UNSET (tri-state, §30.4): its default is
+      // profile-implied, resolved at wiring — not defaulted to false at parse.
+      chat: { groundOnRepo: false, groundRef: "pinned" },
     });
   });
 
   it("chat grounding defaults on when a repo is set, and parses the explicit block (chat-repo.md)", () => {
-    // Default: a repo makes grounding on; per-user verification stays on.
+    // Default: a repo makes grounding on; trusted_deployment stays unset
+    // (tri-state → profile-implied default resolved at wiring, §30.4).
     expect(parseAgentSpec({ name: "forge", instructions: "x", repo: "o/r" }).chat).toEqual({
       groundOnRepo: true,
       groundRef: "pinned",
-      trustedDeployment: false,
     });
     // Trusted-deployment opt-in (chat-repo.md §3.1).
     expect(

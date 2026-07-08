@@ -67,6 +67,9 @@ diagram is in [`diagram.md`](../diagram.md); the harness integration references 
 - [[13-model-and-cost-design]] — model abstraction, routing strategies, cost controls.
 - [[14-connector-design]] — connector interface, GitHub / database / Slack / document
   connectors, built-in vs MCP tool sources.
+- [[30-trust-profiles]] — one security model from solo dev to company: the invariant floor,
+  the profile ladder (`solo`/`team`/`org`/`hosted`), ratchet semantics, and the
+  trigger-sequenced plan.
 
 ## Experience & operations
 

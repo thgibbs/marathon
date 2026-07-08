@@ -3,6 +3,9 @@ import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { resolveTrustProfile, type ResolvedPosture, type TrustProfile } from "./profile";
+
+export * from "./profile";
 
 export interface Config {
   databaseUrl: string;
@@ -17,6 +20,13 @@ export interface Config {
    * each surface bootstraps its own tenant (demo/test behavior).
    */
   tenant: string | undefined;
+  /**
+   * The declared trust profile (design §30): the single named preset that sets
+   * the default of every posture knob. Defaults to `solo` — the kernel's
+   * existing posture, named — so an unset value changes nothing. The full
+   * resolved posture (with acknowledged loosenings) comes from `resolvePosture`.
+   */
+  trustProfile: TrustProfile;
 }
 
 const DEFAULT_DATABASE_URL = "postgres://marathon:marathon@localhost:5432/marathon";
@@ -27,6 +37,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     secretKey: env.MARATHON_SECRET_KEY,
     agentsDir: env.MARATHON_AGENTS_DIR ?? "agents",
     tenant: env.MARATHON_TENANT?.trim() || undefined,
+    trustProfile: resolveTrustProfile(env),
   };
 }
 
@@ -38,9 +49,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
  */
 export const KNOWN_MARATHON_ENV_VARS: readonly string[] = [
   "MARATHON_AGENTS_DIR",
+  "MARATHON_ALLOW_LOOSER_EGRESS",
+  "MARATHON_ALLOW_TRUSTED_DEPLOYMENT",
   "MARATHON_BROKER_HOST",
   "MARATHON_CLAUDE_SUBSCRIPTION_DEV",
   "MARATHON_GIT_TOKEN",
+  "MARATHON_INTERNAL_EGRESS_MODE",
   "MARATHON_LINK_BASE_URL",
   "MARATHON_MODEL_PROXY_URL",
   "MARATHON_SANDBOX",
@@ -49,6 +63,7 @@ export const KNOWN_MARATHON_ENV_VARS: readonly string[] = [
   "MARATHON_SANDBOX_OWNER",
   "MARATHON_SECRET_KEY",
   "MARATHON_TENANT",
+  "MARATHON_TRUST_PROFILE",
   "MARATHON_WEBHOOK_PROXY",
 ];
 
@@ -208,10 +223,16 @@ export interface AgentChatConfig {
    * user and treats all audiences as internal — skipping the per-user GitHub-link
    * check and the audience×visibility gate. Only safe when everyone who can reach
    * this surface is already trusted with the repo (a solo/private deployment).
-   * Default false: verify each user (prevents a confused-deputy leak of private
-   * code to workspace members who lack their own access).
+   *
+   * **Tri-state (§30.4, "profile-implied").** `undefined` means "not set in YAML"
+   * → defer to the trust profile's default (`solo` → on; `team`/`org` → off;
+   * `hosted` → forbidden). An explicit value in YAML is authoritative but a
+   * `true` looser than the profile default is a loosening (needs an ack) and is
+   * forbidden outright at `hosted`. Resolve the effective boolean with
+   * {@link resolveEffectiveTrustedDeployment}; never read this field directly at
+   * a wiring site.
    */
-  trustedDeployment: boolean;
+  trustedDeployment?: boolean;
 }
 
 /**
@@ -294,7 +315,9 @@ export function parseAgentSpec(value: unknown, source = "agent spec"): AgentSpec
     sandbox: { network: "bridge" },
     plans: { branch: DEFAULT_PLANS_BRANCH },
     // Default resolved after `repo` is parsed (grounding is on iff a repo is set).
-    chat: { groundOnRepo: false, groundRef: "pinned", trustedDeployment: false },
+    // `trustedDeployment` is left unset (tri-state): its default is profile-implied
+    // (§30.4), resolved at wiring by resolveEffectiveTrustedDeployment.
+    chat: { groundOnRepo: false, groundRef: "pinned" },
   };
   if (typeof v.display_name === "string") spec.displayName = v.display_name;
   if (typeof v.description === "string") spec.description = v.description;
@@ -557,4 +580,50 @@ export function validateHarnessConfig(
       );
     }
   }
+}
+
+/**
+ * The effective per-task budget for an agent (floor #7, §30.3): the agent's own
+ * `budget:` when set, else the trust profile's default cap. An omitted budget
+ * therefore means the profile default, NEVER "unlimited" — closing the as-built
+ * opt-in delta the floor calls out.
+ */
+export function resolveEffectiveBudget(
+  specBudget: AgentBudget | undefined,
+  posture: ResolvedPosture,
+): AgentBudget {
+  return specBudget ?? { limitUsd: posture.defaultBudgetUsd };
+}
+
+/**
+ * Resolve an agent's effective `chat.trusted_deployment` against the deployment
+ * posture (§30.4, tri-state). Fails closed and loud (§30.5):
+ * - `hosted` forbids it — an explicit `true` throws.
+ * - unset (`undefined`) → the profile default.
+ * - an explicit `true` looser than the profile default is a loosening: it
+ *   requires the `MARATHON_ALLOW_TRUSTED_DEPLOYMENT=1` acknowledgment or throws.
+ * - anything at-or-tighter than the default is applied silently.
+ */
+export function resolveEffectiveTrustedDeployment(
+  specValue: boolean | undefined,
+  posture: ResolvedPosture,
+  env: NodeJS.ProcessEnv = process.env,
+): { value: boolean; loosening: boolean } {
+  if (posture.chatTrustedDeploymentForbidden) {
+    if (specValue === true) {
+      throw new Error(
+        `chat.trusted_deployment is forbidden under trust profile '${posture.profile}' (§30.4) — remove it from the agent spec`,
+      );
+    }
+    return { value: false, loosening: false };
+  }
+  if (specValue === undefined) return { value: posture.chatTrustedDeploymentDefault, loosening: false };
+  const loosening = specValue === true && posture.chatTrustedDeploymentDefault === false;
+  if (loosening && env.MARATHON_ALLOW_TRUSTED_DEPLOYMENT !== "1") {
+    throw new Error(
+      `agent sets chat.trusted_deployment: true, looser than the '${posture.profile}' profile default (off) — ` +
+        "set MARATHON_ALLOW_TRUSTED_DEPLOYMENT=1 to acknowledge (§30.5)",
+    );
+  }
+  return { value: specValue, loosening };
 }

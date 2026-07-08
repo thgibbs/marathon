@@ -18,7 +18,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { assertSubscriptionAckIfNeeded, makeAgentRuntime, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
-import { agentSubscribesTo, EnvSecretStore, loadAgentSpecs, loadConfig, warnUnknownMarathonEnv } from "@marathon/config";
+import { agentSubscribesTo, EnvSecretStore, loadAgentSpecs, loadConfig, renderPostureBanner, resolvePosture, warnUnknownMarathonEnv } from "@marathon/config";
 import { ensureBranch, githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
 import { WebhookProxyClient } from "@marathon/surface-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
@@ -34,6 +34,9 @@ async function main(): Promise<void> {
   // §2b #13: a misspelled MARATHON_* variable fails silently otherwise.
   warnUnknownMarathonEnv();
   const cfg = loadConfig();
+  // §30.5 startup posture banner: state the effective trust posture at boot.
+  const posture = resolvePosture();
+  for (const line of renderPostureBanner(posture)) console.log(`[github-app] ${line}`);
   const secret = process.env.GITHUB_WEBHOOK_SECRET?.trim();
   const owner = process.env.GITHUB_OWNER?.trim();
   const port = Number(process.env.PORT ?? 8787);
@@ -202,6 +205,8 @@ async function main(): Promise<void> {
       // BUILD containers carry the same owner so the boot reaper covers them too.
       sandbox: { owner: sandboxOwner },
       sessionDir: join(tmpdir(), "marathon-sessions"),
+      // §30: the gateway reads the egress mode; an omitted budget → profile default.
+      posture,
     });
     const buildWorker = new Worker(queue, db, {
       stepRunner: build.stepRunner,
