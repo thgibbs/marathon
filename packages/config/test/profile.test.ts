@@ -4,6 +4,7 @@ import {
   looseningAuditEvent,
   PROFILE_DEFAULTS,
   renderPostureBanner,
+  renderSandboxResidualNote,
   resolveEffectiveBudget,
   resolveEffectiveTrustedDeployment,
   resolvePosture,
@@ -138,6 +139,17 @@ describe("trust profiles (§30)", () => {
         }),
       );
       expect(lines.join("\n")).toMatch(/LOOSENED/);
+    });
+  });
+
+  describe("renderSandboxResidualNote (§30.3 solo residual)", () => {
+    it("warns under an egress-open network (bridge)", () => {
+      const lines = renderSandboxResidualNote("bridge");
+      expect(lines.join("\n")).toMatch(/§30\.3 residual/);
+      expect(lines.join("\n")).toMatch(/NOT egress-protected/);
+    });
+    it("is silent when egress is locked (none)", () => {
+      expect(renderSandboxResidualNote("none")).toEqual([]);
     });
   });
 

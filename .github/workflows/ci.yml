@@ -105,5 +105,11 @@ jobs:
       - name: Automated demo (M9 security)
         run: pnpm --filter @marathon/demo-m9 start
 
+      # The trust-profile FLOOR contract (design §30.3): one deterministic case
+      # per invariant. In-memory (no Postgres/Docker) — a regression in the floor
+      # that holds in EVERY profile fails here.
+      - name: Floor contract (§30 trust profiles)
+        run: pnpm --filter @marathon/demo-floor start
+
       - name: Automated demo (M6.2 github webhook app)
         run: pnpm --filter @marathon/demo-github-app start

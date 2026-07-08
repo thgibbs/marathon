@@ -17,8 +17,8 @@
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { assertSubscriptionAckIfNeeded, makeAgentRuntime, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
-import { agentSubscribesTo, EnvSecretStore, loadAgentSpecs, loadConfig, looseningAuditEvent, renderPostureBanner, resolveEffectiveBudget, resolvePosture, warnUnknownMarathonEnv } from "@marathon/config";
+import { assertSubscriptionAckIfNeeded, makeAgentRuntime, resolveSandboxNetwork, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
+import { agentSubscribesTo, EnvSecretStore, loadAgentSpecs, loadConfig, looseningAuditEvent, renderPostureBanner, renderSandboxResidualNote, resolveEffectiveBudget, resolvePosture, warnUnknownMarathonEnv } from "@marathon/config";
 import { ensureBranch, githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
 import { WebhookProxyClient } from "@marathon/surface-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
@@ -80,6 +80,8 @@ async function main(): Promise<void> {
   // when omitted, the trust profile's default (never unlimited). Applies to the
   // doc/chat runtime here AND is recomputed inside makeBuildWiring for BUILD.
   const effectiveBudget = resolveEffectiveBudget(flagship.budget, posture);
+  // §30.3 fail-loud: state the one solo residual (bridge repo-text egress) at boot.
+  for (const line of renderSandboxResidualNote(resolveSandboxNetwork(flagship.sandbox))) console.log(`[github-app] ${line}`);
   // Fail closed BEFORE building any runtime (same guard as makeBuildWiring and
   // the Slack app): locked-down claude-code needs an internal Docker network
   // whose sole reachable endpoint is the model proxy. `network: none` severs

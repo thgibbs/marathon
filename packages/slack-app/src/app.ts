@@ -6,12 +6,13 @@ import {
   loadConfig,
   looseningAuditEvent,
   renderPostureBanner,
+  renderSandboxResidualNote,
   resolveEffectiveBudget,
   resolveEffectiveTrustedDeployment,
   resolvePosture,
   warnUnknownMarathonEnv,
 } from "@marathon/config";
-import { assertSubscriptionAckIfNeeded, makeAgentRuntime, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
+import { assertSubscriptionAckIfNeeded, makeAgentRuntime, resolveSandboxNetwork, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
 import { ensureBranch, githubAuthFromEnv, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools, makeUserRepoAccessChecker } from "@marathon/connector-github";
 import { CodeWorkspace } from "@marathon/code-handoff";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
@@ -90,6 +91,8 @@ export async function startSlackApp(): Promise<void> {
   // Floor #7 (§30.3): the effective per-task cap — the agent's own `budget:` or,
   // when omitted, the trust profile's default (never unlimited).
   const effectiveBudget = resolveEffectiveBudget(flagship.budget, posture);
+  // §30.3 fail-loud: state the one solo residual (bridge repo-text egress) at boot.
+  for (const line of renderSandboxResidualNote(resolveSandboxNetwork(flagship.sandbox))) console.log(`[slack-app] ${line}`);
   const boot = await bootstrapSlackApp(db, { teamId, teamName: auth.team, tenantName: cfg.tenant, specs });
   // §30.5: persist an audit event for each acknowledged loosening so it survives
   // log rotation (the banner is transient; the acknowledgment is a security fact).

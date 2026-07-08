@@ -179,6 +179,23 @@ export function renderPostureBanner(posture: ResolvedPosture): string[] {
   return lines;
 }
 
+/**
+ * Fail-loud note for the one stated solo residual (§30.3): under a non-`none`
+ * sandbox network (the default `bridge`), an injected agent's *code* could POST
+ * workspace/repo text outbound — credentials are floor-protected everywhere,
+ * repo text under `bridge` is not. Lockdown (`sandbox.network: none`) removes it
+ * (Pi today; Claude Code once the K7 internal-network model-proxy lands, §30.9).
+ * `effectiveNetwork` is the resolved sandbox network (`resolveSandboxNetwork`);
+ * returns no lines when egress is locked.
+ */
+export function renderSandboxResidualNote(effectiveNetwork: string): string[] {
+  if (effectiveNetwork === "none") return [];
+  return [
+    `sandbox network: ${effectiveNetwork} — ⚠ §30.3 residual: repo/workspace text is NOT egress-protected`,
+    "  (an injected agent's code could exfiltrate it; credentials ARE floor-protected). Lockdown pending K7 (§30.9).",
+  ];
+}
+
 /** The shape of an audit event this module emits — a structural subset of core's `NewAuditEvent`. */
 export interface PostureAuditEvent {
   tenantId: string;
