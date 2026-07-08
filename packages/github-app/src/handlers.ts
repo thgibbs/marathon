@@ -1,5 +1,5 @@
 import type { AgentRuntime } from "@marathon/agent";
-import { DEFAULT_PLANS_BRANCH } from "@marathon/config";
+import { agentSubscribesTo, DEFAULT_PLANS_BRANCH, type AgentModelPolicy, type KernelEvent } from "@marathon/config";
 import { getRepoAccess, type GithubClient, type GithubDelivery } from "@marathon/connector-github";
 import {
   emptyCheckpoint,
@@ -12,6 +12,7 @@ import {
 } from "@marathon/core";
 import { Database } from "@marathon/db";
 import type { MemoryStore } from "@marathon/memory";
+import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
 import { DeliveryFanout, type AgentDescriptor, type NormalizedInvocation } from "@marathon/surface";
 import { classifyGithubEvent } from "@marathon/surface-github";
 import {
@@ -57,7 +58,21 @@ export interface GithubAppDeps {
   agentIdByName: Record<string, Id>;
   defaultAgent?: string;
   docBasePath?: string;
-  modelRef?: string;
+  /**
+   * This deployment's model-routing policy (codex-impl.md §A.3/§A.4): draft
+   * and design-review resolve their own role (`draft` / `design-review`)
+   * instead of sharing one flat default; `build`/`code-review` are resolved
+   * separately in the BUILD wiring (build.ts). Falls back to the platform
+   * default policy when unset.
+   */
+  models?: AgentModelPolicy;
+  /**
+   * Kernel events this deployment's configured agent responds to; omitted
+   * means all four (today's behavior, unchanged). Gates the draft/
+   * design-review dispatch below — the BUILD wiring enforces its own gate
+   * for `build` (build.ts).
+   */
+  on?: KernelEvent[];
   /**
    * The plans branch (§29.1a): doc PRs target it, and only a doc PR merged
    * INTO it is an approval. Default `marathon-plans`. Setting it to the
@@ -98,7 +113,7 @@ function fanoutOf(deps: GithubAppDeps): DeliveryFanout {
 export async function handleGithubMention(deps: GithubAppDeps, invocation: NormalizedInvocation): Promise<void> {
   const repo = String(invocation.sourceRef.repo);
   const number = Number(invocation.sourceRef.number);
-  const modelRef = deps.modelRef ?? "openai:gpt-4o-mini";
+  const models = deps.models ?? DEFAULT_MODEL_POLICY;
 
   // Repo-permission check (§7.17): agent AND invoking user must be able to access the repo.
   const access = await getRepoAccess(deps.client, repo, String(invocation.userExternalId));
@@ -136,6 +151,18 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
     invocation.sourceRef.kind === "pr" ? await deps.db.findDocumentArtifactByPr(deps.tenantId, repo, number) : null;
   const loc = (existing?.location ?? {}) as { path?: string; branch?: string };
   if (existing && loc.path && loc.branch) {
+    // codex-impl.md §A.3/§A.4 item 1: design-review is ownership-routed to
+    // the agent that drafted the artifact — this deployment's single
+    // configured runtime is that owner iff it subscribes to design-review.
+    if (!agentSubscribesTo({ on: deps.on }, "design-review")) {
+      await deps.delivery.deliverResult(
+        { repo, number },
+        { summary: "This agent isn't configured to respond to design-doc review comments (on: excludes design-review)." },
+      );
+      await deps.db.transitionTask(task.id, "running");
+      await deps.db.transitionTask(task.id, "completed");
+      return;
+    }
     const current = await deps.client.readFileWithSha(repo, loc.path, loc.branch).catch(() => ({ content: "", sha: "" }));
     const prompt = await buildAgentPrompt({ db: deps.db, memory: deps.memory }, task, {
       basePersona: REVISE_PERSONA,
@@ -148,7 +175,7 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
         taskId: task.id,
         instructions: prompt.instructions,
         input: prompt.input,
-        modelRef,
+        modelRef: resolveModelRef(models, "design-review"),
         // Governed tool calls run under this task's identity (policy + audit).
         tenantId: deps.tenantId,
         agentId,
@@ -178,6 +205,20 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
     return;
   }
 
+  // codex-impl.md §A.3: this deployment's configured agent only drafts when
+  // subscribed to the `draft` event (default: every event, unchanged today).
+  // Multi-agent fan-out across several `draft`-subscribed specs (§A.4 item 1)
+  // is future work — this deployment still runs the ONE configured runtime.
+  if (!agentSubscribesTo({ on: deps.on }, "draft")) {
+    await deps.delivery.deliverResult(
+      { repo, number },
+      { summary: "This agent isn't configured to draft design docs (on: excludes draft)." },
+    );
+    await deps.db.transitionTask(task.id, "running");
+    await deps.db.transitionTask(task.id, "completed");
+    return;
+  }
+
   // Draft a new design-doc PR. Tool-driven (§2b #16): the agent opens the PR
   // by calling `document.create` itself (the gateway's configured plans-branch
   // base applies, §29.1a, and its onDocumentPr recorder persists the
@@ -194,7 +235,7 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
       taskId: task.id,
       instructions: prompt.instructions,
       input: prompt.input,
-      modelRef,
+      modelRef: resolveModelRef(models, "draft"),
       // Governed tool calls run under this task's identity (policy + audit).
       tenantId: deps.tenantId,
       agentId,

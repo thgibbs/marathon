@@ -119,6 +119,32 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
     expect(res.checkpoint.completedSteps).toEqual(["turn:0", "turn:1", "build:final"]);
   });
 
+  it("modelRef as a function resolves PER TASK (codex-impl.md §A.4 item 3: build vs code-review)", async () => {
+    const seenModelRefs: string[] = [];
+    const runtime = new ScriptedBuildRuntime({
+      turns: [
+        async ({ request }) => (seenModelRefs.push(request.modelRef ?? ""), "done"),
+      ],
+    });
+    const modelRef = (task: Task) => ((task.sourceRef as { kind?: unknown }).kind === "code_revision" ? "openai:code-review" : "openai:build");
+
+    const implTask = makeTask();
+    const run1 = makeBuildStepRunner({ db: makeDb(implTask).db, runtime, registry: new CodeTaskRegistry(), source: origin, modelRef });
+    await run1({ taskId: implTask.id, checkpoint: emptyCheckpoint() });
+
+    const revisionTask = makeTask({
+      sourceRef: {
+        kind: "code_revision",
+        planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: baseSha },
+        baseSha,
+      },
+    });
+    const run2 = makeBuildStepRunner({ db: makeDb(revisionTask).db, runtime, registry: new CodeTaskRegistry(), source: origin, modelRef });
+    await run2({ taskId: revisionTask.id, checkpoint: emptyCheckpoint() });
+
+    expect(seenModelRefs).toEqual(["openai:build", "openai:code-review"]);
+  });
+
   it("crash mid-run, then resume: fresh workspace + replayed diff, no repeated turns", async () => {
     const task = makeTask();
     const { db, steps } = makeDb(task);

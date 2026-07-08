@@ -24,7 +24,7 @@ import { WebhookProxyClient } from "@marathon/surface-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { bootstrapGithubApp, handleIdentityRequest, handleWebhookRequest, makeBuildWiring, type GithubAppDeps, type IdentityLinkDeps } from "@marathon/github-app";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
-import { DEFAULT_MODEL_POLICY, resolveModelRef } from "@marathon/model-gateway";
+import { DEFAULT_MODEL_POLICY } from "@marathon/model-gateway";
 import { Queue } from "@marathon/queue";
 import { DeliveryFanout } from "@marathon/surface";
 import { InMemorySourceLedger, installSandboxShutdownHandler, reapSandboxContainers, ToolGateway, toolPolicyFromSpec, ToolRegistry } from "@marathon/tools";
@@ -167,8 +167,10 @@ async function main(): Promise<void> {
     agents: boot.agents,
     agentIdByName: boot.agentIdByName,
     defaultAgent: boot.defaultAgent,
-    // Model policy from the spec (Track 15) — no hardcoded fallback here.
-    modelRef: resolveModelRef(flagship.models ?? DEFAULT_MODEL_POLICY),
+    // Model policy from the spec (codex-impl.md §A.3/§A.4): draft/design-review
+    // resolve their own role at the call site — no hardcoded flat default.
+    models: flagship.models ?? DEFAULT_MODEL_POLICY,
+    on: flagship.on,
     plansBranch,
     defaultBranch: "main",
   };

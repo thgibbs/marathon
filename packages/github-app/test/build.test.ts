@@ -60,6 +60,14 @@ describe("makeBuildWiring (Track 15 — the coherent BUILD loop from one spec)",
     ).toBe("openai:gpt-4o");
   });
 
+  it("refuses to wire when 'on' excludes 'build' (codex-impl.md §A.3/§A.4)", () => {
+    expect(() => wire(makeSpec({ on: ["draft", "design-review", "code-review"] }))).toThrow(
+      /'on' does not include 'build'/,
+    );
+    expect(() => wire(makeSpec({ on: ["build"] }))).not.toThrow();
+    expect(() => wire(makeSpec())).not.toThrow(); // omitted 'on' — every event, unchanged behavior
+  });
+
   it("registers only the granted brokered tools", async () => {
     const { gateway } = wire(makeSpec({ tools: [{ tool: "git.exec", families: ["push"] }] }));
     // Ungranted tools are absent from the gateway entirely (not just denied).

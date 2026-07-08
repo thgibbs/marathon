@@ -161,6 +161,49 @@ describe("draft flow (§2b #16 — tool-driven)", () => {
   });
 });
 
+describe("event-scoped model routing + 'on' gating (codex-impl.md §A.3/§A.4)", () => {
+  it("resolves the 'draft' role instead of a flat default", async () => {
+    const { deps, turnContexts } = makeDeps({
+      turnText: "Drafted.",
+      artifactByTask: { location: { repo: REPO, prNumber: 7, path: "docs/plan.md", branch: "marathon/doc-x" } },
+    });
+    (deps as { models?: unknown }).models = { default: "openai:gpt-4o-mini", draft: "openai:gpt-4o" };
+    await handleGithubMention(deps, invocation());
+    expect(turnContexts[0]!.request.modelRef).toBe("openai:gpt-4o");
+  });
+
+  it("resolves the 'design-review' role for a revision", async () => {
+    const { deps, turnContexts } = makeDeps({
+      turnText: "Tightened.",
+      artifactByPr: { location: { repo: REPO, prNumber: 5, path: "docs/plan.md", branch: "marathon/doc-b" } },
+      okInvocations: 1,
+    });
+    (deps as { models?: unknown }).models = { default: "openai:gpt-4o-mini", "design-review": "openai:gpt-4o" };
+    await handleGithubMention(deps, invocation({ sourceRef: { repo: REPO, number: 5, kind: "pr" } }));
+    expect(turnContexts[0]!.request.modelRef).toBe("openai:gpt-4o");
+  });
+
+  it("skips drafting (no runtime turn) when 'on' excludes 'draft'", async () => {
+    const { deps, delivered, turnContexts, transitions } = makeDeps({ artifactByTask: null });
+    (deps as { on?: unknown }).on = ["build", "code-review"];
+    await handleGithubMention(deps, invocation());
+    expect(turnContexts).toHaveLength(0);
+    expect(delivered[0]!.summary).toContain("excludes draft");
+    expect(transitions).toEqual([["doc-task", "running"], ["doc-task", "completed"]]);
+  });
+
+  it("skips design-review (no runtime turn) when 'on' excludes 'design-review'", async () => {
+    const { deps, delivered, turnContexts, transitions } = makeDeps({
+      artifactByPr: { location: { repo: REPO, prNumber: 5, path: "docs/plan.md", branch: "marathon/doc-b" } },
+    });
+    (deps as { on?: unknown }).on = ["draft", "build", "code-review"];
+    await handleGithubMention(deps, invocation({ sourceRef: { repo: REPO, number: 5, kind: "pr" } }));
+    expect(turnContexts).toHaveLength(0);
+    expect(delivered[0]!.summary).toContain("excludes design-review");
+    expect(transitions).toEqual([["doc-task", "running"], ["doc-task", "completed"]]);
+  });
+});
+
 describe("revise flow (§2b #16 — tool-driven)", () => {
   const prInvocation = () =>
     invocation({ sourceRef: { repo: REPO, number: 5, kind: "pr" }, text: "tighten the limits section" });
