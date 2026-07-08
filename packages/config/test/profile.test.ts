@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   loadConfig,
+  looseningAuditEvent,
   PROFILE_DEFAULTS,
   renderPostureBanner,
   resolveEffectiveBudget,
@@ -137,6 +138,26 @@ describe("trust profiles (§30)", () => {
         }),
       );
       expect(lines.join("\n")).toMatch(/LOOSENED/);
+    });
+  });
+
+  describe("looseningAuditEvent (§30.5 — persisted acknowledgment)", () => {
+    it("builds a posture.loosened event from a loosening (survives log rotation)", () => {
+      const p = resolvePosture({
+        MARATHON_TRUST_PROFILE: "team",
+        MARATHON_INTERNAL_EGRESS_MODE: "open",
+        MARATHON_ALLOW_LOOSER_EGRESS: "1",
+      });
+      const ev = looseningAuditEvent("tenant-1", p.profile, p.loosenings[0]!);
+      expect(ev.tenantId).toBe("tenant-1");
+      expect(ev.eventType).toBe("posture.loosened");
+      expect(ev.summary).toMatch(/loosened/);
+      expect(ev.metadata).toMatchObject({
+        knob: "internal egress mode",
+        from: "on-behalf-of",
+        to: "open",
+        profile: "team",
+      });
     });
   });
 });

@@ -4,6 +4,7 @@ import {
   EnvSecretStore,
   loadAgentSpecs,
   loadConfig,
+  looseningAuditEvent,
   renderPostureBanner,
   resolveEffectiveBudget,
   resolveEffectiveTrustedDeployment,
@@ -90,6 +91,9 @@ export async function startSlackApp(): Promise<void> {
   // when omitted, the trust profile's default (never unlimited).
   const effectiveBudget = resolveEffectiveBudget(flagship.budget, posture);
   const boot = await bootstrapSlackApp(db, { teamId, teamName: auth.team, tenantName: cfg.tenant, specs });
+  // §30.5: persist an audit event for each acknowledged loosening so it survives
+  // log rotation (the banner is transient; the acknowledgment is a security fact).
+  for (const d of posture.loosenings) await db.write(looseningAuditEvent(boot.tenantId, posture.profile, d));
 
   // GitHub auth (§2b #15): App installation tokens when GITHUB_APP_ID +
   // GITHUB_APP_PRIVATE_KEY are set, so doc PRs drafted from Slack are also
@@ -228,6 +232,16 @@ export async function startSlackApp(): Promise<void> {
     flagship.chat.trustedDeployment,
     posture,
   );
+  // §30.5: a per-agent trusted_deployment loosening is a security fact too — audit it.
+  if (trustedDeploymentLoosened) {
+    await db.write(
+      looseningAuditEvent(boot.tenantId, posture.profile, {
+        knob: "chat.trusted_deployment",
+        profileDefault: "off",
+        effective: "on",
+      }),
+    );
+  }
   const { checkAccess, audienceTrust } = resolveChatAccessWiring(
     trustedDeployment,
     cfg.secretKey ? makeUserRepoAccessChecker({ db, masterSecret: cfg.secretKey }) : undefined,

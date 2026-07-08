@@ -80,7 +80,11 @@ export interface ResolvedPosture {
   defaultBudgetUsd: number;
   /** Every knob deviating from the profile default. */
   deviations: PostureDeviation[];
-  /** The subset of deviations that are loosenings — logged loudly + audited (§30.5). */
+  /**
+   * The subset of deviations that are loosenings — logged loudly in the boot
+   * banner AND persisted as an audit event at boot (via {@link looseningAuditEvent}),
+   * so the acknowledgment survives log rotation (§30.5).
+   */
   loosenings: PostureDeviation[];
 }
 
@@ -173,4 +177,33 @@ export function renderPostureBanner(posture: ResolvedPosture): string[] {
     lines.push(`  ${d.loosening ? "⚠ " : ""}${d.knob}: ${d.effective} — ${tag} from profile default "${d.profileDefault}"`);
   }
   return lines;
+}
+
+/** The shape of an audit event this module emits — a structural subset of core's `NewAuditEvent`. */
+export interface PostureAuditEvent {
+  tenantId: string;
+  eventType: string;
+  summary: string;
+  metadata: Record<string, unknown>;
+}
+
+/**
+ * The audit event for one acknowledged loosening (§30.5: "loosening ... writes
+ * an audit event"). Pure — returns a `NewAuditEvent`-shaped object the caller
+ * persists via its `AuditWriter` (`db.write`) at boot, so the acknowledgment
+ * survives log rotation. Kept structural so this package needs no `core` dep.
+ * `d` accepts any deviation-shaped value (a `posture.loosenings` entry, or a
+ * per-agent loosening such as `chat.trusted_deployment`).
+ */
+export function looseningAuditEvent(
+  tenantId: string,
+  profile: TrustProfile,
+  d: Pick<PostureDeviation, "knob" | "profileDefault" | "effective">,
+): PostureAuditEvent {
+  return {
+    tenantId,
+    eventType: "posture.loosened",
+    summary: `${d.knob} loosened to "${d.effective}" (profile '${profile}' default "${d.profileDefault}") — acknowledged (§30.5)`,
+    metadata: { knob: d.knob, from: d.profileDefault, to: d.effective, profile },
+  };
 }

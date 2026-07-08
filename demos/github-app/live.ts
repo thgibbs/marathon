@@ -18,7 +18,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { assertSubscriptionAckIfNeeded, makeAgentRuntime, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
-import { agentSubscribesTo, EnvSecretStore, loadAgentSpecs, loadConfig, renderPostureBanner, resolvePosture, warnUnknownMarathonEnv } from "@marathon/config";
+import { agentSubscribesTo, EnvSecretStore, loadAgentSpecs, loadConfig, looseningAuditEvent, renderPostureBanner, resolveEffectiveBudget, resolvePosture, warnUnknownMarathonEnv } from "@marathon/config";
 import { ensureBranch, githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
 import { WebhookProxyClient } from "@marathon/surface-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
@@ -76,6 +76,10 @@ async function main(): Promise<void> {
   // become the gateway policy below — editing the YAML narrows the surface.
   const specs = await loadAgentSpecs(cfg.agentsDir);
   const flagship = specs[0]!;
+  // Floor #7 (§30.3): the effective per-task cap — the agent's own `budget:` or,
+  // when omitted, the trust profile's default (never unlimited). Applies to the
+  // doc/chat runtime here AND is recomputed inside makeBuildWiring for BUILD.
+  const effectiveBudget = resolveEffectiveBudget(flagship.budget, posture);
   // Fail closed BEFORE building any runtime (same guard as makeBuildWiring and
   // the Slack app): locked-down claude-code needs an internal Docker network
   // whose sole reachable endpoint is the model proxy. `network: none` severs
@@ -100,6 +104,9 @@ async function main(): Promise<void> {
     console.log(`[github-app] claude-code model auth: ${mode}`);
   }
   const boot = await bootstrapGithubApp(db, { owner, tenantName: cfg.tenant, specs });
+  // §30.5: persist an audit event for each acknowledged loosening so it survives
+  // log rotation (the banner is transient; the acknowledgment is a security fact).
+  for (const d of posture.loosenings) await db.write(looseningAuditEvent(boot.tenantId, posture.profile, d));
   // Dynamic auth keeps this long-running client valid across the ~1h
   // installation-token expiry (it refreshes per request + retries on 401).
   const client = new HttpGithubClient(auth.tokenSource ?? (await secrets.get("secret/github"))!);
@@ -132,6 +139,8 @@ async function main(): Promise<void> {
     secrets,
     recorder: dbToolRecorder(db),
     sourceLedger: new InMemorySourceLedger(),
+    // §7.8 / §30.4: the doc/read gateway reads the profile's internal egress mode.
+    internalEgressMode: posture.internalEgressMode,
   });
   const deps: GithubAppDeps = {
     db,
@@ -160,9 +169,9 @@ async function main(): Promise<void> {
         cli: { settingsPath: "/etc/marathon/claude-settings.json" },
         // TCP broker for macOS Docker Desktop (§3.1): set MARATHON_BROKER_HOST=host.docker.internal.
         brokerHost: process.env.MARATHON_BROKER_HOST?.trim() || undefined,
-        getRemainingBudgetUsd: flagship.budget
-          ? async (ctx) => flagship.budget!.limitUsd - (await db.sumModelCostUsd(ctx.request.taskId))
-          : undefined,
+        // Floor #7 (§30.3): an omitted `budget:` means the profile default cap,
+        // never unlimited — so draft/design-review doc tasks are always capped.
+        getRemainingBudgetUsd: async (ctx) => effectiveBudget.limitUsd - (await db.sumModelCostUsd(ctx.request.taskId)),
       }),
       { root: join(tmpdir(), "marathon-chat-workspaces") },
     ),
