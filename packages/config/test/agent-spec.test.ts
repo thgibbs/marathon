@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { grantFamilies, loadAgentSpec, loadAgentSpecs, parseAgentSpec, resolveAgentsDir } from "../src/index";
+import { agentSubscribesTo, grantFamilies, loadAgentSpec, loadAgentSpecs, parseAgentSpec, resolveAgentsDir } from "../src/index";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -115,6 +115,22 @@ describe("parseAgentSpec (Tracks 12 + 14)", () => {
     expect(spec.keywords).toEqual(["code", "implement"]);
     expect(grantFamilies(spec, "github.exec")).toEqual(["pr view", "pr create"]);
     expect(grantFamilies(spec, "delivery.report_pr")).toBeUndefined();
+  });
+
+  it("parses 'on' (codex-impl.md §A.3); omitted means every event responds", () => {
+    const restricted = parseAgentSpec({ name: "forge", instructions: "x", on: ["build", "code-review"] });
+    expect(restricted.on).toEqual(["build", "code-review"]);
+    expect(agentSubscribesTo(restricted, "build")).toBe(true);
+    expect(agentSubscribesTo(restricted, "draft")).toBe(false);
+
+    const unset = parseAgentSpec({ name: "forge", instructions: "x" });
+    expect(unset.on).toBeUndefined();
+    for (const e of ["draft", "design-review", "build", "code-review"] as const) {
+      expect(agentSubscribesTo(unset, e)).toBe(true);
+    }
+
+    expect(() => parseAgentSpec({ name: "forge", instructions: "x", on: [] })).toThrow(/'on'/);
+    expect(() => parseAgentSpec({ name: "forge", instructions: "x", on: ["merge"] })).toThrow(/unknown event/);
   });
 
   it("rejects invalid harness, repo, sandbox, models, and budget values", () => {

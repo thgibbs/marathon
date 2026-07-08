@@ -58,4 +58,24 @@ describe("validateHarnessConfig (K7 §13.1 fail-closed)", () => {
     expect(parsed.harness).toBe("claude-code");
     expect(() => validateHarnessConfig(parsed)).not.toThrow();
   });
+
+  it("warns (not fails) on an 'on' list that can never be dispatched to (§A.4 item 4)", () => {
+    const warnings: string[] = [];
+    const warn = (m: string) => warnings.push(m);
+
+    validateHarnessConfig(spec({ on: ["design-review"] }), warn);
+    expect(warnings).toEqual([expect.stringContaining("'design-review' without 'draft'")]);
+
+    warnings.length = 0;
+    validateHarnessConfig(spec({ on: ["code-review"] }), warn);
+    expect(warnings).toEqual([expect.stringContaining("'code-review' without 'build'")]);
+
+    warnings.length = 0;
+    validateHarnessConfig(spec({ on: ["draft", "design-review", "build", "code-review"] }), warn);
+    expect(warnings).toEqual([]);
+
+    warnings.length = 0;
+    validateHarnessConfig(spec({}), warn); // omitted 'on' — no warning
+    expect(warnings).toEqual([]);
+  });
 });

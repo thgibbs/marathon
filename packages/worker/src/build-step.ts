@@ -39,7 +39,15 @@ export interface BuildStepOptions {
    * (possibly credentialed) URL. Never reaches the sandbox (§29.2).
    */
   source: string | ((task: Task) => string | Promise<string>);
-  modelRef: string;
+  /**
+   * The model for this task's turns. A plain string keeps every BUILD-stage
+   * task on one role (pre-codex-impl.md behavior); a function resolves it
+   * PER TASK from `task.sourceRef.kind` so a `code_revision` task (§A.4 item
+   * 3) can route to a different role (e.g. `code-review`) than a fresh
+   * `implementation` task (`build`) — the one call site in codex-impl.md's
+   * Part A that isn't a static one-line role swap.
+   */
+  modelRef: string | ((task: Task) => string);
   instructions?: string;
   /**
    * Hard per-task cost cap (Track 15, §0.4). Enforced before the run starts
@@ -160,7 +168,7 @@ export function makeBuildStepRunner(opts: BuildStepOptions) {
             `your last checkpoint (turn ${checkpoint.turnIndex}). Re-verify anything that was in ` +
             `flight and continue the task.\n\nOriginal task: ${task.inputText ?? ""}`
           : task.inputText ?? "",
-        modelRef: opts.modelRef,
+        modelRef: typeof opts.modelRef === "function" ? opts.modelRef(task) : opts.modelRef,
         tenantId: task.tenantId,
         agentId: task.agentId ?? undefined,
       };

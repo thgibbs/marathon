@@ -1,6 +1,6 @@
 import { makeAgentRuntime, workspaceSandboxFromSpec, type WorkspaceSandboxOptions } from "@marathon/agent";
 import { CodeTaskRegistry } from "@marathon/code-handoff";
-import { grantFamilies, type AgentSpec, type SecretStore } from "@marathon/config";
+import { agentSubscribesTo, grantFamilies, type AgentSpec, type SecretStore } from "@marathon/config";
 import {
   ghFamiliesForNames,
   makeDeliveryReportTool,
@@ -118,6 +118,12 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
   const { db, spec, secrets } = opts;
   const repo = spec.repo;
   if (!repo) throw new Error(`agent '${spec.name}': BUILD wiring requires the ONE configured repo (spec.repo)`);
+  // codex-impl.md §A.3/§A.4: an agent whose `on:` excludes `build` doesn't run
+  // the BUILD loop at all — refuse to wire it rather than silently ignoring
+  // the subscription list.
+  if (!agentSubscribesTo(spec, "build")) {
+    throw new Error(`agent '${spec.name}': 'on' does not include 'build' — refusing to wire the BUILD loop`);
+  }
 
   const registry = new CodeTaskRegistry();
   const allowedRepos = [repo];
@@ -197,16 +203,20 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
       : undefined,
   });
 
-  // Model from the spec (§7.19 kernel slice): the `build` role when the YAML
-  // routes one, else the policy default. Advanced routing stays deferred.
-  const modelRef = resolveModelRef(spec.models ?? DEFAULT_MODEL_POLICY, "build");
+  // Model from the spec (codex-impl.md §A.4 item 2/3): the `build` role for a
+  // fresh implementation, `code-review` for a code_revision task — resolved
+  // PER TASK since one BUILD step runner serves both (§A.4 item 3).
+  const models = spec.models ?? DEFAULT_MODEL_POLICY;
+  const modelRef = resolveModelRef(models, "build");
+  const perTaskModelRef = (task: Task) =>
+    resolveModelRef(models, (task.sourceRef as { kind?: unknown })?.kind === "code_revision" ? "code-review" : "build");
 
   const stepRunner = makeBuildStepRunner({
     db,
     runtime,
     registry,
     source: opts.source,
-    modelRef,
+    modelRef: perTaskModelRef,
     instructions: spec.instructions,
     // Hard per-task cost cap from the YAML (fails closed — Track 15).
     taskBudget: spec.budget,

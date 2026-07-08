@@ -158,6 +158,15 @@ export interface AgentModelPolicy {
   [role: string]: string;
 }
 
+/**
+ * The four canonical kernel-loop events (codex-impl.md §A.3): something that
+ * happened and needs a response. `on:` in an agent's YAML names which of
+ * these it subscribes to; `models.<event>` (an open `AgentModelPolicy` key,
+ * no schema change needed there) routes that event to its own model.
+ */
+export const KERNEL_EVENTS = ["draft", "design-review", "build", "code-review"] as const;
+export type KernelEvent = (typeof KERNEL_EVENTS)[number];
+
 /** Hard per-task spend cap (design §7.11); structurally a BudgetPolicy. */
 export interface AgentBudget {
   limitUsd: number;
@@ -231,6 +240,11 @@ export interface AgentSpec {
   chat: AgentChatConfig;
   /** Model routing; when omitted the deployment default policy applies. */
   models?: AgentModelPolicy;
+  /**
+   * Kernel events this agent responds to (codex-impl.md §A.3); omitted means
+   * all four (today's single-agent behavior, unchanged).
+   */
+  on?: KernelEvent[];
   /** Hard spend cap; when omitted no budget is enforced. */
   budget?: AgentBudget;
   /** Keywords used for default-agent selection on multi-agent deployments. */
@@ -375,6 +389,17 @@ export function parseAgentSpec(value: unknown, source = "agent spec"): AgentSpec
     }
     spec.models = models;
   }
+  if (v.on !== undefined) {
+    if (!Array.isArray(v.on) || v.on.length === 0) {
+      throw new Error(`${source}: 'on' must be a non-empty list of events (${KERNEL_EVENTS.join(" | ")})`);
+    }
+    for (const e of v.on) {
+      if (!KERNEL_EVENTS.includes(e as KernelEvent)) {
+        throw new Error(`${source}: 'on' has unknown event ${JSON.stringify(e)} (must be one of ${KERNEL_EVENTS.join(" | ")})`);
+      }
+    }
+    spec.on = v.on as KernelEvent[];
+  }
   if (v.budget !== undefined) {
     if (!v.budget || typeof v.budget !== "object") {
       throw new Error(`${source}: 'budget' must be a mapping`);
@@ -479,6 +504,14 @@ export function grantFamilies(spec: AgentSpec, tool: string): string[] | undefin
 }
 
 /**
+ * Does this agent respond to `event` (codex-impl.md §A.3)? An omitted `on:`
+ * subscribes to all four canonical events — today's single-agent behavior.
+ */
+export function agentSubscribesTo(spec: Pick<AgentSpec, "on">, event: KernelEvent): boolean {
+  return (spec.on ?? KERNEL_EVENTS).includes(event);
+}
+
+/**
  * Fail-closed cross-validation for the Claude Code harness (K7, design §13.1:
  * the harness choice constrains the provider). An agent with `harness:
  * claude-code` MUST route to an Anthropic model — Claude Code speaks only the
@@ -491,9 +524,26 @@ export function grantFamilies(spec: AgentSpec, tool: string): string[] | undefin
  * under locked-down egress (`network: none`) — a posture-specific check the
  * runtime enforces (`resolveModelAccessEnv`), not a config-load one.
  */
-export function validateHarnessConfig(spec: AgentSpec): void {
-  if (spec.harness !== "claude-code") return;
+export function validateHarnessConfig(
+  spec: AgentSpec,
+  warn: (msg: string) => void = console.warn,
+): void {
   const source = `agent '${spec.name}'`;
+  // codex-impl.md §A.4 item 4: `design-review`/`code-review` are ownership-
+  // routed to whichever spec drafted/built the artifact, and `build`/
+  // `code-review` are first-registered-wins — a spec that subscribes to one
+  // without the event that would ever make it the owner can never actually be
+  // dispatched to. Likely a typo'd `on:` list, not unsafe, so warn only.
+  if (spec.on) {
+    if (spec.on.includes("design-review") && !spec.on.includes("draft")) {
+      warn(`${source}: 'on' lists 'design-review' without 'draft' — this spec can never own a drafted artifact, so it will never be dispatched to (§A.4)`);
+    }
+    if (spec.on.includes("code-review") && !spec.on.includes("build")) {
+      warn(`${source}: 'on' lists 'code-review' without 'build' — this spec can never own a built change, so it will never be dispatched to (§A.4)`);
+    }
+  }
+
+  if (spec.harness !== "claude-code") return;
   if (!spec.models) {
     throw new Error(
       `${source}: harness 'claude-code' requires an Anthropic 'models' policy (§13.1) — the deployment default may not be Anthropic`,

@@ -77,6 +77,7 @@ interface StubOptions {
   userPermission?: string;
   reviewComments?: Array<{ id: number; author: string; body: string; path: string; line: number | null }>;
   artifactByPr?: { location: Record<string, unknown> } | null;
+  on?: string[];
 }
 
 // Stubs are `as never` at the test boundary (see AGENTS.md rule 1).
@@ -92,6 +93,12 @@ function makeDeps(opts: StubOptions = {}) {
     deliverResult: async () => {},
   };
   const turnRequests: Array<Record<string, unknown>> = [];
+  const deliverResult = vi.fn(async () => {});
+  const route = vi.fn(async (inv: { text: string }) => ({
+    task: { ...makeImplTask(), id: "doc-task", inputText: inv.text },
+    agentName: "forge",
+    deduped: false,
+  }));
   const deps = {
     db: {
       findCodeChangeByPr: async () => opts.change ?? null,
@@ -114,15 +121,11 @@ function makeDeps(opts: StubOptions = {}) {
     delivery: {
       acknowledge: async () => {},
       postProgress: async (_ref: Record<string, unknown>, message: string) => void progress.push(message),
-      deliverResult: async () => {},
+      deliverResult,
     },
     router: {
       // The real router persists the invocation text as the task's inputText.
-      route: async (inv: { text: string }) => ({
-        task: { ...makeImplTask(), id: "doc-task", inputText: inv.text },
-        agentName: "forge",
-        deduped: false,
-      }),
+      route,
     },
     runtime: {
       nextTurn: async (ctx: { request: Record<string, unknown> }) => {
@@ -135,8 +138,9 @@ function makeDeps(opts: StubOptions = {}) {
     tenantId: "tn1",
     agents: [{ name: "forge" }],
     agentIdByName: { forge: "a1" },
+    on: opts.on,
   } as never as GithubAppDeps;
-  return { deps, submit, progress, turnRequests };
+  return { deps, submit, progress, turnRequests, deliverResult, route };
 }
 
 describe("renderReviewRequest (§2b #11)", () => {
@@ -220,6 +224,24 @@ describe("handleGithubReview — doc PR (§2b #11)", () => {
     expect(String(turnRequests[0]!.instructions)).toContain("document_revise");
     expect(String(turnRequests[0]!.input)).toContain("Please handle empty names.");
     expect(String(turnRequests[0]!.input)).toContain("docs/plan.md:4 — tighten §2");
+  });
+
+  // codex-impl.md §A.3/§A.4: review-triggered dispatch has no explicit summon
+  // — an agent that doesn't subscribe to design-review must stay a SILENT
+  // no-op here (no task, no turn, no visible reply), unlike an explicit
+  // @mention which still gets a "not configured" reply (handled inside
+  // handleGithubMention).
+  it("silently no-ops when 'on' excludes 'design-review' (no task, no reply, no spam)", async () => {
+    const { deps, submit, turnRequests, deliverResult, route } = makeDeps({
+      change: null,
+      artifactByPr: { location: { repo: REPO, prNumber: CODE_PR, path: "docs/plan.md", branch: "marathon/doc-b" } },
+      on: ["draft", "build", "code-review"],
+    });
+    expect(await handleGithubReview(deps, review())).toBe(true);
+    expect(route).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+    expect(turnRequests).toHaveLength(0);
+    expect(deliverResult).not.toHaveBeenCalled();
   });
 });
 
