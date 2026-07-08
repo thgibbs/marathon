@@ -70,7 +70,9 @@ export function resolveAppPrivateKey(env: NodeJS.ProcessEnv = process.env): stri
     try {
       key = readFileSync(path, "utf8").trim();
     } catch (e) {
-      throw new Error(`GITHUB_APP_PRIVATE_KEY_PATH: cannot read '${path}': ${(e as Error).message}`);
+      throw new Error(
+        `GITHUB_APP_PRIVATE_KEY_PATH: cannot read '${path}': ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   } else {
     key = env.GITHUB_APP_PRIVATE_KEY?.trim() || undefined;
