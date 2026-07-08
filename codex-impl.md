@@ -33,13 +33,13 @@ is wired to a distinct role. The other three all collapse onto a single flat val
 | Kernel stage (§0.1 loop: ask → design doc → review → merged plan → code → PR) | Call site | Model used today |
 | --- | --- | --- |
 | **Draft** the design doc | `handleGithubMention` draft path (`packages/github-app/src/handlers.ts`) | `deps.modelRef ?? "openai:gpt-4o-mini"` — a flat default, ignores `spec.models` |
-| **Review**: revise the design doc from PR review comments | `handleGithubMention` revise path + `handleGithubReview` (doc branch) | same flat `deps.modelRef` as draft — indistinguishable from it |
+| **PR-review**: revise the design doc from PR review comments | `handleGithubMention` revise path + `handleGithubReview` (doc branch) | same flat `deps.modelRef` as draft — indistinguishable from it |
 | **Build**: implement the merged plan | `makeBuildWiring` → `makeBuildStepRunner` | `resolveModelRef(spec.models, "build")` — already role-routed |
-| **Review**: revise the code PR from review comments/mentions | `handleCodePrRevision` → routed through `isBuildTask` to the same BUILD step runner | same `"build"` role as fresh implementation — indistinguishable from it |
+| **Code-review**: revise the code PR from review comments/mentions | `handleCodePrRevision` → routed through `isBuildTask` to the same BUILD step runner | same `"build"` role as fresh implementation — indistinguishable from it |
 
 So today an operator can already give BUILD its own model, but cannot give DRAFT a cheaper
-model, cannot give doc-REVIEW a different model than DRAFT, and cannot give a post-merge
-code-REVIEW pass a different (e.g. more careful/adversarial) model than BUILD itself. There is
+model, cannot give PR-REVIEW a different model than DRAFT, and cannot give a post-merge
+CODE-REVIEW pass a different (e.g. more careful/adversarial) model than BUILD itself. There is
 also, today, no notion of an agent *subscribing* to a kind of happening at all — one agent
 instance implicitly handles all four stages because the control flow in `handlers.ts`/
 `build.ts` hardcodes which function runs for which webhook. §A.2 names that gap explicitly.
@@ -71,13 +71,13 @@ Introduce four **reserved event names**, one per kernel stage, resolved via the 
 ```yaml
 name: forge
 harness: claude-code
-on: [draft, review, build, revise]   # events this agent responds to; omit = all four (today's behavior, unchanged)
+on: [draft, pr-review, build, code-review]   # events this agent responds to; omit = all four (today's behavior, unchanged)
 models:
-  default: openai:gpt-4o-mini   # required; fallback for any event not set below
-  draft:   openai:gpt-4o        # drafting the design-doc PR
-  review:  openai:gpt-4o        # revising the design doc from human review comments
-  build:   openai:gpt-4o        # implementing the merged plan               (existing role)
-  revise:  openai:gpt-4o        # revising the code PR from human review comments/mentions
+  default:      openai:gpt-4o-mini   # required; fallback for any event not set below
+  draft:        openai:gpt-4o        # drafting the design-doc PR
+  pr-review:    openai:gpt-4o        # revising the design doc from human review comments
+  build:        openai:gpt-4o        # implementing the merged plan               (existing role)
+  code-review:  openai:gpt-4o        # revising the code PR from human review comments/mentions
 ```
 
 No config-schema change beyond the new `on:` field: `AgentModelPolicy`/`ModelPolicy` are
@@ -89,22 +89,22 @@ model resolving to `default`.
 A deployment can register more than one `AgentSpec` (already possible — `21-example-agents.md`
 shows several sample agents). Two or more specs may list `draft` in `on:` — e.g. a `forge`
 agent handling `draft`/`build` alongside a separate `security-reviewer` agent that also lists
-`on: [draft, review]` and drafts its own independent doc PR from the same ask, with its own
+`on: [draft, pr-review]` and drafts its own independent doc PR from the same ask, with its own
 instructions/model. Each drafted artifact is owned by the agent that drafted it; §A.4 fans out
-`draft` to every subscribed agent, but routes each artifact's `review` events only back to its
-owning agent — never to every agent subscribed to `review` in general. A spec that subscribes
-to `review` without also subscribing to `draft` will never own an artifact and so is never
-invoked; see the validation note in §A.4 item 4.
+`draft` to every subscribed agent, but routes each artifact's `pr-review` events only back to
+its owning agent — never to every agent subscribed to `pr-review` in general. A spec that
+subscribes to `pr-review` without also subscribing to `draft` will never own an artifact and so
+is never invoked; see the validation note in §A.4 item 4.
 
 **Why still four events, not five:** an earlier draft of this doc argued against a fifth
 "self-review before requesting human review" event on the grounds that the loop has no such
 step today. Per Slack clarification (2026-07-08, resolving the review-stages question this doc
-originally left open), that step is in fact wanted — but it's added by giving `review`/`revise`
-a second, automatic *trigger* rather than by adding a fifth event name: see §A.3a. `review` and
-`revise` still name exactly two things — the agent's own response to feedback on the design doc
-/ code PR respectively — whether that feedback comes from a human's PR comments or from the
-agent's own automatic pass over its freshly-opened PR. No code depends on these four literal
-strings existing anywhere but the call sites below.
+originally left open), that step is in fact wanted — but it's added by giving `pr-review`/
+`code-review` a second, automatic *trigger* rather than by adding a fifth event name: see
+§A.3a. `pr-review` and `code-review` still name exactly two things — the agent's own response
+to feedback on the design doc / code PR respectively — whether that feedback comes from a
+human's PR comments or from the agent's own automatic pass over its freshly-opened PR. No code
+depends on these four literal strings existing anywhere but the call sites below.
 
 ### A.3a Decision: automated review gate — failing review kicks back to the agent, never auto-merges
 
@@ -116,12 +116,12 @@ stated by the requester: **a failing review kicks the draft/build back to the ag
 automatically, without a human confirming; a passing review still requires a human to merge.**
 Concretely:
 
-- No fifth event is added. `review` and `revise` keep the same two definitions from §A.2/§A.3
-  (agent's own response to feedback on the design doc / code PR respectively) — they simply
-  gain a **second trigger** alongside "a human posted PR review comments": immediately after
-  `draft` (for `review`) or `build` (for `revise`) completes and opens/updates the PR, the
-  owning agent automatically runs one review pass over its own diff, using the same
-  `review`/`revise` model role.
+- No fifth event is added. `pr-review` and `code-review` keep the same two definitions from
+  §A.2/§A.3 (agent's own response to feedback on the design doc / code PR respectively) — they
+  simply gain a **second trigger** alongside "a human posted PR review comments": immediately
+  after `draft` (for `pr-review`) or `build` (for `code-review`) completes and opens/updates the
+  PR, the owning agent automatically runs one review pass over its own diff, using the same
+  `pr-review`/`code-review` model role.
 - **Verdict, not comment-and-wait:** the review pass produces a pass/fail verdict (native
   GitHub PR review: `APPROVE` or `REQUEST_CHANGES`), posted under the agent's identity so it's
   visually distinguishable from a human review in the PR's review list (this reuses the
@@ -145,8 +145,8 @@ Concretely:
   floor as the passing case, just reached via a different path. Exact cap value is a stated
   assumption, easy to make configurable later; not fixed by this design.
 - **Cost consequence:** every `draft` and every `build` now unconditionally costs one extra
-  `review`/`revise`-role model call (the automatic self-review pass), even when no human ever
-  comments — see updated §A.6.
+  `pr-review`/`code-review`-role model call (the automatic self-review pass), even when no
+  human ever comments — see updated §A.6.
 
 ### A.4 Wiring changes
 
@@ -163,67 +163,68 @@ multi-agent-capable one:
      the branch → task mapping).
    - `handleGithubMention` revise path (existing artifact branch) / `handleGithubReview` doc-PR
      branch → **ownership-routed, not fanned out**: look up the agent id stamped on the target
-     branch at draft time and resolve `resolveModelRef(models, "review")` for *that one spec
-     only*, regardless of how many other specs list `review` in their `on:`. A spec that lists
-     `review` without ever having drafted the artifact under review is simply never invoked for
-     it — see the validation note below. This same ownership-routed dispatch also handles the
-     automatic post-draft review pass (§A.3a) — the only difference is what triggers it (a
-     human's PR review vs. the agent's own scheduled follow-up immediately after `draft`
-     completes).
-   - **Why draft fans out safely but review must not**: `draft` opens an independent doc-PR
+     branch at draft time and resolve `resolveModelRef(models, "pr-review")` for *that one spec
+     only*, regardless of how many other specs list `pr-review` in their `on:`. A spec that
+     lists `pr-review` without ever having drafted the artifact under review is simply never
+     invoked for it — see the validation note below. This same ownership-routed dispatch also
+     handles the automatic post-draft review pass (§A.3a) — the only difference is what
+     triggers it (a human's PR review vs. the agent's own scheduled follow-up immediately after
+     `draft` completes).
+   - **Why draft fans out safely but pr-review must not**: `draft` opens an independent doc-PR
      branch per subscribed agent, so two agents responding to the same `draft` event produce
-     two independent PRs with no shared state. `review`, in contrast, is always about one
-     specific existing branch; if it fanned out to every agent subscribed to `review` the way
-     `draft` fans out, two agents could both call `document.revise` against that one branch and
-     race/overwrite each other's commits — the exact hazard §A.4 item 3 already calls out for
-     `build`/`revise`, just reachable through `review` too if left unfixed. Routing by the
-     branch's recorded owner instead of by subscription list closes that gap without needing
-     branch-per-agent machinery for review.
-   - **Config-validation consequence**: an `AgentSpec` that lists `review` but not `draft` (or
-     `revise` but not `build`) can never be dispatched to under ownership routing, since it will
-     never own an artifact. `validateHarnessConfig` (item 4 below) warns on this combination
-     rather than failing closed, since it's a likely misconfiguration (e.g. a typo'd `on:` list)
-     but not an unsafe one.
+     two independent PRs with no shared state. `pr-review`, in contrast, is always about one
+     specific existing branch; if it fanned out to every agent subscribed to `pr-review` the
+     way `draft` fans out, two agents could both call `document.revise` against that one branch
+     and race/overwrite each other's commits — the exact hazard §A.4 item 3 already calls out
+     for `build`/`code-review`, just reachable through `pr-review` too if left unfixed. Routing
+     by the branch's recorded owner instead of by subscription list closes that gap without
+     needing branch-per-agent machinery for pr-review.
+   - **Config-validation consequence**: an `AgentSpec` that lists `pr-review` but not `draft`
+     (or `code-review` but not `build`) can never be dispatched to under ownership routing,
+     since it will never own an artifact. `validateHarnessConfig` (item 4 below) warns on this
+     combination rather than failing closed, since it's a likely misconfiguration (e.g. a
+     typo'd `on:` list) but not an unsafe one.
 2. **`makeBuildWiring`** (`packages/github-app/src/build.ts`) — unchanged for fresh
    implementation (`"build"` role stays as-is), except it now resolves the set of specs
    subscribed to `build` rather than assuming exactly one.
 3. **BUILD step runner role split** — `handleCodePrRevision` spawns a `code_revision` task that
    is currently routed by `isBuildTask`/`makeLoopStepRunner` to the *same* BUILD step runner
-   instance, which was constructed with one baked-in `modelRef`. To give code-review/revision
-   its own role, `makeBuildStepRunner`'s `modelRef` option becomes resolved **per task** from
-   the task's `sourceRef.kind` rather than fixed at construction:
+   instance, which was constructed with one baked-in `modelRef`. To give code-review its own
+   role, `makeBuildStepRunner`'s `modelRef` option becomes resolved **per task** from the
+   task's `sourceRef.kind` rather than fixed at construction:
    ```ts
    // packages/worker/src/build-step.ts (sketch — exact shape decided in BUILD)
-   modelRef: (task) => resolveModelRef(models, task.sourceRef.kind === "code_revision" ? "revise" : "build"),
+   modelRef: (task) => resolveModelRef(models, task.sourceRef.kind === "code_revision" ? "code-review" : "build"),
    ```
    This is the one call site that isn't a straight one-line swap — everywhere else the role is
    known statically at the call site. The automatic post-build review pass (§A.3a) spawns a
    `code_revision`-shaped task the same way a human-triggered revision does, so it reaches this
    same per-task role resolution with no separate code path.
 
-   **`build`/`revise` do *not* get multi-agent fan-out in this pass**, unlike `draft` above:
-   both write commits to one shared PR branch (the code PR), and two agents pushing concurrent
-   commits to the same branch is a real conflict (racing pushes, overlapping edits), not a
-   cosmetic one. If more than one `AgentSpec` subscribes to `build` or `revise` for the same
-   repo, dispatch picks the first registered spec and logs a warning that the others were
-   skipped — full support (branch-per-agent, or serialized turns) is future work, tracked as a
-   non-goal in §A.5.
+   **`build`/`code-review` do *not* get multi-agent fan-out in this pass**, unlike `draft`
+   above: both write commits to one shared PR branch (the code PR), and two agents pushing
+   concurrent commits to the same branch is a real conflict (racing pushes, overlapping edits),
+   not a cosmetic one. If more than one `AgentSpec` subscribes to `build` or `code-review` for
+   the same repo, dispatch picks the first registered spec and logs a warning that the others
+   were skipped — full support (branch-per-agent, or serialized turns) is future work, tracked
+   as a non-goal in §A.5.
 4. **`validateHarnessConfig`** (`packages/config/src/index.ts`) — already iterates
    `Object.entries(spec.models)` generically for the `claude-code` Anthropic-only check, so the
-   two new roles (`draft`, `review`, `revise` — `build` already covered) are validated for free;
-   no change needed there. The new `on:` field gets a small validation of its own: unknown event
-   names fail closed with a config error (rather than silently never firing). It also warns
-   (not fails) when a spec lists `review` without `draft`, or `revise` without `build` —
-   ownership routing (item 1) and first-registered-wins (item 3) mean such a spec can never
-   actually be dispatched to, which is more likely a typo than an intentional read-only
-   listener.
+   two new roles (`draft`, `pr-review`, `code-review` — `build` already covered) are validated
+   for free; no change needed there. The new `on:` field gets a small validation of its own:
+   unknown event names fail closed with a config error (rather than silently never firing). It
+   also warns (not fails) when a spec lists `pr-review` without `draft`, or `code-review`
+   without `build` — ownership routing (item 1) and first-registered-wins (item 3) mean such a
+   spec can never actually be dispatched to, which is more likely a typo than an intentional
+   read-only listener.
 5. **Automatic review scheduling** (§A.3a) — the draft path (item 1) and the build path
    (items 2/3) each enqueue an automatic review-role follow-up task addressed to the owning
-   agent immediately after opening/updating their PR, instead of only ever running `review`/
-   `revise` in response to an inbound webhook. The per-PR automatic-round counter that
-   implements the loop cap is stamped on the branch's tracked metadata alongside the owning-
-   agent id already recorded in item 1, and is reset only when a *human* comment/review arrives
-   (a human requesting changes doesn't count against the agent's own automatic-retry budget).
+   agent immediately after opening/updating their PR, instead of only ever running
+   `pr-review`/`code-review` in response to an inbound webhook. The per-PR automatic-round
+   counter that implements the loop cap is stamped on the branch's tracked metadata alongside
+   the owning-agent id already recorded in item 1, and is reset only when a *human*
+   comment/review arrives (a human requesting changes doesn't count against the agent's own
+   automatic-retry budget).
 
 ### A.5 Non-goals (this pass)
 
@@ -239,13 +240,13 @@ multi-agent-capable one:
   checked against the four fixed events the kernel loop already produces from GitHub webhooks
   (issue mention, doc-PR review, plan-merge, code-PR review/mention). No new event sources, no
   dynamic registration, no cross-repo fan-out in this pass.
-- **Not** multi-agent fan-out for `build`/`revise` — see the conflict note in §A.4 item 3;
+- **Not** multi-agent fan-out for `build`/`code-review` — see the conflict note in §A.4 item 3;
   first-registered-spec-wins plus a warning is the interim behavior, not a real solution.
 - **Not** any priority/exclusivity mechanism for `draft`, the one event that fans out to every
   subscriber — if two specs subscribe to `draft`, both run, unconditionally; there's no config
-  knob to make them mutually exclusive or to rank them. (`review`/`revise`/`build` don't need
-  this: `review` is ownership-routed to a single agent per artifact, §A.4 item 1; `build`/
-  `revise` use first-registered-wins, §A.4 item 3.)
+  knob to make them mutually exclusive or to rank them. (`pr-review`/`code-review`/`build`
+  don't need this: `pr-review` is ownership-routed to a single agent per artifact, §A.4 item 1;
+  `build`/`code-review` use first-registered-wins, §A.4 item 3.)
 - **Not** unconditional auto-merge — an `APPROVE` verdict from the agent's automatic review
   (§A.3a) never triggers a merge; a human merge decision remains required in every case, pass
   or fail.
@@ -254,22 +255,22 @@ multi-agent-capable one:
 
 ### A.6 Risk / cost note
 
-Splitting `review`/`revise` from `draft`/`build` lets an operator route the (usually shorter,
-more surgical) review/revise turns to a cheaper model than the (usually longer, more
-generative) draft/build turns, or vice versa — purely an operator choice; this doc does not
-recommend a specific split. Multi-agent fan-out on `draft` (§A.4 item 1) multiplies model spend
-by the number of subscribed agents for that event specifically — `review` doesn't add this
-cost since it's ownership-routed to one agent per artifact, not fanned out — worth calling out
-to operators in the docs, though not a reason to gate the feature.
+Splitting `pr-review`/`code-review` from `draft`/`build` lets an operator route the (usually
+shorter, more surgical) pr-review/code-review turns to a cheaper model than the (usually
+longer, more generative) draft/build turns, or vice versa — purely an operator choice; this doc
+does not recommend a specific split. Multi-agent fan-out on `draft` (§A.4 item 1) multiplies
+model spend by the number of subscribed agents for that event specifically — `pr-review`
+doesn't add this cost since it's ownership-routed to one agent per artifact, not fanned out —
+worth calling out to operators in the docs, though not a reason to gate the feature.
 
 The automatic review gate (§A.3a) adds a second, distinct cost dimension: every `draft` and
-every `build` now unconditionally spends one extra `review`/`revise`-role call for the
-self-review pass, even on runs a human never comments on — previously `review`/`revise` only
-ran when a human triggered them. A failing verdict compounds this up to the loop cap (§A.3a,
-proposed 2 rounds), so a single `draft` can cost up to 1 (draft) + up to 4 more (2 rounds of
-review + revise pairs) model calls before a human ever looks at it. Worth surfacing in the
-operator docs alongside the existing multi-agent fan-out note above, and a reason to keep the
-loop cap low rather than making it generous by default.
+every `build` now unconditionally spends one extra `pr-review`/`code-review`-role call for the
+self-review pass, even on runs a human never comments on — previously `pr-review`/`code-review`
+only ran when a human triggered them. A failing verdict compounds this up to the loop cap
+(§A.3a, proposed 2 rounds), so a single `draft` can cost up to 1 (draft) + up to 4 more (2
+rounds of pr-review + code-review pairs) model calls before a human ever looks at it. Worth
+surfacing in the operator docs alongside the existing multi-agent fan-out note above, and a
+reason to keep the loop cap low rather than making it generous by default.
 
 ---
 
@@ -523,13 +524,14 @@ specifically before committing the rest of the build.
 
 ## Open questions / stated assumptions (flagging for review, not blocking on them)
 
-- Event/role names `draft` / `review` / `build` / `revise` (§A.3) — easy to rename in review;
-  no code depends on the literal strings beyond the four call sites listed.
+- Event/role names finalized as `draft` / `pr-review` / `build` / `code-review` (§A.3) —
+  renamed from `review`/`revise` per Slack request (2026-07-08); no code depends on the literal
+  strings beyond the four call sites listed.
 - Multi-agent fan-out is in scope this pass only for `draft` (a comment/PR-creation event);
-  `review` subscribes multiple agents but routes each event to a single owning agent per
-  artifact rather than fanning out (§A.4 item 1); `build`/`revise` (code-writing events) keep
-  single-agent dispatch with a first-registered-wins fallback and a warning if more than one
-  spec subscribes (§A.4 item 3, §A.5) — full concurrent-writer support (branch-per-agent or
+  `pr-review` subscribes multiple agents but routes each event to a single owning agent per
+  artifact rather than fanning out (§A.4 item 1); `build`/`code-review` (code-writing events)
+  keep single-agent dispatch with a first-registered-wins fallback and a warning if more than
+  one spec subscribes (§A.4 item 3, §A.5) — full concurrent-writer support (branch-per-agent or
   serialized turns) is future work.
 - Whether `on:` fan-out is scoped per-repo or globally across all deployments watching a repo —
   assumed per-repo (the natural scope of an `AgentSpec` registration); flagging as a stated
