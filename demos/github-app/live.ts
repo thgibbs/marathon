@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { assertSubscriptionAckIfNeeded, makeAgentRuntime, resolveSandboxNetwork, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
 import { agentSubscribesTo, EnvSecretStore, loadAgentSpecs, loadConfig, looseningAuditEvent, renderPostureBanner, renderSandboxResidualNote, resolveEffectiveBudget, resolvePosture, warnUnknownMarathonEnv } from "@marathon/config";
-import { githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
+import { githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools, makeReviewReportTool } from "@marathon/connector-github";
 import { WebhookProxyClient } from "@marathon/surface-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { bootstrapGithubApp, handleIdentityRequest, handleWebhookRequest, makeBuildWiring, type AgentRuntimeEntry, type GithubAppDeps, type IdentityLinkDeps } from "@marathon/github-app";
@@ -147,6 +147,11 @@ async function main(): Promise<void> {
       registry: new ToolRegistry([
         ...makeGithubReadTools(httpGithubClientFactory()),
         ...makeDocumentTools(httpGithubClientFactory(), { docBase: defaultBranch, onDocumentPr: makeDocumentPrRecorder(db) }),
+        // §A.3a: a reviewer agent's terminal step — post the verdict comment.
+        // Only agents granted `review.report` (the reviewer specs) can call it;
+        // the policy gates the rest. The verdict-recording hook that drives the
+        // kickback loop is wired in Phase 3.
+        makeReviewReportTool({ getClient: httpGithubClientFactory() }),
       ]),
       policy: toolPolicyFromSpec(spec),
       secrets,
