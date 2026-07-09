@@ -27,16 +27,21 @@ import {
 describe("codexArgv (K8 §11)", () => {
   const base = { bin: "codex", prompt: "implement the plan", model: "gpt-5-codex" };
 
-  it("first turn: exec --json <prompt> --sandbox workspace-write --ask-for-approval never --model --cd", () => {
+  it("first turn: exec --json <prompt> --sandbox workspace-write --model --cd", () => {
     const argv = codexArgv(base);
     expect(argv.slice(0, 3)).toEqual(["codex", "exec", "--json"]);
     // No resume subcommand on the first turn; prompt is positional after --json.
     expect(argv).not.toContain("resume");
     expect(argv[3]).toBe("implement the plan");
     expect(argv.join(" ")).toContain("--sandbox workspace-write");
-    expect(argv.join(" ")).toContain("--ask-for-approval never");
     expect(argv.join(" ")).toContain("--model gpt-5-codex");
     expect(argv.join(" ")).toContain("--cd /workspace");
+  });
+
+  it("does NOT pass --ask-for-approval (removed from `codex exec`; exec is non-interactive)", () => {
+    // Older codex accepted it; current codex-cli exits 2 on the unknown flag.
+    expect(codexArgv(base)).not.toContain("--ask-for-approval");
+    expect(codexArgv({ ...base, resumeSessionId: "s" })).not.toContain("--ask-for-approval");
   });
 
   it("resume: `resume <sid>` is a subcommand right after exec, prompt after it (§2.1)", () => {
@@ -60,7 +65,7 @@ describe("codexArgv (K8 §11)", () => {
 
   it("carries no secret material in the argv (§4.1)", () => {
     const argv = codexArgv({ ...base, resumeSessionId: "sess-xyz", model: "gpt-5-codex", prompt: "do the thing" }).join(" ");
-    // "--ask-for-approval" incidentally contains "sk-", so anchor on real key shapes.
+    // Anchor on real key shapes (the key rides the container env, never argv).
     expect(argv).not.toMatch(/\bsk-[a-z]|api[_-]?key|CODEX_API_KEY/i);
   });
 });

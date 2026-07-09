@@ -276,7 +276,7 @@ export interface CodexArgvParams {
  * Build the `codex exec` argv for one harness turn (pure + exported so flags and
  * secret-freedom can be asserted without a CLI). Mirrors codex-cli-impl.md §11.
  *
- * First turn:   `codex exec --json "<prompt>" --sandbox … --ask-for-approval never --model … --cd /workspace`
+ * First turn:   `codex exec --json "<prompt>" --sandbox … --model … --cd /workspace`
  * Resume (§2.1): `codex exec --json resume <sid> "<prompt>" …` — `resume <sid>`
  * is a subcommand right after `exec`, the prompt after it. Never `--ephemeral`
  * (it would disable the durable session persistence resume depends on, §5.2).
@@ -286,10 +286,11 @@ export function codexArgv(p: CodexArgvParams): string[] {
   const argv = [p.bin, "exec", "--json"];
   if (p.resumeSessionId) argv.push("resume", p.resumeSessionId);
   argv.push(p.prompt);
+  // `codex exec` is non-interactive by design — it never raises approval prompts,
+  // so approval mode is not a flag here (the sandbox policy below is the only
+  // execution control). Recent codex-cli removed `--ask-for-approval` from
+  // `exec` entirely: passing it makes the CLI exit 2 before the session starts.
   argv.push("--sandbox", p.readOnly ? "read-only" : "workspace-write");
-  // Headless runs can't answer approval prompts; the Marathon MCP server is
-  // pre-approved in config.toml (§3.3). No `--yolo` on the happy path.
-  argv.push("--ask-for-approval", "never");
   argv.push("--model", p.model);
   argv.push("--cd", GUEST_WORKSPACE);
   return argv;

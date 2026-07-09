@@ -423,14 +423,21 @@ Codex attaches Marathon's governed tools exactly like Claude Code: `marathon-mcp
 stdio MCP server in `config.toml`'s `[mcp_servers.marathon]`, forwarding every `tools/call` to
 the host broker. **Reused verbatim — no new shim.**
 
-**Default: `--ask-for-approval never` with the Marathon MCP server pre-approved, not `--yolo`.**
-The current non-interactive-mode docs document `--ask-for-approval never` as the intended flag
-for headless runs, and the MCP configuration reference documents a `default_tools_approval_mode
-= "approve"` setting (plus a narrower per-tool `approval_mode` override) for marking specific
-MCP servers/tools as pre-approved rather than prompted. The primary invocation shape is:
+**Default: non-interactive `codex exec` with the Marathon MCP server pre-approved, not `--yolo`.**
+> **Correction (2026-07-09, verified against codex-cli 0.143.0 + the current
+> [non-interactive-mode docs](https://learn.chatgpt.com/docs/non-interactive-mode)):** `codex exec`
+> is non-interactive **by design** and no longer accepts `--ask-for-approval` — the flag was removed
+> from `exec` and passing it makes the CLI exit 2 *before the session starts* (`unexpected argument
+> '--ask-for-approval'`), which dead-lettered every codex-harness turn (roadmap §2b #20). The
+> invocation drops the flag; the sandbox policy (`--sandbox`) is the only per-run execution control,
+> and MCP pre-approval still comes from `config.toml`. The `--yolo` fallback below is unaffected.
+
+The MCP configuration reference documents a `default_tools_approval_mode = "approve"` setting (plus
+a narrower per-tool `approval_mode` override) for marking specific MCP servers/tools as pre-approved
+rather than prompted. The primary invocation shape is:
 
 ```
-codex exec --json --sandbox workspace-write --ask-for-approval never
+codex exec --json --sandbox workspace-write
 ```
 
 with `config.toml`'s `[mcp_servers.marathon]` entry setting `default_tools_approval_mode =
