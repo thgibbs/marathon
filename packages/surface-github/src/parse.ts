@@ -70,6 +70,9 @@ export function classifyGithubEvent(eventType: string, payload: any, opts: Parse
           repo: payload.repository?.full_name,
           number: payload.issue?.number,
           comment_id: payload.comment?.id,
+          // §31.4: which reaction endpoint acknowledge() must use — distinct
+          // from `kind` above (issue-vs-PR conversation), not inferred from it.
+          commentType: "issue",
           kind: payload.issue?.pull_request ? "pr" : "issue",
         },
         userExternalId: String(payload.comment?.user?.login ?? payload.sender?.login ?? "unknown"),
@@ -92,6 +95,9 @@ export function classifyGithubEvent(eventType: string, payload: any, opts: Parse
           repo: payload.repository?.full_name,
           number: payload.pull_request?.number,
           comment_id: payload.comment?.id,
+          // §31.4: a PR review (diff-inline) comment reacts via a different
+          // endpoint than an issue/PR-conversation comment.
+          commentType: "review",
           path: payload.comment?.path,
           line: payload.comment?.line ?? payload.comment?.original_line,
           kind: "pr",

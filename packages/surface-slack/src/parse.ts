@@ -31,7 +31,9 @@ export function parseAppMention(event: SlackAppMentionEvent, opts: ParseOptions 
   }
   return {
     surfaceType: "slack",
-    sourceRef: { channel: event.channel, thread_ts: event.thread_ts ?? event.ts, event_id: opts.eventId },
+    // `ts` is the message's own timestamp — distinct from `thread_ts` for a
+    // mention inside an existing thread (§31.4); it's the ack-reaction target.
+    sourceRef: { channel: event.channel, thread_ts: event.thread_ts ?? event.ts, ts: event.ts, event_id: opts.eventId },
     userExternalId: event.user,
     teamExternalId: event.team,
     agentName,
@@ -78,7 +80,8 @@ export function isThreadReply(event: SlackMessageEvent): boolean {
 export function parseThreadReply(event: SlackMessageEvent, opts: ParseOptions = {}): NormalizedInvocation {
   return {
     surfaceType: "slack",
-    sourceRef: { channel: event.channel, thread_ts: event.thread_ts ?? event.ts, event_id: opts.eventId },
+    // `ts` is the reply's own timestamp — the ack-reaction target (§31.4).
+    sourceRef: { channel: event.channel, thread_ts: event.thread_ts ?? event.ts, ts: event.ts, event_id: opts.eventId },
     userExternalId: event.user ?? "unknown",
     teamExternalId: event.team,
     agentName: null,

@@ -6,27 +6,81 @@ import {
 } from "@marathon/surface";
 import type { SlackClient } from "./client";
 
-function ref(r: Record<string, unknown>): { channel: string; threadTs?: string } {
-  return { channel: String(r.channel), threadTs: r.thread_ts ? String(r.thread_ts) : undefined };
+/** Slack's :+1: reaction name (no colons) — the ack signal (§31.3). */
+const ACK_REACTION = "+1";
+
+function ref(r: Record<string, unknown>): { channel: string; threadTs?: string; ts?: string } {
+  return {
+    channel: String(r.channel),
+    threadTs: r.thread_ts ? String(r.thread_ts) : undefined,
+    ts: r.ts ? String(r.ts) : undefined,
+  };
+}
+
+export interface SlackDeliveryOpts {
+  /**
+   * Called after `postProgress`/`deliverResult` posts a message (§31.7 review
+   * follow-up): the caller persists `(channel, ts)` so the reaction handler
+   * can later confirm a :+1: landed on Marathon-authored output. Best-effort —
+   * a hook failure must not fail the delivery it's reporting on.
+   */
+  onOutputPosted?: (channel: string, ts: string) => Promise<void> | void;
 }
 
 /** Slack implementation of the surface delivery side (threaded replies). */
 export class SlackDelivery implements SurfaceAdapter {
-  constructor(private readonly client: SlackClient) {}
+  /** §31.6: the missing-scope warning is loud but logged at most once per process. */
+  private warnedMissingScope = false;
 
+  constructor(
+    private readonly client: SlackClient,
+    private readonly opts: SlackDeliveryOpts = {},
+  ) {}
+
+  /**
+   * React :+1: to the triggering message (§31.3) instead of posting text —
+   * `ts` (the message's own timestamp) when available, else `thread_ts` so any
+   * caller with only a thread anchor still gets a reaction somewhere sane.
+   * Best-effort (§31.8): reacting can fail (message deleted, rate limited, or
+   * — per §31.6 — a `missing_scope` error) and must never fail the task.
+   */
   async acknowledge(r: Record<string, unknown>): Promise<void> {
-    const { channel, threadTs } = ref(r);
-    await this.client.postMessage(channel, "_on it…_", threadTs);
+    const { channel, threadTs, ts } = ref(r);
+    const target = ts ?? threadTs;
+    if (!target) return;
+    try {
+      await this.client.addReaction(channel, target, ACK_REACTION);
+    } catch (e) {
+      // §31.6: this failure mode is otherwise silent and affects every ack
+      // (not a one-off), so it gets a loud warning before being swallowed.
+      if (!this.warnedMissingScope && /missing_scope/.test(String(e))) {
+        this.warnedMissingScope = true;
+        console.warn(
+          "[slack] ack reactions disabled: bot token is missing the `reactions:write` scope — reinstall/re-authorize the Slack app",
+        );
+      }
+    }
   }
 
   async postProgress(r: Record<string, unknown>, message: string): Promise<void> {
     const { channel, threadTs } = ref(r);
-    await this.client.postMessage(channel, message, threadTs);
+    const posted = await this.client.postMessage(channel, message, threadTs);
+    await this.recordOutput(channel, posted.ts);
   }
 
   async deliverResult(r: Record<string, unknown>, result: StructuredResult): Promise<void> {
     const { channel, threadTs } = ref(r);
-    await this.client.postMessage(channel, renderResultText(result), threadTs);
+    const posted = await this.client.postMessage(channel, renderResultText(result), threadTs);
+    await this.recordOutput(channel, posted.ts);
+  }
+
+  /** Best-effort (§31.8 pattern): recording the output ts must never fail delivery. */
+  private async recordOutput(channel: string, ts: string): Promise<void> {
+    try {
+      await this.opts.onOutputPosted?.(channel, ts);
+    } catch (e) {
+      console.warn("[slack] failed to record output message for feedback matching:", e);
+    }
   }
 
   /** Thread history for prompt assembly (Track 12, §7.18); untrusted — fence it. */

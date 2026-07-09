@@ -70,33 +70,52 @@ async function main(): Promise<void> {
       worker,
       queue,
       orchestrator,
-      delivery: new SlackDelivery(slack),
+      delivery: new SlackDelivery(slack, {
+        onOutputPosted: (channel, ts) => db.recordSlackOutputMessage(boot.tenantId, channel, ts),
+      }),
       tenantId: boot.tenantId,
       agents: boot.agents,
       agentIdByName: boot.agentIdByName,
       defaultAgent: boot.defaultAgent,
+      botUserId: "U0BOT",
     };
 
-    // 1. app_mention -> task -> reply  (unique event id per run; CI DB is fresh, dev DB persists)
+    // 1. app_mention -> task -> reply. Ack is now a :+1: reaction (§31), not a
+    // message (unique event id per run; CI DB is fresh, dev DB persists).
     const eventId = `Ev-${Date.now()}`;
     await dispatchEnvelope(deps, mentionEnvelope(eventId, "<@U0BOT> bruce why did checkout errors spike?"));
-    assert(slack.messages.length === 2, `expected ack + result (2 messages), got ${slack.messages.length}`);
+    assert(slack.reactions.some((r) => r.ts === "1700000000.000100" && r.reaction === "+1"), "ack reaction on the mention");
+    assert(slack.messages.length === 1, `expected exactly the result message, got ${slack.messages.length}`);
     assert(slack.messages.every((m) => m.threadTs === "1700000000.000100"), "replies should be threaded");
-    assert(slack.messages[1]!.text.includes("PR #4812"), "result should contain the agent's answer");
+    assert(slack.messages[0]!.text.includes("PR #4812"), "result should contain the agent's answer");
     assert((await db.countTasks(boot.tenantId)) === 1, "one task created");
-    console.log(`[slack-app demo] mention -> threaded reply: "${slack.messages[1]!.text.split("\n")[0]}"`);
+    console.log(`[slack-app demo] mention -> ack reaction + threaded reply: "${slack.messages[0]!.text.split("\n")[0]}"`);
 
-    // 2. reaction -> feedback
+    // 2. reaction on the RESULT message -> feedback (§31.7: a reaction on the
+    // triggering message itself, e.g. the ack, must NOT count — see below).
     await dispatchEnvelope(deps, {
       type: "events_api",
-      payload: { event: { type: "reaction_added", user: "U_TANTON", reaction: "+1", item: { ts: slack.messages[1]!.ts } } },
+      payload: {
+        event: { type: "reaction_added", user: "U_TANTON", reaction: "+1", item: { channel: "C_GENERAL", ts: slack.messages[0]!.ts } },
+      },
     });
     assert((await db.countFeedback(boot.tenantId)) === 1, "feedback recorded");
-    console.log("[slack-app demo] 👍 reaction -> feedback recorded");
+    console.log("[slack-app demo] 👍 reaction on result -> feedback recorded");
+
+    // 2b. a reaction on the TRIGGERING message (same ts as the ack reaction) ->
+    // no feedback, even from a genuine (non-bot) user (§31.7).
+    await dispatchEnvelope(deps, {
+      type: "events_api",
+      payload: {
+        event: { type: "reaction_added", user: "U_TANTON", reaction: "+1", item: { channel: "C_GENERAL", ts: "1700000000.000100" } },
+      },
+    });
+    assert((await db.countFeedback(boot.tenantId)) === 1, "reaction on the triggering message is not feedback");
+    console.log("[slack-app demo] 👍 reaction on triggering message -> not recorded as feedback");
 
     // 3. duplicate envelope -> no-op
     await dispatchEnvelope(deps, mentionEnvelope(eventId, "<@U0BOT> bruce why did checkout errors spike?"));
-    assert(slack.messages.length === 2, "duplicate event must not post again");
+    assert(slack.messages.length === 1, "duplicate event must not post again");
     assert((await db.countTasks(boot.tenantId)) === 1, "duplicate event must not create a task");
     console.log("[slack-app demo] duplicate envelope -> no-op");
 

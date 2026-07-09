@@ -240,6 +240,37 @@ export class Database implements AuditWriter, IdempotencyStore {
   }
 
   /**
+   * Record a Slack message `ts` as Marathon-authored output (§31.7 review
+   * follow-up): called from `postProgress`/`deliverResult` so `isSlackOutputMessage`
+   * can later confirm a reaction landed on OUR message, not merely "not the
+   * trigger" — excluding the trigger alone still let a :+1: on an unrelated
+   * channel message, or on a task input that hasn't been persisted yet, fall
+   * through and get recorded as feedback.
+   */
+  async recordSlackOutputMessage(tenantId: Id, channel: string, ts: string): Promise<void> {
+    await this.pool.query(
+      `insert into slack_output_message(tenant_id, channel, ts) values ($1, $2, $3)
+       on conflict (tenant_id, channel, ts) do nothing`,
+      [tenantId, channel, ts],
+    );
+  }
+
+  /**
+   * Was this Slack `ts` posted by Marathon as progress/result output (§31.7)?
+   * `handleReaction` only records feedback when this is true — a positive
+   * allow-list, not an exclusion of the known trigger `ts`, so an unrelated
+   * message or a not-yet-persisted task input can never be misread as
+   * feedback either.
+   */
+  async isSlackOutputMessage(tenantId: Id, channel: string, ts: string): Promise<boolean> {
+    const { rows } = await this.pool.query(
+      `select 1 from slack_output_message where tenant_id = $1 and channel = $2 and ts = $3 limit 1`,
+      [tenantId, channel, ts],
+    );
+    return rows.length > 0;
+  }
+
+  /**
    * An unfinished code-revision task anchored to a PR (§2b #11): while one is
    * queued/running/retrying, further review-submission triggers for the same
    * PR are absorbed — the GitHub mirror of Slack's "chatter while running".

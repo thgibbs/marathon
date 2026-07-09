@@ -78,9 +78,13 @@ export async function startSlackApp(): Promise<void> {
   const authRes = await fetch("https://slack.com/api/auth.test", {
     headers: { Authorization: `Bearer ${botToken}` },
   });
-  const auth = (await authRes.json()) as { ok: boolean; team?: string; team_id?: string; error?: string };
+  const auth = (await authRes.json()) as { ok: boolean; team?: string; team_id?: string; user_id?: string; error?: string };
   if (!auth.ok) throw new Error(`auth.test failed: ${auth.error}`);
   const teamId = auth.team_id ?? auth.team ?? "unknown";
+  // §31.7: the bot's own user id, so a reaction it adds itself (the :+1: ack,
+  // §31.3) is never misread as feedback.
+  if (!auth.user_id) throw new Error("auth.test did not return user_id");
+  const botUserId = auth.user_id;
 
   // Configured agents (Track 14): YAML specs from the agents dir; the first
   // file is the deployment default (the flagship — agents/forge.yaml). The
@@ -211,7 +215,12 @@ export async function startSlackApp(): Promise<void> {
     }),
     { root: join(tmpdir(), "marathon-chat-workspaces") },
   );
-  const delivery = new SlackDelivery(new RealSlackClient(botToken));
+  const delivery = new SlackDelivery(new RealSlackClient(botToken), {
+    // §31.7 review follow-up: persist every progress/result message's ts so
+    // `handleReaction` can confirm a :+1: landed on Marathon-authored output,
+    // not merely "not the trigger".
+    onOutputPosted: (channel, ts) => db.recordSlackOutputMessage(boot.tenantId, channel, ts),
+  });
   const fanout = new DeliveryFanout({ slack: delivery }, db);
 
   // Chat-surface repo grounding (chat-repo.md): a claude-code chat task gets a
@@ -351,6 +360,7 @@ export async function startSlackApp(): Promise<void> {
     agentIdByName: boot.agentIdByName,
     defaultAgent: boot.defaultAgent,
     identityLink,
+    botUserId,
   };
 
   // §2b #13: state the effective inbound-event mode explicitly at startup.

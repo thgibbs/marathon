@@ -29,7 +29,7 @@ describe("classifyGithubEvent", () => {
     if (a.kind === "mention") {
       expect(a.invocation.agentName).toBe("quill");
       expect(a.invocation.text).toBe("draft a rate-limit plan");
-      expect(a.invocation.sourceRef).toMatchObject({ repo: "o/repo", number: 12, kind: "issue" });
+      expect(a.invocation.sourceRef).toMatchObject({ repo: "o/repo", number: 12, comment_id: 99, commentType: "issue", kind: "issue" });
       expect(a.invocation.eventId).toBe("ic-99");
     }
   });
@@ -43,7 +43,15 @@ describe("classifyGithubEvent", () => {
     });
     expect(a.kind).toBe("mention");
     if (a.kind === "mention") {
-      expect(a.invocation.sourceRef).toMatchObject({ repo: "o/repo", number: 7, path: "docs/x.md", line: 42, kind: "pr" });
+      expect(a.invocation.sourceRef).toMatchObject({
+        repo: "o/repo",
+        number: 7,
+        comment_id: 5,
+        commentType: "review",
+        path: "docs/x.md",
+        line: 42,
+        kind: "pr",
+      });
     }
   });
 
