@@ -76,6 +76,9 @@ describe("unknownMarathonEnvWarnings (§2b #13)", () => {
   it("the subscription ack vars are known — setting the required ack must not warn (K7/K8)", () => {
     expect(KNOWN_MARATHON_ENV_VARS).toContain("MARATHON_CLAUDE_SUBSCRIPTION_DEV");
     expect(KNOWN_MARATHON_ENV_VARS).toContain("MARATHON_CODEX_SUBSCRIPTION_DEV");
-    expect(unknownMarathonEnvWarnings({ MARATHON_CODEX_SUBSCRIPTION_DEV: "1" })).toEqual([]);
+    expect(KNOWN_MARATHON_ENV_VARS).toContain("MARATHON_CODEX_AUTH_JSON");
+    expect(
+      unknownMarathonEnvWarnings({ MARATHON_CODEX_SUBSCRIPTION_DEV: "1", MARATHON_CODEX_AUTH_JSON: "/x/auth.json" }),
+    ).toEqual([]);
   });
 });

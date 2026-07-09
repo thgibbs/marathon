@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type AgentSpec, parseAgentSpec, validateHarnessConfig } from "../src/index";
+import { type AgentSpec, isSubprocessHarness, parseAgentSpec, validateHarnessConfig } from "../src/index";
 
 function spec(overrides: Partial<AgentSpec>): AgentSpec {
   return {
@@ -88,6 +88,14 @@ describe("validateHarnessConfig (K7 §13.1 fail-closed)", () => {
     });
     expect(parsed.harness).toBe("codex");
     expect(() => validateHarnessConfig(parsed)).not.toThrow();
+  });
+
+  it("isSubprocessHarness: true for the container harnesses, false for Pi (K8 entrypoint widening)", () => {
+    // The predicate live wiring branches on so the codex path never starves of
+    // the sandbox/broker deps claude-code gets (codex-cli-impl.md §6).
+    expect(isSubprocessHarness("claude-code")).toBe(true);
+    expect(isSubprocessHarness("codex")).toBe(true);
+    expect(isSubprocessHarness("pi")).toBe(false);
   });
 
   it("does not warn on a standalone reviewer's 'on' list (§A.3a — reviewer ≠ owner)", () => {

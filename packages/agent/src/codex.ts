@@ -1,5 +1,18 @@
 import { createHash, randomBytes } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -118,6 +131,16 @@ export interface CodexAgentOptions {
   /** Subpath under `$CODEX_HOME` holding session state (§5.2 verify-on-pin #7; default "sessions"). */
   sessionsSubdir?: string;
   /**
+   * Subscription mode (§4.1, DEV-ONLY): host path of a ChatGPT-login
+   * `auth.json` (typically `~/.codex/auth.json`), wired from
+   * {@link AUTH_JSON_ENV} by the entrypoints. When set, the runtime stages the
+   * file to `$CODEX_HOME/auth.json` per turn ({@link stageSubscriptionAuthJson})
+   * and injects NO `CODEX_API_KEY`. Requires {@link SUBSCRIPTION_ACK_ENV}=1 —
+   * the credential lands on the host-visible workspace mount, readable by
+   * agent code in the container. Takes precedence over the direct key.
+   */
+  subscriptionAuthJsonPath?: string;
+  /**
    * Remaining task budget (USD) for the mid-invocation kill (§4.3). ONLY
    * effective when the stream carries usage BEFORE `turn.completed` (unconfirmed,
    * verify-on-pin #2): the hook engages when per-event usage is present and is a
@@ -130,31 +153,113 @@ export interface CodexAgentOptions {
 /** Secret ref for the Marathon-dedicated OpenAI *spend* key (§4.1) — separate from the model-gateway key. */
 export const CODEX_API_KEY_SECRET = "secret/openai-codex";
 
-/** Secret ref for a ChatGPT-subscription auth token (§4.1, dev-only). */
-export const CODEX_SUBSCRIPTION_SECRET = "secret/codex-subscription";
+/**
+ * Env var naming the host path of a ChatGPT-login `auth.json` for subscription
+ * mode (§4.1, dev-only; typically `~/.codex/auth.json` from `codex login`).
+ * The file IS the credential — the CLI reads `$CODEX_HOME/auth.json`, so the
+ * runtime copies it into the task's `CODEX_HOME` per turn (never into env,
+ * argv, config.toml, logs, or session snapshots).
+ */
+export const AUTH_JSON_ENV = "MARATHON_CODEX_AUTH_JSON";
 
 /** Env var that acknowledges the dev-only risk of ChatGPT-subscription auth (§4.1). */
 export const SUBSCRIPTION_ACK_ENV = "MARATHON_CODEX_SUBSCRIPTION_DEV";
 
 /**
  * Fail closed on subscription mode unless explicitly acknowledged as dev-only
- * (§4.1). A ChatGPT-subscription token is a high-value **personal** credential,
- * and whether the CLI persists it under `CODEX_HOME` in the host-visible
- * workspace mount is unverified (verify-on-pin #4) — so subscription mode must
- * not activate silently beyond local dev. Direct-key mode is unaffected.
- * Exported pure for tests. Mirrors `assertSubscriptionAckIfNeeded` (claude-code.ts).
+ * (§4.1). The `auth.json` is a high-value **personal** credential, and
+ * subscription mode COPIES it onto the host-visible workspace mount
+ * (`$CODEX_HOME/auth.json`), readable by arbitrary agent code in the container
+ * on bridge — confirmed persistence, not a maybe (verify-on-pin #4 resolved).
+ * So subscription mode must not activate silently beyond local dev.
+ * Direct-key mode is unaffected. Exported pure for tests. Mirrors
+ * `assertSubscriptionAckIfNeeded` (claude-code.ts).
  */
 export function assertSubscriptionAckIfNeeded(
-  subscriptionToken: string | undefined,
+  authJsonPath: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  if (subscriptionToken && env[SUBSCRIPTION_ACK_ENV] !== "1") {
+  if (authJsonPath && env[SUBSCRIPTION_ACK_ENV] !== "1") {
     throw new Error(
-      `codex ChatGPT-subscription auth is DEV-ONLY and not yet fail-safe: the CLI may persist the personal token under ` +
-        `CODEX_HOME in the host-visible workspace, readable by code in the sandbox on bridge (§4.1). ` +
+      `codex ChatGPT-subscription auth is DEV-ONLY: the auth.json is a personal credential, and subscription mode ` +
+        `copies it into CODEX_HOME on the host-visible workspace, readable by code in the sandbox on bridge (§4.1). ` +
         `Set ${SUBSCRIPTION_ACK_ENV}=1 to acknowledge and proceed, or use a CODEX_API_KEY (secret/openai-codex).`,
     );
   }
+}
+
+/**
+ * Stage the ChatGPT-login credential for subscription mode (§4.1): copy the
+ * host `auth.json` to `$CODEX_HOME/auth.json` (mode 0600) where the CLI reads
+ * it. The contents are never read into logs/argv/config, never enter env, and
+ * live only on the ephemeral workspace (destroyed at teardown, excluded from
+ * the repo's git view, and OUTSIDE the sessions subtree so a per-turn snapshot
+ * can never capture it — asserted by test). Throws fail-closed when the
+ * configured file is missing/unreadable, BEFORE any resource is provisioned.
+ *
+ * Symlink defense (§4.1): `.marathon-home`/`.codex` are agent-writable and
+ * persist across a task's turns, so a prior turn could plant a symlink there to
+ * redirect this HOST-SIDE write onto an arbitrary host file (overwrite + secret
+ * exfiltration). Every existing destination path component is `lstat`-checked
+ * for a real directory (never followed), and `auth.json` itself is opened
+ * `O_NOFOLLOW|O_EXCL` after unlinking any prior entry — so a planted link can
+ * never redirect the credential.
+ */
+export function stageSubscriptionAuthJson(params: {
+  workspaceDir: string;
+  authJsonPath: string;
+  guestCodexHome?: string;
+  guestWorkspace?: string;
+}): string {
+  let contents: Buffer;
+  try {
+    contents = readFileSync(params.authJsonPath);
+  } catch (e) {
+    throw new Error(
+      `codex subscription mode is configured (${AUTH_JSON_ENV}) but the auth.json is unreadable: ${params.authJsonPath} — ` +
+        `run \`codex login\` on the host or point ${AUTH_JSON_ENV} at a valid file (§4.1): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  const home = codexHomeHostPath(params);
+  // Fail closed if any existing component of the destination directory tree is a
+  // symlink (or a non-directory): a sandbox-planted link would otherwise
+  // redirect the write onto an arbitrary host path. Walk from the workspace down
+  // (`.marathon-home`, `.codex`, …), lstat each existing component, and only
+  // mkdir the missing tail.
+  let cursor = params.workspaceDir;
+  for (const segment of home.slice(params.workspaceDir.length).split("/").filter(Boolean)) {
+    cursor = join(cursor, segment);
+    let st: ReturnType<typeof lstatSync> | undefined;
+    try {
+      st = lstatSync(cursor);
+    } catch {
+      st = undefined; // missing → created below via mkdirSync
+    }
+    if (st && !st.isDirectory()) {
+      throw new Error(
+        `codex subscription staging refuses to write the credential through a symlinked/non-directory path component: ${cursor} ` +
+          `— possible sandbox-planted link redirecting $CODEX_HOME to an arbitrary host path (§4.1)`,
+      );
+    }
+  }
+  mkdirSync(home, { recursive: true });
+  const dest = join(home, "auth.json");
+  // Remove any prior entry (the symlink itself, never its target: rmSync does not
+  // follow the final link), then create the file with an fd that cannot follow a
+  // link (O_NOFOLLOW) and must not pre-exist (O_EXCL) — a link at `dest` makes
+  // the open fail rather than write through it.
+  rmSync(dest, { force: true });
+  const fd = openSync(
+    dest,
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    writeSync(fd, contents);
+  } finally {
+    closeSync(fd);
+  }
+  return dest;
 }
 
 export interface CodexArgvParams {
@@ -313,8 +418,8 @@ export function writeCodexConfigAtomic(configPath: string, contents: string): vo
 export interface CodexModelAccessParams {
   /** The Marathon-dedicated OpenAI spend key for direct mode; undefined otherwise. */
   directKey?: string;
-  /** A ChatGPT-subscription token (dev-only), when present and acknowledged. */
-  subscriptionToken?: string;
+  /** Subscription mode (dev-only): an auth.json is staged into `$CODEX_HOME` (§4.1). */
+  subscription?: boolean;
   /** `network: none` — the container has NO egress (no OpenAI proxy exists yet). */
   lockedDownEgress?: boolean;
 }
@@ -326,8 +431,10 @@ export interface CodexModelAccessParams {
  *
  * - **Direct API key (the default on `network: bridge`).** The Marathon
  *   spend-capped OpenAI key is injected as `CODEX_API_KEY`, billed per token.
- * - **Subscription (bridge, dev-only, opt-in).** A ChatGPT-account token runs
- *   the CLI on the subscription — NO `CODEX_API_KEY` (which would override it).
+ * - **Subscription (bridge, dev-only, opt-in).** The credential is the
+ *   `auth.json` FILE the CLI reads from `$CODEX_HOME` — staged by
+ *   `stageSubscriptionAuthJson`, NOT carried in env. NO `CODEX_API_KEY` is set
+ *   (an API key would override the login and force per-token billing).
  *   Gated by `assertSubscriptionAckIfNeeded` at the runtime boundary.
  * - **Locked-down egress → THROW.** No OpenAI proxy component exists yet (§4.1),
  *   so `network: none` has no route to the model API — fail closed.
@@ -346,17 +453,15 @@ export function resolveCodexModelAccessEnv(p: CodexModelAccessParams): Record<st
     CODEX_HOME: GUEST_CODEX_HOME,
     HOME: GUEST_HOME,
   };
-  if (p.subscriptionToken) {
-    // Subscription: NO CODEX_API_KEY (an API key would win and force per-token
-    // billing). The token env name is a verify-on-pin item; use the documented
-    // CODEX_API_KEY carrier is wrong here — inject the subscription token under
-    // its own var so the CLI runs on the account, not per-token billing.
-    return { ...base, CODEX_SUBSCRIPTION_TOKEN: p.subscriptionToken };
+  if (p.subscription) {
+    // Subscription: the credential is a file under $CODEX_HOME, not env — and
+    // NO CODEX_API_KEY (an API key would win and force per-token billing).
+    return base;
   }
   if (!p.directKey) {
     throw new Error(
       "codex needs a model credential: a Marathon OpenAI key (secret/openai-codex) for API billing, " +
-        "or a ChatGPT-subscription token (secret/codex-subscription); none found (§4.1)",
+        `or a ChatGPT-login auth.json (${AUTH_JSON_ENV}=<path>, dev-only); none found (§4.1)`,
     );
   }
   return { ...base, CODEX_API_KEY: p.directKey };
@@ -383,16 +488,23 @@ export class CodexAgentRuntime implements AgentRuntime {
     // Model access (§4.1): resolve the credential and build the env NOW — BEFORE
     // any resource (session restore, broker socket, container) is provisioned —
     // so a misconfiguration fails closed without leaking a broker or container.
-    // Precedence: subscription token › direct API key.
-    const subscriptionToken = await this.opts.secrets.get(CODEX_SUBSCRIPTION_SECRET);
-    assertSubscriptionAckIfNeeded(subscriptionToken);
-    const directKey = subscriptionToken ? undefined : await this.opts.secrets.get(CODEX_API_KEY_SECRET);
-    const subscription = subscriptionToken != null;
+    // Precedence: subscription (auth.json) › direct API key.
+    const authJsonPath = this.opts.subscriptionAuthJsonPath;
+    assertSubscriptionAckIfNeeded(authJsonPath);
+    const directKey = authJsonPath ? undefined : await this.opts.secrets.get(CODEX_API_KEY_SECRET);
+    const subscription = authJsonPath != null;
     const modelAccessEnv = resolveCodexModelAccessEnv({
       directKey,
-      subscriptionToken,
+      subscription,
       lockedDownEgress: this.opts.lockedDownEgress,
     });
+    if (authJsonPath) {
+      // Stage the login credential where the CLI reads it ($CODEX_HOME/auth.json,
+      // mode 0600). Reads the host file here — still before provisioning — so a
+      // missing/unreadable auth.json fails closed with no leaked broker/container.
+      // The file sits OUTSIDE the sessions subtree, so snapshots never capture it.
+      stageSubscriptionAuthJson({ workspaceDir: workspace.dir, authJsonPath });
+    }
 
     // Resume vs first turn (§5.2): a decoded session ref carries the Codex
     // session id and the snapshot subtree to restore over any partial state.

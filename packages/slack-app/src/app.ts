@@ -2,6 +2,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   EnvSecretStore,
+  isSubprocessHarness,
   loadAgentSpecs,
   loadConfig,
   looseningAuditEvent,
@@ -12,7 +13,7 @@ import {
   resolvePosture,
   warnUnknownMarathonEnv,
 } from "@marathon/config";
-import { assertSubscriptionAckIfNeeded, makeAgentRuntime, resolveSandboxNetwork, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
+import { assertCodexSubscriptionAckIfNeeded, assertSubscriptionAckIfNeeded, CODEX_AUTH_JSON_ENV, makeAgentRuntime, resolveSandboxNetwork, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
 import { githubAuthFromEnv, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools, makeUserRepoAccessChecker } from "@marathon/connector-github";
 import { CodeWorkspace } from "@marathon/code-handoff";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
@@ -165,6 +166,14 @@ export async function startSlackApp(): Promise<void> {
       `agent '${flagship.name}': locked-down claude-code (sandbox.network: none) needs the internal-network model-proxy wiring (K7 spike, §7.1) — not yet available; use 'bridge'`,
     );
   }
+  if (flagship.harness === "codex" && flagship.sandbox.network === "none") {
+    // Codex's distinct fail-closed: `network: none` would need an OpenAI
+    // key-injecting proxy as the container's sole egress — that component is
+    // NOT built (codex-cli-impl.md §4.1), so the model call has no route out.
+    throw new Error(
+      `agent '${flagship.name}': locked-down codex (sandbox.network: none) needs the OpenAI key-injecting proxy component (codex-cli-impl.md §4.1) — not yet built; use 'bridge'`,
+    );
+  }
   const chatProxyUrl = process.env.MARATHON_MODEL_PROXY_URL?.trim();
   // State the effective Claude Code model-auth mode at startup (§4.1) so a
   // misconfiguration is loud, not silent (e.g. an OAuth token that nothing
@@ -180,6 +189,21 @@ export async function startSlackApp(): Promise<void> {
           : "MISCONFIGURED — no model credential (set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)";
     console.log(`[slack-app] claude-code model auth: ${mode}`);
   }
+  // State the effective Codex model-auth mode at startup (§4.1), parallel to the
+  // Claude Code block: fail closed on an unacknowledged ChatGPT-login auth.json
+  // (the CODEX ack guard — never the claude one), then log the mode. The
+  // credential is a FILE (staged into $CODEX_HOME per turn) — its path is
+  // logged, never its contents.
+  const codexAuthJsonPath = process.env[CODEX_AUTH_JSON_ENV]?.trim() || undefined;
+  if (flagship.harness === "codex") {
+    assertCodexSubscriptionAckIfNeeded(codexAuthJsonPath);
+    const mode = codexAuthJsonPath
+      ? `subscription (ChatGPT login via ${CODEX_AUTH_JSON_ENV} — no per-token billing)`
+      : (await secrets.get("secret/openai-codex"))
+        ? "api key (secret/openai-codex — per-token billing)"
+        : `MISCONFIGURED — no model credential (set secret/openai-codex or ${CODEX_AUTH_JSON_ENV}=<path to auth.json>)`;
+    console.log(`[slack-app] codex model auth: ${mode}`);
+  }
   const runtime = withChatWorkspace(
     makeAgentRuntime(flagship, {
       secrets,
@@ -191,24 +215,29 @@ export async function startSlackApp(): Promise<void> {
       // Track 12: the agent may ask ONE clarifying question and park the task.
       clarification: true,
       governed: { gateway: toolGateway, tools: governedTools },
-      // Claude Code only (ignored by Pi — chat Pi keeps running containerless
-      // with governed tools only): the per-task container factory, the
-      // OPTIONAL model proxy (unset → direct key injection, the bridge default,
-      // §4.1), the image's managed settings, and the mid-invocation budget kill.
-      // The chat surface is read-only by construction (chat-repo.md §3.4): the
-      // repo checkout is mounted `:ro` and the built-in file/shell tools are
-      // disallowed, so grounding can never mutate the repo (governed doc/read
-      // tools still flow over the broker). Changes go through the BUILD path.
-      sandbox:
-        flagship.harness === "claude-code"
-          ? workspaceSandboxFromSpec(flagship, { readonlyWorkspace: true, owner: sandboxOwner })
-          : undefined,
-      readOnly: flagship.harness === "claude-code",
+      // Subprocess harnesses only (claude-code + codex; ignored by Pi — chat Pi
+      // keeps running containerless with governed tools only): the per-task
+      // container factory, the read-only tool surface, the CLI/broker deps, and
+      // the mid-invocation budget kill. Codex gets the sandbox factory exactly
+      // as claude-code does (codex-cli-impl.md §6). The chat surface is
+      // read-only by construction (chat-repo.md §3.4 / codex §3.3): the repo
+      // checkout is mounted `:ro` and the built-in file/shell tools are
+      // disallowed (claude-code) or `--sandbox read-only` (codex), so grounding
+      // can never mutate the repo (governed doc/read tools still flow over the
+      // broker). Changes go through the BUILD path. The OPTIONAL model proxy is
+      // CLAUDE-ONLY — unset → direct key injection, the bridge default (§4.1);
+      // codex has no proxy component (§4.1) and never receives one.
+      sandbox: isSubprocessHarness(flagship.harness)
+        ? workspaceSandboxFromSpec(flagship, { readonlyWorkspace: true, owner: sandboxOwner })
+        : undefined,
+      readOnly: isSubprocessHarness(flagship.harness),
       proxy: flagship.harness === "claude-code" ? (chatProxyUrl ? { baseUrl: chatProxyUrl } : undefined) : undefined,
       lockedDownEgress: flagship.sandbox.network === "none",
       cli: { settingsPath: "/etc/marathon/claude-settings.json" },
       // TCP broker for macOS Docker Desktop (§3.1): set MARATHON_BROKER_HOST=host.docker.internal.
       brokerHost: process.env.MARATHON_BROKER_HOST?.trim() || undefined,
+      // Codex subscription mode (dev-only, §4.1): the auth.json path, ack-gated above.
+      subscriptionAuthJsonPath: flagship.harness === "codex" ? codexAuthJsonPath : undefined,
       // Floor #7 (§30.3): an omitted `budget:` means the profile default cap,
       // never unlimited — so the remaining-budget kill is always wired.
       getRemainingBudgetUsd: async (ctx) => effectiveBudget.limitUsd - (await db.sumModelCostUsd(ctx.request.taskId)),
@@ -223,14 +252,15 @@ export async function startSlackApp(): Promise<void> {
   });
   const fanout = new DeliveryFanout({ slack: delivery }, db);
 
-  // Chat-surface repo grounding (chat-repo.md): a claude-code chat task gets a
-  // read-only checkout of the agent's repo, gated by the invoking user's access
-  // (§2b #10) + the task's audience. Only wired for claude-code (Pi chat has no
-  // read tools yet — §3.5), only when the agent opts in AND we can clone. When
-  // identity linking isn't configured, `checkAccess` returns "no_link" so
-  // grounding degrades safely to ungrounded (with the link CTA).
+  // Chat-surface repo grounding (chat-repo.md): a subprocess-harness chat task
+  // (claude-code or codex) gets a read-only checkout of the agent's repo, gated
+  // by the invoking user's access (§2b #10) + the task's audience. Only wired
+  // for the subprocess harnesses (Pi chat has no read tools yet — §3.5), only
+  // when the agent opts in AND we can clone. When identity linking isn't
+  // configured, `checkAccess` returns "no_link" so grounding degrades safely to
+  // ungrounded (with the link CTA).
   const groundingEnabled =
-    flagship.harness === "claude-code" && flagship.chat.groundOnRepo && Boolean(flagship.repo) && Boolean(ghToken);
+    isSubprocessHarness(flagship.harness) && flagship.chat.groundOnRepo && Boolean(flagship.repo) && Boolean(ghToken);
   // Chat-grounding access wiring (chat-repo.md §3.1), extracted + unit-tested in
   // chat-access.ts: trusted deployment → "ok" + internal_confirmed; otherwise the
   // per-user identity checker, or "no_link" when the master secret is unset.
@@ -298,8 +328,8 @@ export async function startSlackApp(): Promise<void> {
     : undefined;
   console.log(
     resolveWorkspace
-      ? `[slack-app] chat grounding: ${flagship.repo} (claude-code, read-only${trustedDeployment ? `, trusted deployment — per-user access check OFF${trustedDeploymentLoosened ? " (LOOSENED below profile default, acknowledged §30.5)" : ""}` : ""})`
-      : `[slack-app] chat grounding: off (${flagship.harness !== "claude-code" ? "pi harness" : !flagship.chat.groundOnRepo ? "disabled" : "no repo/token"})`,
+      ? `[slack-app] chat grounding: ${flagship.repo} (${flagship.harness}, read-only${trustedDeployment ? `, trusted deployment — per-user access check OFF${trustedDeploymentLoosened ? " (LOOSENED below profile default, acknowledged §30.5)" : ""}` : ""})`
+      : `[slack-app] chat grounding: off (${!isSubprocessHarness(flagship.harness) ? "pi harness" : !flagship.chat.groundOnRepo ? "disabled" : "no repo/token"})`,
   );
 
   const worker = new Worker(queue, db, {

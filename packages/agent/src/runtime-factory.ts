@@ -57,6 +57,12 @@ export interface MakeAgentRuntimeDeps {
    * snapshot/restore (verify-on-pin #7; default "sessions").
    */
   sessionsSubdir?: string;
+  /**
+   * Codex (K8, DEV-ONLY §4.1): host path of a ChatGPT-login `auth.json` for
+   * subscription mode, wired from `MARATHON_CODEX_AUTH_JSON`. Staged into the
+   * task's `$CODEX_HOME` per turn; requires `MARATHON_CODEX_SUBSCRIPTION_DEV=1`.
+   */
+  subscriptionAuthJsonPath?: string;
 }
 
 export function makeAgentRuntime(spec: AgentSpec, deps: MakeAgentRuntimeDeps): AgentRuntime {
@@ -109,6 +115,7 @@ export function makeAgentRuntime(spec: AgentSpec, deps: MakeAgentRuntimeDeps): A
       getRemainingBudgetUsd: deps.getRemainingBudgetUsd,
       maxWallClockMsPerInvocation: deps.maxWallClockMsPerInvocation,
       sessionsSubdir: deps.sessionsSubdir,
+      subscriptionAuthJsonPath: deps.subscriptionAuthJsonPath,
     });
   }
   return new PiAgentRuntime({

@@ -16,7 +16,7 @@ description: >-
   Reviews Marathon-drafted design-doc PRs for clarity, completeness, and
   soundness, and posts a verdict — it does not draft or revise docs itself.
 
-harness: pi # deployment default; claude-code once K7 lands
+harness: pi # deployment default; also selectable: claude-code (K7) or codex (K8, OpenAI models)
 
 # repo: your-org/your-repo   # REQUIRED to enable (scopes every grant, §0.4)
 
