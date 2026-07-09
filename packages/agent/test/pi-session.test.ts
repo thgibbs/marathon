@@ -8,10 +8,17 @@ import { resolvePiSession } from "../src/pi";
  * The K4 resume decision, against the real Pi module (no model calls): a
  * checkpointed sessionRef re-opens that exact snapshot; anything else starts a
  * fresh durable session in the per-task directory.
+ *
+ * Pi (`@earendil-works/pi-coding-agent`) is a private package that a
+ * credential-free environment can't install, so this suite SKIPS when it's
+ * absent rather than failing collection. The import is via a non-literal
+ * specifier (mirroring `pi.ts` PI_MODULE) so `tsc` doesn't try to resolve the
+ * package at typecheck time either.
  */
-describe("resolvePiSession (durable Pi session resume, K4)", async () => {
-  const pi = await import("@earendil-works/pi-coding-agent");
+const PI_MODULE: string = "@earendil-works/pi-coding-agent";
+const pi = await import(PI_MODULE).catch(() => null);
 
+describe.skipIf(!pi)("resolvePiSession (durable Pi session resume, K4)", () => {
   it("creates a fresh per-task session when there is no sessionRef", () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-sess-"));
     const { sessionManager, resumed } = resolvePiSession(pi, {

@@ -1,7 +1,12 @@
 import path from "node:path";
-// Type-only imports (erased at runtime) keep Pi an optional dependency: this module
-// loads with no Pi present, and the create*ToolDefinition factories are taken off the
-// `pi` module object that pi.ts dynamically imports.
+// Pi's operation interfaces are re-declared LOCALLY (not imported from
+// `@earendil-works/pi-coding-agent`) so this module — and `pnpm typecheck` —
+// need no access to that private package: the harness itself is loaded via a
+// runtime dynamic import (`pi.ts` PI_MODULE), and a static `import type`, though
+// erased at runtime, would still force `tsc` to resolve the package. See
+// `pi-sandbox-types.ts` for the full rationale. The create*ToolDefinition
+// factories are taken off the `pi` module object that pi.ts dynamically imports.
+import type { DockerContainer } from "@marathon/tools";
 import type {
   BashOperations,
   EditOperations,
@@ -9,8 +14,7 @@ import type {
   LsOperations,
   ReadOperations,
   WriteOperations,
-} from "@earendil-works/pi-coding-agent";
-import type { DockerContainer } from "@marathon/tools";
+} from "./pi-sandbox-types";
 
 /**
  * Sandbox tool routing (design §12.6, Pattern 2).
