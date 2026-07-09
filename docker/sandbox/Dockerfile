@@ -61,9 +61,11 @@ ENV DISABLE_AUTOUPDATER=1 \
 # (esp. #3 approval mode, #5 the npm install path, #7 the on-disk session layout)
 # against this exact version before K8 closes. The CLI holds NO credentials in the
 # image: the model call exits only through the host-injected CODEX_API_KEY at run
-# time (§4.1), governed tools go through the broker socket. `codex` speaks OpenAI
-# only, so the harness pins the provider (design §13.1).
-ARG CODEX_VERSION=0.98.0
+# time (§4.1) or the staged auth.json (subscription, dev-only), governed tools go
+# through the broker socket. `codex` speaks OpenAI only, so the harness pins the
+# provider (design §13.1). 0.144.0 = latest at pin time (2026-07-09) — the §10
+# checklist is the gate for trusting it, not this comment.
+ARG CODEX_VERSION=0.144.0
 RUN npm install -g @openai/codex@${CODEX_VERSION} && npm cache clean --force
 
 # The governed-tool MCP shim (stdio → per-task broker socket) and the
