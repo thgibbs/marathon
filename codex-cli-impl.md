@@ -262,14 +262,22 @@ rationale transfers unchanged because it was about the *network posture*, not th
   a low-blast-radius **spend** credential (provider-budget-capped, rotated). Business
   credentials (GitHub/Slack/document) stay brokered host-side in every posture — that is the
   boundary that matters.
-- **ChatGPT-subscription auth (opt-in, dev-only).** Codex supports a ChatGPT-account login,
-  mirroring Claude Code's subscription mode. Same fail-closed gate: it does **not** activate
-  silently — require `MARATHON_CODEX_SUBSCRIPTION_DEV=1` (mirroring
-  `MARATHON_CLAUDE_SUBSCRIPTION_DEV` and `assertSubscriptionAckIfNeeded`,
-  `claude-code.ts:265`/`277`) until credential-persistence behavior under `CODEX_HOME` is
-  confirmed safe for the host-visible mount (*verify-on-pin* #4). Under subscription the USD
-  budget is inert (skip the mid-invocation kill; rate limits + the watchdog bound runaways) —
-  same as K7.
+- **ChatGPT-subscription auth (opt-in, dev-only) — as-built (2026-07-09, resolves
+  verify-on-pin #4).** The credential is the **`auth.json` file** the CLI reads from
+  `$CODEX_HOME` (produced by `codex login`, typically `~/.codex/auth.json`) — not an env
+  var. Marathon stages it per turn (`stageSubscriptionAuthJson`, `codex.ts`): the host file
+  named by `MARATHON_CODEX_AUTH_JSON=<path>` is copied to `$CODEX_HOME/auth.json` (mode
+  0600) before the invocation; no `CODEX_API_KEY` is set (an API key would override the
+  login and force per-token billing). Persistence is therefore **confirmed, not a maybe**:
+  the personal credential lands on the host-visible workspace mount, readable by agent code
+  in the container — which is exactly why the fail-closed gate stays: it does **not**
+  activate silently — require `MARATHON_CODEX_SUBSCRIPTION_DEV=1` (mirroring
+  `MARATHON_CLAUDE_SUBSCRIPTION_DEV`). Containment, each asserted by test: the file sits
+  **outside the sessions subtree** so per-turn snapshots can never capture it; the atomic
+  config write can't touch it; it never enters env, argv, `config.toml`, or logs; teardown
+  destroys it with the workspace (`.marathon-home` is already excluded from the repo's git
+  view). Under subscription the USD budget is inert (skip the mid-invocation kill; rate
+  limits + the watchdog bound runaways) — same as K7.
 - **Proxy (locked-down egress) — deferred, fail closed until built.** The CLI-side surface
   is documented (`openai_base_url` for the built-in provider, or a
   `model_providers.marathon` entry with `base_url` + `wire_api = "responses"` +
@@ -341,8 +349,9 @@ session/config story lands there by construction, with the same three properties
   git view, so the trace can never ride the §29.4 diff into a PR.
 - **Ephemeral** — teardown destroys it; the durable copies are Marathon's snapshots (§5.2).
   Tool results inside it are broker-pre-redacted (§3.2); in direct mode the key lives only in
-  the process env, not the session files (assert this in a unit probe; *verify-on-pin* #4
-  covers the subscription-token case).
+  the process env, not the session files (assert this in a unit probe). In subscription mode
+  the staged `auth.json` sits at the `CODEX_HOME` root — **outside the sessions subtree the
+  snapshot copies** — so a checkpoint can never carry the credential (asserted by test; §4.1).
 
 The exact on-disk session/rollout layout under `CODEX_HOME` is *verify-on-pin* #7 — needed to
 implement the snapshot copy.
@@ -414,6 +423,24 @@ Pure, unit-testable seams: `codexArgv(opts, checkpoint)` (no secrets in argv),
 (`packages/agent/src/chat-workspace.ts`, §2b #17) — so the chat follow-on for Codex is a
 small, known step (the seam exists; `readOnly` maps to `--sandbox read-only`), just not this
 milestone. The worker step runners need **no changes** — the seam holds.
+
+> **As-built amendment (K8 follow-on — entrypoint widening).** The BUILD-only scope
+> above was the *initial* cut; the follow-on closed it. `harness: codex` now works on
+> **every** live entrypoint, not just BUILD: the Slack chat surface
+> (`packages/slack-app/src/app.ts`), the GitHub doc flow (draft/design-review) and the
+> auto-triggered reviewer agents (`demos/github-app/live.ts`'s per-spec `buildDocRuntime`).
+> The widening is a single shared predicate — `isSubprocessHarness(h)`
+> (`packages/config/src/index.ts`), true for `claude-code`+`codex`, false for the
+> containerless Pi — replacing the per-site `harness === "claude-code"` checks that gated
+> the sandbox factory, the read-only chat surface, and repo grounding, so codex receives
+> the `workspaceSandboxFromSpec` factory and `withChatWorkspace` wrapping identically. Two
+> things stay claude-only by construction: the model **proxy** dep (codex has no proxy
+> component, §4.1) and the claude subscription-ack/model-auth block (codex gets its own
+> parallel block calling `assertCodexSubscriptionAckIfNeeded` on the
+> `MARATHON_CODEX_AUTH_JSON` path — the auth.json mechanism, §4.1 as-built).
+> `network: none` fails closed at each entrypoint with the
+> codex-specific §4.1 message (no OpenAI proxy), distinct from claude-code's proxy-spike
+> message. Pi and claude-code behavior are byte-identical; only the codex path was added.
 
 ---
 
@@ -515,8 +542,12 @@ GitHub issue and two doc pages, not an exhaustive spec. Items 1–3 gate the bui
    pre-approves shim tool calls (vs the
    [#24135](https://github.com/openai/codex/issues/24135) auto-cancel). Determines the
    `--yolo` fallback (§3.3) — confirm **before committing the rest of the build**.
-4. Whether ChatGPT-subscription auth persists a token under `CODEX_HOME` (host-visible
-   mount) — parallel to Claude Code's `.credentials.json` question (§4.1, §5.1).
+4. ~~Whether ChatGPT-subscription auth persists a token under `CODEX_HOME`~~ **Resolved
+   as-built (2026-07-09):** the credential IS a file — the CLI reads `$CODEX_HOME/auth.json`,
+   and Marathon stages it there per turn from `MARATHON_CODEX_AUTH_JSON` (§4.1). Persistence
+   on the host-visible mount is by construction, which is why the dev-only ack gate stays.
+   Residual pin-time check: confirm the pinned CLI does not additionally REWRITE `auth.json`
+   (e.g. a token refresh) in a way that should be copied back to the host login.
 5. `npm install -g @openai/codex@<ver>` still the recommended install path (§8.1).
 6. Telemetry/autoupdate/phone-home disable mechanism (§7.2).
 7. On-disk session/rollout layout under `CODEX_HOME` (§5.1 — needed for snapshot copy).
@@ -552,10 +583,11 @@ codex exec --json \
 ```
 
 **Container env (§4.1):** direct mode (bridge default) → `CODEX_API_KEY=<Marathon spend
-key>`; subscription (dev-only) → ChatGPT auth + `MARATHON_CODEX_SUBSCRIPTION_DEV=1`
-acknowledged; locked-down → fails closed until the OpenAI proxy lands. Plus
-`CODEX_HOME=/workspace/.marathon-home/.codex` · `HOME=/workspace/.marathon-home` (image) ·
-the phone-home disable (*verify-on-pin* #6).
+key>`; subscription (dev-only) → NO key in env — the ChatGPT-login `auth.json` named by
+`MARATHON_CODEX_AUTH_JSON` is staged to `$CODEX_HOME/auth.json` (mode 0600, never
+snapshotted) with `MARATHON_CODEX_SUBSCRIPTION_DEV=1` acknowledged; locked-down → fails
+closed until the OpenAI proxy lands. Plus `CODEX_HOME=/workspace/.marathon-home/.codex` ·
+`HOME=/workspace/.marathon-home` (image) · the phone-home disable (*verify-on-pin* #6).
 
 **Config (atomically rewritten per turn — config only, never the session state beside it):**
 `$CODEX_HOME/config.toml` → `[mcp_servers.marathon]` (shim command +
@@ -616,11 +648,18 @@ Build (per this doc):
   the pre-approved, **`required = true`** Marathon MCP server + startup timeout, the
   `developer_instructions` persona, and the `[projects."/workspace"]
   trust_level = "untrusted"` pin (§2.4, §3.1, §3.3).
-- **Model access:** direct `CODEX_API_KEY` on bridge; subscription mode behind
+- **Model access:** direct `CODEX_API_KEY` on bridge; subscription mode = the ChatGPT-login
+  `auth.json` (`MARATHON_CODEX_AUTH_JSON`) staged into `$CODEX_HOME` per turn, behind
   `MARATHON_CODEX_SUBSCRIPTION_DEV`; `codex`+`network: none` fails closed (§4.1).
 - **Config:** `AgentHarness` third value; `validateHarnessConfig` `codex` branch
   (OpenAI-only models, fail closed); §13.1 table row; BUILD wiring via the existing
   `makeAgentRuntime` factory — worker step runners untouched.
+- **Entrypoint widening (K8 follow-on):** `harness: codex` on EVERY role surface, not
+  just BUILD — Slack chat, the GitHub doc flow (draft/design-review), and the
+  auto-triggered reviewer agents — via a shared `isSubprocessHarness` predicate
+  (`packages/config/src/index.ts`) that gates the sandbox factory / `withChatWorkspace` /
+  repo grounding for both container harnesses; proxy stays claude-only; `network: none`
+  fails closed per entrypoint with the codex §4.1 message (§6 as-built amendment).
 - **Image:** pinned `@openai/codex` + manifest line (§8.1).
 
 Depends on: K7 (the shim, broker transports, subprocess-harness template, and factory it

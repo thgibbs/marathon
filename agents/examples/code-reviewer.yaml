@@ -15,7 +15,7 @@ description: >-
   Reviews Marathon-authored code PRs for correctness, risk, and test coverage,
   and posts a verdict — it does not write or revise code itself.
 
-harness: pi # deployment default; claude-code once K7 lands
+harness: pi # deployment default; also selectable: claude-code (K7) or codex (K8, OpenAI models)
 
 # repo: your-org/your-repo   # REQUIRED to enable (scopes every grant, §0.4)
 

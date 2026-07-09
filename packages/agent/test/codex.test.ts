@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -384,14 +384,20 @@ describe("CodexAgentRuntime (K8 — real broker/gateway, fake CLI)", () => {
     expect(checkpoints).toEqual([]);
   });
 
-  it("subscription mode (acknowledged): injects the token, no CODEX_API_KEY, bills $0 (§4.1)", async () => {
+  it("subscription mode (acknowledged): stages auth.json into $CODEX_HOME, no CODEX_API_KEY, bills $0 (§4.1)", async () => {
     const prev = process.env.MARATHON_CODEX_SUBSCRIPTION_DEV;
     process.env.MARATHON_CODEX_SUBSCRIPTION_DEV = "1"; // acknowledge the dev-only posture
     try {
       const ws: AgentWorkspaceBinding = { dir: mkdtempSync(join(tmpdir(), "cxws-")), baseSha: "base" };
       const socketDir = mkdtempSync(join(tmpdir(), "cxsock-"));
+      const authJsonPath = join(mkdtempSync(join(tmpdir(), "cxauth-")), "auth.json");
+      writeFileSync(authJsonPath, '{"tokens":{"access":"CHATGPT-LOGIN-SECRET"}}');
       const gov = governedGateway();
       const script: CliScript = async ({ onData, workspaceDir }) => {
+        // The CLI reads the staged credential from $CODEX_HOME/auth.json.
+        const staged = join(workspaceDir, ".marathon-home/.codex/auth.json");
+        expect(readFileSync(staged, "utf8")).toBe('{"tokens":{"access":"CHATGPT-LOGIN-SECRET"}}');
+        expect(statSync(staged).mode & 0o777).toBe(0o600);
         writeSession(workspaceDir, "s\n");
         emit(onData, { type: "thread.started", thread_id: "th-sub" });
         emit(onData, { type: "turn.completed", agent_message: "ok", usage: { input_tokens: 100, output_tokens: 20 } });
@@ -399,12 +405,13 @@ describe("CodexAgentRuntime (K8 — real broker/gateway, fake CLI)", () => {
       };
       const { sandbox, seen } = fakeSandbox(script, ws);
       const runtime = new CodexAgentRuntime({
-        // secret/codex-subscription → CODEX_SUBSCRIPTION (EnvSecretStore convention).
-        secrets: new EnvSecretStore({ CODEX_SUBSCRIPTION: "chatgpt-tok", OPENAI_CODEX: "sk-openai-ignored" }),
+        secrets: new EnvSecretStore({ OPENAI_CODEX: "sk-openai-ignored" }),
         registry,
         socketDir,
         sandbox,
+        sessionDir: mkdtempSync(join(tmpdir(), "cxsess-")),
         governed: { gateway: gov.gateway, tools: gov.tools },
+        subscriptionAuthJsonPath: authJsonPath,
       });
       const checkpoints: AgentTurnCheckpoint[] = [];
       const turn = await runtime.nextTurn({
@@ -414,10 +421,17 @@ describe("CodexAgentRuntime (K8 — real broker/gateway, fake CLI)", () => {
         onTurnCheckpoint: (cp) => void checkpoints.push(cp),
       });
       expect(turn.text).toBe("ok");
-      expect(seen.env?.CODEX_SUBSCRIPTION_TOKEN).toBe("chatgpt-tok");
       expect(seen.env?.CODEX_API_KEY).toBeUndefined(); // subscription, not per-token billing
+      // The credential never rides env or argv — it moves as a file only.
+      expect(JSON.stringify(seen.env)).not.toContain("CHATGPT-LOGIN-SECRET");
+      expect(JSON.stringify(seen.argv)).not.toContain("CHATGPT-LOGIN-SECRET");
       // The real API key was never injected even though it was in the store.
       expect(JSON.stringify(seen.env)).not.toContain("sk-openai-ignored");
+      // The per-turn session snapshot (sessions subtree only) can NEVER capture
+      // the credential — auth.json sits at the CODEX_HOME root beside it (§5.2).
+      const snapshot = decodeSessionRef(turn.sessionRef)?.snapshot;
+      expect(snapshot && existsSync(snapshot)).toBe(true);
+      expect(existsSync(join(snapshot!, "auth.json"))).toBe(false);
       const mi = checkpoints[0]?.modelInvocation;
       expect(mi?.costUsd).toBe(0); // billable dollars — none under subscription
       expect(mi?.estimatedCostUsd).toBeCloseTo((100 * 3 + 20 * 15) / 1_000_000, 10); // …estimate still tracked
@@ -436,11 +450,12 @@ describe("CodexAgentRuntime (K8 — real broker/gateway, fake CLI)", () => {
       const gov = governedGateway();
       const { sandbox } = fakeSandbox(async () => ({ exitCode: 0 }), ws);
       const runtime = new CodexAgentRuntime({
-        secrets: new EnvSecretStore({ CODEX_SUBSCRIPTION: "chatgpt-tok" }),
+        secrets: new EnvSecretStore({}),
         registry,
         socketDir,
         sandbox,
         governed: { gateway: gov.gateway, tools: gov.tools },
+        subscriptionAuthJsonPath: "/home/dev/.codex/auth.json",
       });
       await expect(
         runtime.nextTurn({

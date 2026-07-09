@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   codexConfigToml,
   codexSessionHostPath,
   resolveCodexModelAccessEnv,
+  stageCodexSubscriptionAuthJson as stageSubscriptionAuthJson,
   writeCodexConfigAtomic,
 } from "../src/index";
 
@@ -129,12 +130,11 @@ describe("writeCodexConfigAtomic (§3.1 — config only, never the session state
 });
 
 describe("resolveCodexModelAccessEnv (§4.1)", () => {
-  it("DIRECT mode: injects CODEX_API_KEY + CODEX_HOME + HOME, no subscription token", () => {
+  it("DIRECT mode: injects CODEX_API_KEY + CODEX_HOME + HOME", () => {
     const env = resolveCodexModelAccessEnv({ directKey: "sk-openai-real" });
     expect(env.CODEX_API_KEY).toBe("sk-openai-real");
     expect(env.CODEX_HOME).toBe("/workspace/.marathon-home/.codex");
     expect(env.HOME).toBe("/workspace/.marathon-home");
-    expect(env.CODEX_SUBSCRIPTION_TOKEN).toBeUndefined();
   });
 
   it("direct WITHOUT a key throws (fails closed)", () => {
@@ -147,24 +147,56 @@ describe("resolveCodexModelAccessEnv (§4.1)", () => {
     );
   });
 
-  it("SUBSCRIPTION mode: injects the token and NO real API key", () => {
-    const env = resolveCodexModelAccessEnv({ subscriptionToken: "chatgpt-tok", directKey: "sk-should-be-ignored" });
-    expect(env.CODEX_SUBSCRIPTION_TOKEN).toBe("chatgpt-tok");
+  it("SUBSCRIPTION mode: the credential is the auth.json FILE — env carries NO key and NO token", () => {
+    const env = resolveCodexModelAccessEnv({ subscription: true, directKey: "sk-should-be-ignored" });
     expect(env.CODEX_API_KEY).toBeUndefined(); // an API key would force per-token billing
+    expect(env.CODEX_HOME).toBe("/workspace/.marathon-home/.codex");
+    // The login credential moves as a file (stageSubscriptionAuthJson), never env.
     expect(JSON.stringify(env)).not.toContain("sk-should-be-ignored");
+    expect(Object.keys(env).sort()).toEqual(["CODEX_HOME", "HOME"]);
   });
 });
 
 describe("assertCodexSubscriptionAckIfNeeded (§4.1 — subscription fails closed as dev-only)", () => {
-  it("throws when a subscription token is set without the ack", () => {
-    expect(() => assertCodexSubscriptionAckIfNeeded("chatgpt-tok", {})).toThrow(/DEV-ONLY/);
-    expect(() => assertCodexSubscriptionAckIfNeeded("chatgpt-tok", {})).toThrow(/MARATHON_CODEX_SUBSCRIPTION_DEV=1/);
+  it("throws when an auth.json path is set without the ack", () => {
+    expect(() => assertCodexSubscriptionAckIfNeeded("/home/dev/.codex/auth.json", {})).toThrow(/DEV-ONLY/);
+    expect(() => assertCodexSubscriptionAckIfNeeded("/home/dev/.codex/auth.json", {})).toThrow(/MARATHON_CODEX_SUBSCRIPTION_DEV=1/);
   });
   it("passes once the ack is set", () => {
-    expect(() => assertCodexSubscriptionAckIfNeeded("chatgpt-tok", { MARATHON_CODEX_SUBSCRIPTION_DEV: "1" })).not.toThrow();
+    expect(() =>
+      assertCodexSubscriptionAckIfNeeded("/home/dev/.codex/auth.json", { MARATHON_CODEX_SUBSCRIPTION_DEV: "1" }),
+    ).not.toThrow();
   });
-  it("is a no-op for direct-key mode (no token)", () => {
+  it("is a no-op for direct-key mode (no auth.json configured)", () => {
     expect(() => assertCodexSubscriptionAckIfNeeded(undefined, {})).not.toThrow();
+  });
+});
+
+describe("stageSubscriptionAuthJson (§4.1 — the credential moves as a file)", () => {
+  it("copies the host auth.json to $CODEX_HOME/auth.json with mode 0600", () => {
+    const ws = mkdtempSync(join(tmpdir(), "cxws-"));
+    const src = join(mkdtempSync(join(tmpdir(), "cxauth-")), "auth.json");
+    writeFileSync(src, '{"tokens":{"access":"SECRET-LOGIN"}}');
+    const dest = stageSubscriptionAuthJson({ workspaceDir: ws, authJsonPath: src });
+    expect(dest).toBe(join(ws, ".marathon-home/.codex/auth.json"));
+    expect(readFileSync(dest, "utf8")).toBe('{"tokens":{"access":"SECRET-LOGIN"}}');
+    expect(statSync(dest).mode & 0o777).toBe(0o600);
+  });
+
+  it("fails closed (and names the env var) when the configured file is missing", () => {
+    const ws = mkdtempSync(join(tmpdir(), "cxws-"));
+    expect(() => stageSubscriptionAuthJson({ workspaceDir: ws, authJsonPath: "/nonexistent/auth.json" })).toThrow(
+      /MARATHON_CODEX_AUTH_JSON.*unreadable/s,
+    );
+  });
+
+  it("lands OUTSIDE the sessions subtree, so per-turn snapshots can never capture it (§5.2)", () => {
+    const ws = mkdtempSync(join(tmpdir(), "cxws-"));
+    const src = join(mkdtempSync(join(tmpdir(), "cxauth-")), "auth.json");
+    writeFileSync(src, "{}");
+    const dest = stageSubscriptionAuthJson({ workspaceDir: ws, authJsonPath: src });
+    const sessions = codexSessionHostPath({ workspaceDir: ws });
+    expect(dest.startsWith(`${sessions}/`)).toBe(false);
   });
 });
 

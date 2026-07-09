@@ -53,6 +53,7 @@ export const KNOWN_MARATHON_ENV_VARS: readonly string[] = [
   "MARATHON_ALLOW_TRUSTED_DEPLOYMENT",
   "MARATHON_BROKER_HOST",
   "MARATHON_CLAUDE_SUBSCRIPTION_DEV",
+  "MARATHON_CODEX_AUTH_JSON",
   "MARATHON_CODEX_SUBSCRIPTION_DEV",
   "MARATHON_GIT_TOKEN",
   "MARATHON_INTERNAL_EGRESS_MODE",
@@ -151,6 +152,20 @@ export class EnvSecretStore implements SecretStore {
 
 /** Which agent harness runs the in-task loop (design §7.5; claude-code lands with K7, codex with K8). */
 export type AgentHarness = "pi" | "claude-code" | "codex";
+
+/**
+ * Is this a **Pattern-1 subprocess harness** (design §12.6) — one whose whole
+ * agent loop runs as a subprocess *inside* a per-task sandbox container, and
+ * therefore needs a sandbox container factory, a workspace binding, and the
+ * host↔container broker wiring? Both `claude-code` (K7) and `codex` (K8) are;
+ * `pi` is embedded/containerless (it routes individual tools into a container
+ * but runs its own loop in-process). Live wiring sites branch on THIS rather
+ * than on `=== "claude-code"` so a subprocess-harness path never starves
+ * `codex` of the container/proxy/broker deps it needs identically (codex-cli-impl.md §6).
+ */
+export function isSubprocessHarness(h: AgentHarness): h is "claude-code" | "codex" {
+  return h === "claude-code" || h === "codex";
+}
 
 /**
  * One tool grant in an agent spec. For the brokered exec tools

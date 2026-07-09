@@ -17,8 +17,8 @@
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { assertSubscriptionAckIfNeeded, makeAgentRuntime, resolveSandboxNetwork, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
-import { agentSubscribesTo, EnvSecretStore, loadAgentSpecs, loadConfig, looseningAuditEvent, renderPostureBanner, renderSandboxResidualNote, resolveEffectiveBudget, resolvePosture, warnUnknownMarathonEnv } from "@marathon/config";
+import { assertCodexSubscriptionAckIfNeeded, assertSubscriptionAckIfNeeded, CODEX_AUTH_JSON_ENV, makeAgentRuntime, resolveSandboxNetwork, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
+import { agentSubscribesTo, EnvSecretStore, isSubprocessHarness, loadAgentSpecs, loadConfig, looseningAuditEvent, renderPostureBanner, renderSandboxResidualNote, resolveEffectiveBudget, resolvePosture, warnUnknownMarathonEnv } from "@marathon/config";
 import { githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools, makeReviewReportTool } from "@marathon/connector-github";
 import { WebhookProxyClient } from "@marathon/surface-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
@@ -89,6 +89,14 @@ async function main(): Promise<void> {
       `agent '${flagship.name}': locked-down claude-code (sandbox.network: none) needs the internal-network model-proxy wiring (K7 spike, §7.1) — not yet available; use 'bridge'`,
     );
   }
+  if (flagship.harness === "codex" && flagship.sandbox.network === "none") {
+    // Codex's distinct fail-closed: `network: none` would need an OpenAI
+    // key-injecting proxy as the container's sole egress — not built
+    // (codex-cli-impl.md §4.1), so the model call has no route out.
+    throw new Error(
+      `agent '${flagship.name}': locked-down codex (sandbox.network: none) needs the OpenAI key-injecting proxy component (codex-cli-impl.md §4.1) — not yet built; use 'bridge'`,
+    );
+  }
   // State the effective Claude Code model-auth mode at startup (§4.1).
   if (flagship.harness === "claude-code") {
     assertSubscriptionAckIfNeeded(process.env.MARATHON_MODEL_PROXY_URL?.trim(), await secrets.get("secret/claude-code-oauth-token"));
@@ -100,6 +108,22 @@ async function main(): Promise<void> {
           ? "api key (ANTHROPIC_API_KEY — per-token billing)"
           : "MISCONFIGURED — no model credential (set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)";
     console.log(`[github-app] claude-code model auth: ${mode}`);
+  }
+  // State the effective Codex model-auth mode at startup (§4.1), parallel to the
+  // Claude Code block: fail closed on an unacknowledged ChatGPT-login auth.json
+  // via the CODEX ack guard (never the claude one), then log the mode. The
+  // credential is a FILE (staged into $CODEX_HOME per turn) — its path is
+  // logged, never its contents. Checked whenever ANY configured spec runs on
+  // codex (reviewer agents included), not just the flagship.
+  const codexAuthJsonPath = process.env[CODEX_AUTH_JSON_ENV]?.trim() || undefined;
+  if (specs.some((s) => s.harness === "codex")) {
+    assertCodexSubscriptionAckIfNeeded(codexAuthJsonPath);
+    const mode = codexAuthJsonPath
+      ? `subscription (ChatGPT login via ${CODEX_AUTH_JSON_ENV} — no per-token billing)`
+      : (await secrets.get("secret/openai-codex"))
+        ? "api key (secret/openai-codex — per-token billing)"
+        : `MISCONFIGURED — no model credential (set secret/openai-codex or ${CODEX_AUTH_JSON_ENV}=<path to auth.json>)`;
+    console.log(`[github-app] codex model auth: ${mode}`);
   }
   const boot = await bootstrapGithubApp(db, { owner, tenantName: cfg.tenant, specs });
   // §30.5: persist an audit event for each acknowledged loosening so it survives
@@ -133,10 +157,17 @@ async function main(): Promise<void> {
   // approval handler needs).
   const buildDocRuntime = (spec: typeof flagship) => {
     // Fail closed per spec (same guard as flagship above / makeBuildWiring):
-    // locked-down claude-code needs the internal model-proxy network (§7.1).
+    // locked-down claude-code needs the internal model-proxy network (§7.1);
+    // locked-down codex needs the OpenAI key-injecting proxy (§4.1). Both are
+    // unbuilt, so `network: none` fails closed for either subprocess harness.
     if (spec.harness === "claude-code" && spec.sandbox.network === "none") {
       throw new Error(
         `agent '${spec.name}': locked-down claude-code (sandbox.network: none) needs the internal-network model-proxy wiring (K7 spike, §7.1) — not yet available; use 'bridge'`,
+      );
+    }
+    if (spec.harness === "codex" && spec.sandbox.network === "none") {
+      throw new Error(
+        `agent '${spec.name}': locked-down codex (sandbox.network: none) needs the OpenAI key-injecting proxy component (codex-cli-impl.md §4.1) — not yet built; use 'bridge'`,
       );
     }
     // Floor #7 (§30.3): the effective per-task cap — the agent's own `budget:`
@@ -166,16 +197,19 @@ async function main(): Promise<void> {
       // §7.8 / §30.4: the doc/read gateway reads the profile's internal egress mode.
       internalEgressMode: posture.internalEgressMode,
     });
-    // Harness from the spec (§2b #17): EITHER harness through the shared factory.
-    // Claude Code needs a container + workspace even for chat-shaped tasks —
-    // withChatWorkspace binds an ephemeral scratch dir per task; Pi is containerless.
+    // Harness from the spec (§2b #17): ANY harness through the shared factory.
+    // A subprocess harness (claude-code or codex) needs a container + workspace
+    // even for chat-shaped tasks — withChatWorkspace binds an ephemeral scratch
+    // dir per task; Pi is containerless. Codex gets the sandbox factory exactly
+    // as claude-code does (codex-cli-impl.md §6). The model proxy is CLAUDE-ONLY
+    // (codex has no proxy component, §4.1).
     return withChatWorkspace(
       makeAgentRuntime(spec, {
         secrets,
         // Durable per-task sessions (K4) — same location the BUILD side uses.
         sessionDir: join(tmpdir(), "marathon-sessions"),
         governed: { gateway, tools: governedToolDefsFor(spec.tools.map((t) => t.tool)) },
-        sandbox: spec.harness === "claude-code" ? workspaceSandboxFromSpec(spec, { owner: sandboxOwner }) : undefined,
+        sandbox: isSubprocessHarness(spec.harness) ? workspaceSandboxFromSpec(spec, { owner: sandboxOwner }) : undefined,
         proxy:
           spec.harness === "claude-code"
             ? (process.env.MARATHON_MODEL_PROXY_URL?.trim() ? { baseUrl: process.env.MARATHON_MODEL_PROXY_URL.trim() } : undefined)
@@ -184,6 +218,8 @@ async function main(): Promise<void> {
         cli: { settingsPath: "/etc/marathon/claude-settings.json" },
         // TCP broker for macOS Docker Desktop (§3.1): set MARATHON_BROKER_HOST=host.docker.internal.
         brokerHost: process.env.MARATHON_BROKER_HOST?.trim() || undefined,
+        // Codex subscription mode (dev-only, §4.1): the auth.json path, ack-gated above.
+        subscriptionAuthJsonPath: spec.harness === "codex" ? codexAuthJsonPath : undefined,
         // An omitted `budget:` means the profile default cap, never unlimited.
         getRemainingBudgetUsd: async (ctx) => specBudget.limitUsd - (await db.sumModelCostUsd(ctx.request.taskId)),
       }),

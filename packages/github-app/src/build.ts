@@ -107,6 +107,13 @@ export interface BuildWiringOptions {
    * `MARATHON_MODEL_PROXY_URL`.
    */
   modelProxyUrl?: string;
+  /**
+   * Codex harness (K8, DEV-ONLY §4.1): host path of a ChatGPT-login `auth.json`
+   * for subscription mode. Staged into the task's `$CODEX_HOME` per turn (never
+   * env/argv/logs); requires `MARATHON_CODEX_SUBSCRIPTION_DEV=1`. Defaults to
+   * `MARATHON_CODEX_AUTH_JSON`.
+   */
+  codexAuthJsonPath?: string;
   defaultBranch?: string;
   diffDir?: string;
   /**
@@ -225,6 +232,12 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
     cli: { settingsPath: "/etc/marathon/claude-settings.json" },
     // TCP broker for macOS Docker Desktop (§3.1): set MARATHON_BROKER_HOST=host.docker.internal.
     brokerHost: process.env.MARATHON_BROKER_HOST?.trim() || undefined,
+    // Codex subscription mode (dev-only, §4.1): the auth.json path; the runtime
+    // enforces the MARATHON_CODEX_SUBSCRIPTION_DEV ack before staging it.
+    subscriptionAuthJsonPath:
+      spec.harness === "codex"
+        ? (opts.codexAuthJsonPath ?? (process.env.MARATHON_CODEX_AUTH_JSON?.trim() || undefined))
+        : undefined,
     getRemainingBudgetUsd: effectiveBudget
       ? async (ctx) => effectiveBudget.limitUsd - (await db.sumModelCostUsd(ctx.request.taskId))
       : undefined,
