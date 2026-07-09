@@ -227,6 +227,49 @@ describe("event-scoped model routing + 'on' gating (codex-impl.md §A.3/§A.4)",
   });
 });
 
+describe("multi-agent dispatch (§A.4 — per-agent runtime / on / models)", () => {
+  it("runs the turn on the ROUTED agent's own runtime + model role, not the default", async () => {
+    const { deps, turnContexts } = makeDeps({
+      turnText: "default runtime reply",
+      artifactByTask: { location: { repo: REPO, prNumber: 7, path: "docs/plan.md", branch: "marathon/doc-x" } },
+    });
+    const agentTurns: AgentTurnContext[] = [];
+    // Router resolves agent "a1"; give it its OWN runtime + model policy.
+    (deps as { agentRegistry?: unknown }).agentRegistry = (id: string | undefined) =>
+      id === "a1"
+        ? {
+            runtime: {
+              nextTurn: async (ctx: AgentTurnContext) => {
+                agentTurns.push(ctx);
+                return { text: "agent runtime reply", done: true };
+              },
+            },
+            on: ["draft"],
+            models: { default: "openai:gpt-4o-mini", draft: "anthropic:claude-sonnet-5" },
+          }
+        : undefined;
+    await handleGithubMention(deps, invocation());
+    // The per-agent runtime handled the turn; the default deps.runtime did NOT.
+    expect(agentTurns).toHaveLength(1);
+    expect(turnContexts).toHaveLength(0);
+    // ...and the routed agent's own model role resolved (not the default policy).
+    expect(agentTurns[0]!.request.modelRef).toBe("anthropic:claude-sonnet-5");
+  });
+
+  it("gates on the routed agent's OWN 'on' even when the deployment default subscribes", async () => {
+    const { deps, delivered, turnContexts, transitions } = makeDeps({ artifactByTask: null });
+    // deps.on (default) is unset → subscribes to all four; the routed agent does not.
+    (deps as { agentRegistry?: unknown }).agentRegistry = () => ({
+      runtime: { nextTurn: async () => ({ text: "", done: true }) },
+      on: ["design-review"], // no "draft"
+    });
+    await handleGithubMention(deps, invocation());
+    expect(turnContexts).toHaveLength(0);
+    expect(delivered[0]!.summary).toContain("excludes draft");
+    expect(transitions).toEqual([["doc-task", "running"], ["doc-task", "completed"]]);
+  });
+});
+
 describe("revise flow (§2b #16 — tool-driven)", () => {
   const prInvocation = () =>
     invocation({ sourceRef: { repo: REPO, number: 5, kind: "pr" }, text: "tighten the limits section" });

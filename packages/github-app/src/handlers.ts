@@ -44,6 +44,14 @@ export interface GithubAppDeps {
    * target the merge webhook needs.
    */
   runtime: AgentRuntime;
+  /**
+   * Multi-agent dispatch (codex-impl.md §A.4): resolves the per-agent runtime +
+   * subscription/model policy for a routed task's owning agent, so several
+   * configured specs each run on their own runtime (distinct tool grants +
+   * models). When unset — or when it returns undefined for an id — the single
+   * `runtime`/`on`/`models` defaults below apply (unchanged single-agent behavior).
+   */
+  agentRegistry?: (agentId: Id | undefined) => AgentRuntimeEntry | undefined;
   /** Used for repo-permission checks (agent + invoking user) before acting. */
   client: GithubClient;
   /** When set, recall is injected into prompts (design §7.18). */
@@ -80,6 +88,32 @@ export interface GithubAppDeps {
   defaultBranch?: string;
 }
 
+/** A configured agent's runtime plus the policy that governs its dispatch. */
+export interface AgentRuntimeEntry {
+  runtime: AgentRuntime;
+  /** Kernel events this agent subscribes to; omitted = all four. */
+  on?: KernelEvent[];
+  /** This agent's model-role policy. */
+  models?: AgentModelPolicy;
+}
+
+/**
+ * Resolve the runtime + subscription/model policy for a routed task's owning
+ * agent (§A.4). Falls back to the deployment's single-agent defaults when no
+ * registry is wired or it has no entry for this id.
+ */
+function resolveAgent(
+  deps: GithubAppDeps,
+  agentId: Id | undefined,
+): { runtime: AgentRuntime; on?: KernelEvent[]; models: AgentModelPolicy } {
+  const entry = deps.agentRegistry?.(agentId);
+  return {
+    runtime: entry?.runtime ?? deps.runtime,
+    on: entry?.on ?? deps.on,
+    models: entry?.models ?? deps.models ?? DEFAULT_MODEL_POLICY,
+  };
+}
+
 const DRAFT_PERSONA = "You are a documentation agent. Draft a concise markdown design document that fulfills the request.";
 const REVISE_PERSONA = "You are a documentation agent. Revise the document in <context> per the request.";
 
@@ -110,7 +144,6 @@ function fanoutOf(deps: GithubAppDeps): DeliveryFanout {
 export async function handleGithubMention(deps: GithubAppDeps, invocation: NormalizedInvocation): Promise<void> {
   const repo = String(invocation.sourceRef.repo);
   const number = Number(invocation.sourceRef.number);
-  const models = deps.models ?? DEFAULT_MODEL_POLICY;
 
   // Repo-permission check (§7.17): agent AND invoking user must be able to access the repo.
   const access = await getRepoAccess(deps.client, repo, String(invocation.userExternalId));
@@ -144,6 +177,10 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
     defaultAgent: deps.defaultAgent,
   });
   const agentId = deps.agentIdByName[agentName];
+  // Multi-agent dispatch (§A.4): the routed agent's own runtime + subscription
+  // + model policy govern this task (falls back to the single-agent defaults).
+  const agent = resolveAgent(deps, agentId);
+  const models = agent.models;
 
   // Conversation context (Track 12, §7.18): the PR/issue comment history,
   // loaded through the surface adapter and fenced as untrusted by the builder.
@@ -157,9 +194,9 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
   const loc = (existing?.location ?? {}) as { path?: string; branch?: string };
   if (existing && loc.path && loc.branch) {
     // codex-impl.md §A.3/§A.4 item 1: design-review is ownership-routed to
-    // the agent that drafted the artifact — this deployment's single
-    // configured runtime is that owner iff it subscribes to design-review.
-    if (!agentSubscribesTo({ on: deps.on }, "design-review")) {
+    // the routed agent — it handles the revision iff it subscribes to
+    // design-review (its own `on:`, not the deployment default).
+    if (!agentSubscribesTo({ on: agent.on }, "design-review")) {
       await deps.delivery.deliverResult(
         { repo, number },
         { summary: "This agent isn't configured to respond to design-doc review comments (on: excludes design-review)." },
@@ -175,7 +212,7 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
       documents: [{ path: loc.path, content: current.content }],
       context,
     });
-    const turn = await deps.runtime.nextTurn({
+    const turn = await agent.runtime.nextTurn({
       request: {
         taskId: task.id,
         instructions: prompt.instructions,
@@ -210,11 +247,9 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
     return;
   }
 
-  // codex-impl.md §A.3: this deployment's configured agent only drafts when
-  // subscribed to the `draft` event (default: every event, unchanged today).
-  // Multi-agent fan-out across several `draft`-subscribed specs (§A.4 item 1)
-  // is future work — this deployment still runs the ONE configured runtime.
-  if (!agentSubscribesTo({ on: deps.on }, "draft")) {
+  // codex-impl.md §A.3: the routed agent only drafts when subscribed to the
+  // `draft` event (its own `on:`; default: every event, unchanged today).
+  if (!agentSubscribesTo({ on: agent.on }, "draft")) {
     await deps.delivery.deliverResult(
       { repo, number },
       { summary: "This agent isn't configured to draft design docs (on: excludes draft)." },
@@ -235,7 +270,7 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
     contract: docDraftContract({ repo, path }),
     context,
   });
-  const turn = await deps.runtime.nextTurn({
+  const turn = await agent.runtime.nextTurn({
     request: {
       taskId: task.id,
       instructions: prompt.instructions,
@@ -430,11 +465,14 @@ export async function handleGithubReview(
   if (ownsCode) return handleCodePrRevision(deps, invocation);
 
   // Doc PR: review-triggered dispatch (no explicit summon) is silent when the
-  // configured agent doesn't subscribe to design-review — routing through
+  // owning agent doesn't subscribe to design-review — routing through
   // handleGithubMention here would still create a task and post a visible
   // "not configured" reply on every unsubscribed review, which is spam for an
-  // event this deployment explicitly opted out of.
-  if (!agentSubscribesTo({ on: deps.on }, "design-review")) return true;
+  // event that agent explicitly opted out of. Ownership-routed to the agent
+  // that drafted the doc (§A.4), falling back to the deployment default.
+  const owningTask = artifact?.owningTaskId ? await deps.db.getTask(artifact.owningTaskId) : null;
+  const owner = resolveAgent(deps, owningTask?.agentId ?? undefined);
+  if (!agentSubscribesTo({ on: owner.on }, "design-review")) return true;
 
   // Run the same tool-driven revise flow a mention takes (it re-finds the
   // artifact and lands `document.revise` on the draft branch). The draft
