@@ -276,7 +276,7 @@ export interface CodexArgvParams {
  * Build the `codex exec` argv for one harness turn (pure + exported so flags and
  * secret-freedom can be asserted without a CLI). Mirrors codex-cli-impl.md §11.
  *
- * First turn:   `codex exec --json "<prompt>" --sandbox … --model … --cd /workspace`
+ * First turn:   `codex exec --json "<prompt>" --sandbox … --skip-git-repo-check --model … --cd /workspace`
  * Resume (§2.1): `codex exec --json resume <sid> "<prompt>" …` — `resume <sid>`
  * is a subcommand right after `exec`, the prompt after it. Never `--ephemeral`
  * (it would disable the durable session persistence resume depends on, §5.2).
@@ -291,6 +291,15 @@ export function codexArgv(p: CodexArgvParams): string[] {
   // execution control). Recent codex-cli removed `--ask-for-approval` from
   // `exec` entirely: passing it makes the CLI exit 2 before the session starts.
   argv.push("--sandbox", p.readOnly ? "read-only" : "workspace-write");
+  // `codex exec` refuses to start outside a "trusted" git repo unless this is
+  // set (`Not inside a trusted directory and --skip-git-repo-check was not
+  // specified`, exit 1). The reviewer/chat workspace is an ephemeral scratch dir
+  // (no checkout — grounding is via MCP tools), so the guard would kill every
+  // such turn. Skipping it is safe: codex's own git/trust guard is
+  // defense-in-depth, never the boundary — Marathon's container is the
+  // file/process boundary and `ToolGateway.run` the effect boundary (§B.6). On
+  // BUILD, where `/workspace` IS a git clone, the flag is a harmless no-op.
+  argv.push("--skip-git-repo-check");
   argv.push("--model", p.model);
   argv.push("--cd", GUEST_WORKSPACE);
   return argv;
