@@ -962,6 +962,43 @@ fold into M7–M9 sequencing as capacity allows.
     fail-closed cross-validation (Anthropic model + container-reachable proxy, §4.1/§13.1).
     Then `harness: claude-code` is genuinely selectable per deployment across BOTH surfaces
     (the §28 organ #1 "harnesses are replaceable" claim, fully realized). Pairs with K7.
+18. **Webhook proxy: classify normal stream-end vs. real error** *(dev UX / log noise;
+    follow-on to #12, surfaced 2026-07-09 dogfooding — the log showed a full
+    `TypeError: terminated` / `ETIMEDOUT` stack every time smee dropped the idle SSE
+    connection).* `WebhookProxyClient.connect` (`@marathon/surface-github`) already recovers
+    correctly — it catches, calls `onError`, and resubscribes after `reconnectDelayMs` — but
+    it hands *every* stream end to `onError`, so the live github-app's `console.error`
+    (`demos/github-app/live.ts`) renders routine idle drops as scary stack traces
+    indistinguishable from a genuine failure (smee down, HTTP 5xx). Fix in the client, not the
+    caller, so callers don't pattern-match on undici internals: detect the expected cases —
+    graceful stream end and the idle-timeout `terminated`/`ETIMEDOUT`/abort — and surface them
+    on a quiet path (an `onReconnect`/`onDisconnect` hook or an error tagged
+    `expected: true`), reserving `onError` for real failures. Then `live.ts` logs a terse
+    "webhook proxy reconnecting…" for the common case and keeps `console.error` loud for the
+    rest. Same ≤30-minute stranger-bar rationale as #12/#13 — noisy-but-benign logs read as
+    breakage to someone new to the loop. Add a unit test asserting an idle `terminated` takes
+    the quiet path while an HTTP-5xx/non-ok response still reaches `onError`.
+19. **Design-doc auto-review must be surface-agnostic — trigger on the doc PR, not the
+    drafting surface** *(kernel correctness; surfaced 2026-07-09 dogfooding: a doc PR drafted
+    from Slack (#46) never got the auto design-review — no `review_round` row, no reviewer
+    comment).* The §A.3a auto design-review was triggered INLINE at the tail of
+    `handleGithubMention` (`packages/github-app/src/handlers.ts`), so it only fired for docs
+    drafted via a GitHub mention. A Slack-drafted doc PR runs `handleMention` →
+    `runAndReport` (slack-app) — which opens the same doc PR but never calls
+    `runReviewCycle` — so the reviewer was skipped entirely. Root cause: the trigger was
+    coupled to *who drafted* rather than to *a doc PR being opened*. Code review already got
+    this right (it fires off the `ready_for_review` webhook via `handleCodeReviewReady`,
+    independent of surface). **Landed 2026-07-09:** design-review now triggers off the
+    `pull_request.opened` webhook — `classifyGithubEvent` emits a `doc_opened` action, and
+    `handleDocReviewOpened` runs `runReviewCycle(kind: "design_review")` when the opened PR
+    resolves to a `produced` `DocumentArtifact` (owned by the drafting agent), gating out code
+    PRs and human PRs; the inline call in `handleGithubMention` is removed so there's a single
+    surface-agnostic trigger. Doc PRs stay draft until approval, so `opened` (not
+    `ready_for_review`) is their signal. Depends on the github-app receiving its own
+    `pull_request.opened` delivery (same webhook/smee path as merge + ready_for_review — see
+    #12). Same cross-surface-coupling class as #14. Unit tests: `opened` → `doc_opened`
+    classification; `handleDocReviewOpened` ignores non-`produced` artifacts and runs the
+    drafter-owned review for a Marathon doc PR.
 
 ---
 

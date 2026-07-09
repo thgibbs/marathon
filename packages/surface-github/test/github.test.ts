@@ -66,6 +66,15 @@ describe("classifyGithubEvent", () => {
     expect(a).not.toHaveProperty("baseRef");
   });
 
+  it("classifies an opened pull_request as doc_opened (the design-review trigger, §A.3a)", () => {
+    const a = classifyGithubEvent("pull_request", {
+      action: "opened",
+      repository: { full_name: "o/repo" },
+      pull_request: { number: 12, head: { sha: "head-sha-12" } },
+    });
+    expect(a).toMatchObject({ kind: "doc_opened", repo: "o/repo", number: 12, eventId: "opened-12-head-sha-12" });
+  });
+
   it("classifies an APPROVING review as an approval, pinning the head SHA (§29.1a)", () => {
     const a = classifyGithubEvent("pull_request_review", {
       action: "submitted",

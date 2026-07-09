@@ -1,7 +1,7 @@
 import type { AgentTurnContext } from "@marathon/agent";
 import type { Task } from "@marathon/core";
 import { describe, expect, it } from "vitest";
-import { handleCodeReviewReady, handleReviewTask, runReviewCycle, type GithubAppDeps } from "../src/handlers";
+import { handleCodeReviewReady, handleDocReviewOpened, handleReviewTask, runReviewCycle, type GithubAppDeps } from "../src/handlers";
 
 /**
  * §A.3a review flow: a reviewer agent (task.agentId) reads the PR under review
@@ -233,5 +233,50 @@ describe("handleCodeReviewReady — code review fires when a code PR goes ready 
     } as never as GithubAppDeps;
     expect(await handleCodeReviewReady(deps, "o/r", 9)).toBe(true);
     expect(reviews).toBe(1);
+  });
+});
+
+describe("handleDocReviewOpened — design review fires when a doc PR opens (§A.3a, surface-agnostic)", () => {
+  it("ignores a PR with no produced doc artifact (code PR / human PR)", async () => {
+    const deps = { db: { findDocumentArtifactByPr: async () => null } } as never as GithubAppDeps;
+    expect(await handleDocReviewOpened(deps, "o/r", 9)).toBe(false);
+  });
+
+  it("ignores a non-produced doc artifact (e.g. a watched doc)", async () => {
+    const deps = {
+      db: { findDocumentArtifactByPr: async () => ({ role: "watched", owningAgentId: "a" }) },
+    } as never as GithubAppDeps;
+    expect(await handleDocReviewOpened(deps, "o/r", 9)).toBe(false);
+  });
+
+  it("runs the design review (owned by the drafter) for a Marathon-drafted doc PR — regardless of drafting surface", async () => {
+    let reviews = 0;
+    const submitted: Array<Record<string, unknown>> = [];
+    const deps = {
+      db: {
+        // A Slack-drafted doc PR: role 'produced', owned by the drafting agent.
+        findDocumentArtifactByPr: async () => ({ role: "produced", owningAgentId: "owner-id", location: { path: "docs/p.md", branch: "b" } }),
+        getReviewRound: async () => (reviews === 0 ? null : { lastVerdict: "approved", rounds: reviews }),
+        getLatestAgentVersion: async () => null,
+        transitionTask: async () => {},
+      },
+      client: { getPullRequestFiles: async () => [], readFileWithSha: async () => ({ content: "# doc", sha: "s" }) },
+      tenantId: "tn1",
+      orchestrator: {
+        submit: async (i: { agentId?: string; sourceRef?: Record<string, unknown> }) => {
+          submitted.push({ agentId: i.agentId, sourceRef: i.sourceRef });
+          return { task: { id: "rt", agentId: i.agentId, sourceRef: i.sourceRef, tenantId: "tn1" }, deduped: false };
+        },
+      },
+      reviewerFor: (event: string) => (event === "design-review" ? "reviewer-id" : undefined),
+      agentRegistry: (id: string | undefined) =>
+        id === "reviewer-id"
+          ? { runtime: { nextTurn: async () => { reviews++; return { text: "r", done: true }; } }, on: ["design-review"], models: { default: "m" } }
+          : undefined,
+    } as never as GithubAppDeps;
+    expect(await handleDocReviewOpened(deps, "o/r", 12)).toBe(true);
+    expect(reviews).toBe(1);
+    // The review task carried the design_review kind and the drafting agent as owner.
+    expect(submitted[0]).toMatchObject({ agentId: "reviewer-id", sourceRef: { kind: "design_review", number: 12 } });
   });
 });

@@ -542,9 +542,10 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
   await deps.db.transitionTask(task.id, "running");
   await deps.db.transitionTask(task.id, "waiting_for_approval");
 
-  // §A.3a: the doc PR is now open for review — run the automatic design-doc
-  // review + capped kickback loop (a no-op when no reviewer is configured).
-  await runReviewCycle(deps, { repo, prNumber, kind: "design_review", ownerAgentId: agentId });
+  // §A.3a: the automatic design-doc review is NOT triggered here. Opening the
+  // doc PR fires a `pull_request.opened` webhook that `handleDocReviewOpened`
+  // turns into the review — a surface-agnostic trigger so a doc drafted from
+  // Slack is reviewed identically (this handler only serves GitHub mentions).
 }
 
 /**
@@ -906,6 +907,29 @@ export async function handleCodeReviewReady(deps: GithubAppDeps, repo: string, p
   return true;
 }
 
+/**
+ * A PR was just opened (§A.3a): if it's a Marathon-drafted DOC PR — a 'produced'
+ * document artifact the gateway's onDocumentPr recorder wrote when the drafting
+ * agent called `document.create` — run the automatic design-doc review + capped
+ * kickback loop, owned by the drafting agent. This is the SURFACE-AGNOSTIC
+ * trigger: a doc drafted from Slack fires the same review as one drafted from a
+ * GitHub mention (the drafting handlers no longer trigger it inline), mirroring
+ * how `handleCodeReviewReady` fires code review off `ready_for_review`. Code PRs
+ * and human PRs have no 'produced' doc artifact and are ignored. Returns true
+ * when consumed.
+ */
+export async function handleDocReviewOpened(deps: GithubAppDeps, repo: string, prNumber: number): Promise<boolean> {
+  const artifact = await deps.db.findDocumentArtifactByPr(deps.tenantId, repo, prNumber);
+  if (artifact?.role !== "produced") return false; // not a Marathon-drafted doc PR
+  await runReviewCycle(deps, {
+    repo,
+    prNumber,
+    kind: "design_review",
+    ownerAgentId: artifact.owningAgentId ?? undefined,
+  });
+  return true;
+}
+
 export async function dispatchGithubEvent(
   deps: GithubAppDeps,
   eventType: string,
@@ -918,5 +942,6 @@ export async function dispatchGithubEvent(
   else if (action.kind === "approval") await handleGithubApproval(deps, action);
   else if (action.kind === "merge") await handleGithubMerge(deps, action.repo, action.number, action.mergeCommitSha);
   else if (action.kind === "ready_for_review") await handleCodeReviewReady(deps, action.repo, action.number);
+  else if (action.kind === "doc_opened") await handleDocReviewOpened(deps, action.repo, action.number);
   else if (action.kind === "push") await handleGithubPush(deps, action.repo, action.after, action.paths);
 }
