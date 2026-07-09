@@ -15,7 +15,7 @@
 # Debian packages ride the pinned base snapshot; for byte-identical rebuilds,
 # publish the built image and pin consumers to its digest — that, not a
 # rebuild, is the production distribution path.
-ARG SANDBOX_VERSION=4
+ARG SANDBOX_VERSION=5
 FROM node:22.12.0-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -56,6 +56,16 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && npm cache
 ENV DISABLE_AUTOUPDATER=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
+# Codex CLI (headless) — the third Marathon harness (K8, codex-cli-impl.md §8.1/§10).
+# EXACT-VERSION-PINNED; re-verify the `codex-cli-impl.md` §10 verify-on-pin checklist
+# (esp. #3 approval mode, #5 the npm install path, #7 the on-disk session layout)
+# against this exact version before K8 closes. The CLI holds NO credentials in the
+# image: the model call exits only through the host-injected CODEX_API_KEY at run
+# time (§4.1), governed tools go through the broker socket. `codex` speaks OpenAI
+# only, so the harness pins the provider (design §13.1).
+ARG CODEX_VERSION=0.98.0
+RUN npm install -g @openai/codex@${CODEX_VERSION} && npm cache clean --force
+
 # The governed-tool MCP shim (stdio → per-task broker socket) and the
 # Marathon-managed settings.json (deny rules, no hooks — defense-in-depth only, §3.3).
 COPY marathon-mcp-shim.mjs /usr/local/bin/marathon-mcp-shim
@@ -72,6 +82,7 @@ RUN mkdir -p /etc/marathon-sandbox && { \
         echo "git: $(git --version)"; \
         echo "gh: $(gh --version | head -1)"; \
         echo "claude: $(claude --version 2>/dev/null || echo unknown)"; \
+        echo "codex: $(codex --version 2>/dev/null || echo unknown)"; \
     } > /etc/marathon-sandbox/toolchain.txt
 LABEL org.opencontainers.image.title="marathon-sandbox" \
       org.opencontainers.image.description="Marathon kernel BUILD sandbox toolchain" \

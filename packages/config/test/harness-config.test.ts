@@ -58,6 +58,38 @@ describe("validateHarnessConfig (K7 §13.1 fail-closed)", () => {
     expect(() => validateHarnessConfig(parsed)).not.toThrow();
   });
 
+  it("rejects codex with no model policy (K8 §4.3)", () => {
+    expect(() => validateHarnessConfig(spec({ harness: "codex" }))).toThrow(/requires an OpenAI 'models' policy/);
+  });
+
+  it("rejects codex routed to a non-OpenAI model, fails closed (K8 §4.3)", () => {
+    expect(() =>
+      validateHarnessConfig(spec({ harness: "codex", models: { default: "anthropic:claude-sonnet-4-6" } })),
+    ).toThrow(/requires OpenAI models/);
+    expect(() =>
+      validateHarnessConfig(
+        spec({ harness: "codex", models: { default: "openai:gpt-5-codex", build: "anthropic:claude-sonnet-4-6" } }),
+      ),
+    ).toThrow(/models\.build/);
+  });
+
+  it("accepts codex with an all-OpenAI policy (K8 §4.3)", () => {
+    expect(() =>
+      validateHarnessConfig(spec({ harness: "codex", models: { default: "openai:gpt-5-codex", draft: "openai:gpt-5" } })),
+    ).not.toThrow();
+  });
+
+  it("parseAgentSpec accepts a codex spec; validation is a separate gate", () => {
+    const parsed = parseAgentSpec({
+      name: "forge",
+      instructions: "x",
+      harness: "codex",
+      models: { default: "openai:gpt-5-codex" },
+    });
+    expect(parsed.harness).toBe("codex");
+    expect(() => validateHarnessConfig(parsed)).not.toThrow();
+  });
+
   it("does not warn on a standalone reviewer's 'on' list (§A.3a — reviewer ≠ owner)", () => {
     const warnings: string[] = [];
     const warn = (m: string) => warnings.push(m);

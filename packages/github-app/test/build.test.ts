@@ -113,6 +113,23 @@ describe("makeBuildWiring (Track 15 — the coherent BUILD loop from one spec)",
     });
   });
 
+  describe("codex harness wiring (K8 fail-closed)", () => {
+    const codexSpec = (o: Partial<AgentSpec> = {}) =>
+      makeSpec({ harness: "codex", models: { default: "openai:gpt-5-codex" }, ...o });
+
+    it("wires on the default bridge posture with a direct key (no proxy)", () => {
+      expect(() => wire(codexSpec())).not.toThrow();
+    });
+
+    it("fails closed on the locked-down posture (sandbox.network: none) until the OpenAI proxy lands (§4.1)", () => {
+      expect(() => wire(codexSpec({ sandbox: { network: "none" } }))).toThrow(/OpenAI key-injecting proxy component/);
+    });
+
+    it("rejects a non-OpenAI model policy (§13.1)", () => {
+      expect(() => wire(codexSpec({ models: { default: "anthropic:claude-sonnet-4-6" } }))).toThrow(/requires OpenAI models/);
+    });
+  });
+
   it("has a Pi-facing definition for every BUILD tool it can register", () => {
     for (const name of ["github.exec", "git.exec", "delivery.report_pr"]) {
       expect(BUILD_TOOL_DEFS[name]?.name).toBe(name);

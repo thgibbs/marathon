@@ -201,6 +201,14 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
       `agent '${spec.name}': locked-down claude-code (sandbox.network: none) needs the internal-network model-proxy wiring (K7 spike, §7.1) — not yet available; use 'bridge'`,
     );
   }
+  if (spec.harness === "codex" && spec.sandbox.network === "none") {
+    // Locked-down codex would need an OpenAI key-injecting proxy as its sole
+    // egress — that component is NOT built (codex-cli-impl.md §4.1). `network:
+    // none` leaves the model call no route out, so fail closed until it lands.
+    throw new Error(
+      `agent '${spec.name}': locked-down codex (sandbox.network: none) needs the OpenAI key-injecting proxy component (codex-cli-impl.md §4.1) — not yet built; use 'bridge'`,
+    );
+  }
   const runtime = makeAgentRuntime(spec, {
     secrets,
     sessionDir: opts.sessionDir,
