@@ -70,7 +70,9 @@ async function main(): Promise<void> {
       worker,
       queue,
       orchestrator,
-      delivery: new SlackDelivery(slack),
+      delivery: new SlackDelivery(slack, {
+        onOutputPosted: (channel, ts) => db.recordSlackOutputMessage(boot.tenantId, channel, ts),
+      }),
       tenantId: boot.tenantId,
       agents: boot.agents,
       agentIdByName: boot.agentIdByName,
