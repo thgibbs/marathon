@@ -11,12 +11,18 @@ import type { GithubClientFactory } from "./tools";
 
 /**
  * The agent-driven delivery report (code-migration.md Track 7). The agent
- * commits, pushes, and opens the PR itself through the brokered `git`/`gh`
- * commands — GitHub's own controls (branch protection, rulesets, CODEOWNERS,
- * secret scanning, CI) police the content. `delivery.report_pr` is the narrow
- * final step Marathon keeps: bind the task to the PR it delivered, record it
- * on the `CodeChange`, and fan the link out to every delivery target. It never
- * reads or rewrites the diff.
+ * commits and pushes through the brokered `git`/`gh` commands — GitHub's own
+ * controls (branch protection, rulesets, CODEOWNERS, secret scanning, CI)
+ * police the content. `delivery.report_pr` is the narrow final step Marathon
+ * keeps, and it enforces two invariants the prompt alone cannot (§29.1a):
+ *  - the SAME-PR invariant: a task bound to a PR (the doc PR an implementation
+ *    updates in place; the code PR a revision revises) may report only that
+ *    PR, on its own head branch;
+ *  - the draft-tracks-verification invariant: this tool is the single
+ *    authority for the PR's draft/ready state — green verification marks it
+ *    ready, red/missing converts it (back) to draft.
+ * It records the PR on the `CodeChange` and fans the link out to every
+ * delivery target. It never reads or rewrites the diff.
  */
 export interface DeliveryReportOptions {
   getClient: GithubClientFactory;
@@ -56,10 +62,11 @@ export function makeDeliveryReportTool(opts: DeliveryReportOptions): Tool {
   return {
     name: "delivery.report_pr",
     description:
-      "Report the pull request you opened for this task. Call this exactly once, after `git push` and " +
-      "`gh pr create` succeed: pass the PR URL, a short summary, and the verification commands you ran " +
-      "(with honest exit codes). Marathon records the PR on the task and delivers the link to every " +
-      "waiting surface (the Slack thread, the plan PR). It does not re-read your diff.",
+      "Report the pull request this task delivers. Call this exactly once, after `git push` succeeds: " +
+      "pass the PR URL, a short summary, and the verification commands you ran (with honest exit codes). " +
+      "Marathon records the PR on the task, sets its draft/ready state from your verification (green = " +
+      "ready for review, red or missing = draft), and delivers the link to every waiting surface " +
+      "(the Slack thread, the PR). It does not re-read your diff.",
     riskAxes: { reversible: true, crossesTrustBoundary: false, audience: "tenant", costly: false },
     defaultMode: "autonomous",
     // The report lands on the task's surfaces inside the tenant (Slack thread,
@@ -105,7 +112,30 @@ export function makeDeliveryReportTool(opts: DeliveryReportOptions): Tool {
       const client = await opts.getClient(ctx);
       const pr = await client.getPullRequest(parsed.repo, parsed.number);
       if (!pr) {
-        throw new Error(`delivery.report_pr: ${parsed.repo} has no PR #${parsed.number} — did the gh pr create succeed?`);
+        throw new Error(`delivery.report_pr: ${parsed.repo} has no PR #${parsed.number}`);
+      }
+
+      // 2a. the same-PR invariant, gateway-enforced (§29.1a): a BUILD task
+      // bound to a PR (the doc PR for an implementation, the code PR for a
+      // revision) may report ONLY that PR, on its own head branch. Without
+      // this, an agent that opened a fresh same-repo PR would be recorded and
+      // delivered as success while the approved draft doc PR sat
+      // unimplemented — breaking the combined-PR atomic merge model. Typed +
+      // actionable so the agent's retry self-corrects in-session.
+      if (binding.expectedPrNumber !== undefined && pr.number !== binding.expectedPrNumber) {
+        throw new CodeHandoffError(
+          "PR_MISMATCH",
+          `this task must deliver on PR #${binding.expectedPrNumber}` +
+            (binding.expectedBranch ? ` (branch ${binding.expectedBranch})` : "") +
+            ` — push your commits onto that branch and report that PR, not #${pr.number}`,
+        );
+      }
+      if (binding.expectedBranch !== undefined && pr.headRef !== binding.expectedBranch) {
+        throw new CodeHandoffError(
+          "PR_MISMATCH",
+          `PR #${pr.number}'s head branch is ${pr.headRef}, but this task is bound to ` +
+            `${binding.expectedBranch} — deliver on the task's own branch`,
+        );
       }
 
       // 2b. a task delivers ONE PR: retries with the same PR converge (fan-out
@@ -119,11 +149,17 @@ export function makeDeliveryReportTool(opts: DeliveryReportOptions): Tool {
         );
       }
 
-      // 3. record on the CodeChange (create-on-first-report: the agent-driven
-      // path has no prior submit).
+      // 3. draft state tracks verification, ENFORCED on GitHub (§29.3): this
+      // tool is the single authority for the draft/ready transition. Red or
+      // missing verification converts the PR (back) to draft — a premature
+      // `gh pr ready` cannot leave a red combined PR mergeable — and green
+      // marks it ready, so Marathon's recorded state and GitHub's never
+      // diverge.
       const verification = inputVerification(input);
       const green = verification.length > 0 && isVerificationGreen(verification);
-      const state = pr.draft || !green ? "submitted_draft" : "submitted_ready";
+      const draftEnforced = !green && !pr.draft;
+      if (pr.draft === green) await client.setPullRequestDraft(parsed.repo, pr.number, !green);
+      const state = green ? "submitted_ready" : "submitted_draft";
       await opts.store.createCodeChange({
         tenantId: ctx.tenantId,
         taskId: ctx.taskId,
@@ -163,7 +199,9 @@ export function makeDeliveryReportTool(opts: DeliveryReportOptions): Tool {
       await opts.onReported?.({ taskId: ctx.taskId, repo: parsed.repo, prNumber: pr.number, prUrl: pr.url });
 
       return {
-        content: `recorded PR #${pr.number} ${pr.url} (${state}); delivered to ${delivered} target(s)`,
+        content:
+          `recorded PR #${pr.number} ${pr.url} (${state}); delivered to ${delivered} target(s)` +
+          (draftEnforced ? "; PR converted back to draft — verification is not green" : ""),
         details: {
           pr_url: pr.url,
           pr_number: pr.number,
@@ -171,6 +209,7 @@ export function makeDeliveryReportTool(opts: DeliveryReportOptions): Tool {
           branch: pr.headRef,
           state: change.state,
           verified: green,
+          draft_enforced: draftEnforced,
           delivered,
         },
       };

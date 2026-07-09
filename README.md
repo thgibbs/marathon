@@ -72,10 +72,11 @@ repo: your-org/your-repo      # scopes every GitHub grant by construction
 tools:
   - document.create           # draft design-doc PRs (an approving review = the approval)
   - tool: github.exec         # brokered gh — allowlisted command families
-    families: ["pr view", "pr diff", "pr create", "pr edit", "pr ready"]
+    families: ["pr view", "pr diff", "pr edit"] # no "pr create": the build lands on the
+                              # EXISTING doc PR — delivery.report_pr refuses any other
   - tool: git.exec            # brokered network git on the BUILD workspace
     families: ["push", "fetch"]
-  - delivery.report_pr        # the narrow final step
+  - delivery.report_pr        # the narrow final step; sets draft/ready from verification
 sandbox: { network: bridge }  # internet for installs; NEVER any credentials
                               # ("none" from YAML, env, or code wins — strictness composes)
 models: { default: openai:gpt-4o-mini }   # roles route models, e.g. build: openai:gpt-4o

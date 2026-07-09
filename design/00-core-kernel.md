@@ -53,7 +53,7 @@ as the approval.
 | 4 | Approving-review webhook = approval → execution task spawns (§29.1a) | §6.8 | built (M6) |
 | 4 | Sandboxed code work: ephemeral workspace, `bash/read/write/edit` in the container, creds never inside | §12.6 | built (M9 Pattern 2) — not stitched end-to-end (K1) |
 | 4 | Verification inside the session: the agent runs tests/build via sandboxed `bash` before opening the PR | §28.2 (verifier) | Pi's in-session loop suffices — **no M11 machinery needed** |
-| 5 | The delivery contract: push onto the doc-PR branch → `gh pr ready` → `delivery.report_pr`; PR link + summary delivered to the Slack thread *and* the (same) PR | **§29**, §10.8 | gap (K1, K2) |
+| 5 | The delivery contract: push onto the doc-PR branch → `delivery.report_pr`, which ENFORCES the same-PR invariant and sets draft/ready from verification; PR link + summary delivered to the Slack thread *and* the (same) PR | **§29**, §10.8 | gap (K1, K2) |
 | all | Inspectability data: per-task timeline, cost | §8.5, M8 | built (API); UI deferred |
 | all | Quickstart: compose up → YAML agent → Slack + GitHub apps → first loop | §2.7, §6.2 | gap (K6) |
 
@@ -71,9 +71,11 @@ simplified below.
   `base_sha` = the doc-PR head at the approving review (`plan_ref.approved_sha`, the same
   pin — §29.1a) → host-materialized, credential-stripped workspace on the doc branch →
   sandboxed edits + verify (repo `verify:` config → plan's Verification section → judgment)
-  → push onto the SAME doc-PR branch + `gh pr ready` (protected-path + secret + size checks
-  on the strict-mode handoff path) → the combined PR now carries plan + code. Proof:
-  approved plan in, green-tested combined PR out, live.
+  → push onto the SAME doc-PR branch → `delivery.report_pr`, which enforces the same-PR
+  invariant (refuses any other PR/branch) and marks the PR ready iff verification is green
+  (protected-path + secret + size checks stay on the strict-mode handoff path) → the
+  combined PR now carries plan + code. Proof: approved plan in, green-tested combined PR
+  out, live.
 - **K2 — Loop task chain + `delivery_targets`.** The merge-spawned execution task must
   inherit `delivery_targets = [originating Slack thread, doc PR]` (§10.8) so progress and the
   final PR link land in both places. This is task-chain plumbing — it needs **no identity

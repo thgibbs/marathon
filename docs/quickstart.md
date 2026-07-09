@@ -101,7 +101,7 @@ The full config shape (design §6.2 / §21.0):
 | `instructions` | the persona — how the agent runs the loop |
 | `harness` | `pi` (default) — `claude-code` arrives with K7 |
 | `repo` | the ONE target repo; scopes every GitHub grant by construction |
-| `tools` | grants, incl. brokered command families (`github.exec: pr view, pr create, pr ready, …`; `git.exec: push, fetch`) |
+| `tools` | grants, incl. brokered command families (`github.exec: pr view, pr edit, …`; `git.exec: push, fetch`) — the kernel BUILD grant deliberately has no `pr create`/`pr ready`: the build lands on the EXISTING doc PR and `delivery.report_pr` owns the draft/ready state |
 | `sandbox.network` | BUILD container network: `bridge` (internet, default) or `none` — `none` from the YAML, `MARATHON_SANDBOX_NETWORK`, or code wins (strictness composes) |
 | `models` | role → `provider:model` routing (`default`, `reasoning`, `cheap`; a `build` role routes the BUILD stage) |
 | `budget` | hard spend cap in USD (`limit_usd`, fails closed) + `warn_ratio` — enforced per agent AND per task, at every turn boundary |
@@ -117,10 +117,13 @@ Marathon does not hand the model a GitHub token. The credential layout
 - **Reads** — direct API tools (`github.read_file`, …) or brokered
   (`github.exec` read families like `pr view`, `pr diff`, read-only `gh api`).
   Either way the token is injected host-side.
-- **Writes** — always brokered: `git.exec push` and `github.exec pr
-  create/edit/ready` run on the host with the token in the child process env
-  only. The BUILD sandbox itself is **credential-free** (internet access, no
-  secrets).
+- **Writes** — always brokered: `git.exec push` and `github.exec pr edit`
+  run on the host with the token in the child process env only. The BUILD
+  sandbox itself is **credential-free** (internet access, no secrets).
+  `delivery.report_pr` enforces the same-PR invariant (a BUILD task may only
+  report its own doc PR) and sets the PR's draft/ready state from the
+  reported verification — those invariants are gateway-enforced, not prompt
+  rules.
 - **Destructive actions** — never direct. Merging a PR is always a human's
   native action (merge the combined PR yourself — that ships it) or a
   **Proposed Effect** the model proposes and a non-model executor performs

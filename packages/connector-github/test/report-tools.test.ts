@@ -22,13 +22,28 @@ class RecordingAdapter implements SurfaceAdapter {
   }
 }
 
-function setup(opts: { targets?: DeliveryTarget[]; bind?: boolean; getCostUsd?: (taskId: string) => Promise<number | null> } = {}) {
+function setup(
+  opts: {
+    targets?: DeliveryTarget[];
+    bind?: boolean;
+    getCostUsd?: (taskId: string) => Promise<number | null>;
+    /** Pin the binding to ONE expected PR/branch (§29.1a same-PR enforcement). */
+    expected?: { prNumber?: number; branch?: string };
+  } = {},
+) {
   const client = new FixturesGithubClient({});
   const store = new InMemoryCodeChangeStore();
   const registry = new CodeTaskRegistry();
   if (opts.bind !== false) {
     // The tool never touches the workspace — a stub satisfies the binding.
-    registry.set(TASK, { workspace: {} as never as CodeWorkspace, planRef: PLAN, repo: REPO, baseSha: PLAN.approvedSha });
+    registry.set(TASK, {
+      workspace: {} as never as CodeWorkspace,
+      planRef: PLAN,
+      repo: REPO,
+      baseSha: PLAN.approvedSha,
+      expectedPrNumber: opts.expected?.prNumber,
+      expectedBranch: opts.expected?.branch,
+    });
   }
   const slack = new RecordingAdapter();
   const github = new RecordingAdapter();
@@ -141,19 +156,74 @@ describe("delivery.report_pr (Track 7)", () => {
     expect((await store.getCodeChangeByTask(TASK))?.prNumber).toBe(first.number);
   });
 
-  it("records draft/red runs as submitted_draft and flags missing verification", async () => {
-    const { client, store, slack, tool } = setup();
+  it("the draft state tracks verification, ENFORCED on GitHub (§29.3 single authority)", async () => {
+    // Green verification on a (still-)draft combined PR → marked ready.
+    const { client, store, tool } = setup();
     const draftPr = await client.createPullRequest(REPO, "T", "b-draft", "main", "", { draft: true });
     await tool.execute({ pr_url: draftPr.url, summary: "s", verification: green }, ctx);
-    expect((await store.getCodeChangeByTask(TASK))?.state).toBe("submitted_draft");
-    expect(slack.results[0]?.result.openQuestions).toBeUndefined();
+    expect((await store.getCodeChangeByTask(TASK))?.state).toBe("submitted_ready");
+    expect(client.writes).toContainEqual({
+      op: "setPullRequestDraft",
+      args: { repo: REPO, prNumber: draftPr.number, draft: false },
+    });
+    expect((await client.getPullRequest(REPO, draftPr.number))?.draft).toBe(false);
 
-    const { client: c2, store: s2, slack: sl2, tool: t2 } = setup();
-    const pr2 = await c2.createPullRequest(REPO, "T", "b2", "main");
-    const res = await t2.execute({ pr_url: pr2.url, summary: "s" }, ctx);
+    // Red verification on a PR prematurely marked ready (`gh pr ready` before
+    // green) → converted BACK to draft; Marathon's record and GitHub agree.
+    const { client: c2, store: s2, tool: t2 } = setup();
+    const readyPr = await c2.createPullRequest(REPO, "T", "b-ready", "main");
+    const red = [{ command: "pnpm test", exit_code: 1, summary: "3 failed" }];
+    const resRed = await t2.execute({ pr_url: readyPr.url, summary: "s", verification: red }, ctx);
     expect((await s2.getCodeChangeByTask(TASK))?.state).toBe("submitted_draft");
-    expect(sl2.results[0]?.result.openQuestions).toEqual(["No verification results were reported."]);
+    expect(c2.writes).toContainEqual({
+      op: "setPullRequestDraft",
+      args: { repo: REPO, prNumber: readyPr.number, draft: true },
+    });
+    expect((await c2.getPullRequest(REPO, readyPr.number))?.draft).toBe(true);
+    expect(resRed.details).toMatchObject({ verified: false, draft_enforced: true });
+    expect(resRed.content).toContain("converted back to draft");
+
+    // Missing verification behaves like red: draft enforced + flagged.
+    const { client: c3, store: s3, slack: sl3, tool: t3 } = setup();
+    const pr3 = await c3.createPullRequest(REPO, "T", "b3", "main");
+    const res = await t3.execute({ pr_url: pr3.url, summary: "s" }, ctx);
+    expect((await s3.getCodeChangeByTask(TASK))?.state).toBe("submitted_draft");
+    expect((await c3.getPullRequest(REPO, pr3.number))?.draft).toBe(true);
+    expect(sl3.results[0]?.result.openQuestions).toEqual(["No verification results were reported."]);
     expect(res.details).toMatchObject({ verified: false });
+
+    // Already-correct states are left alone (no redundant GitHub write).
+    const { client: c4, tool: t4 } = setup();
+    const draft4 = await c4.createPullRequest(REPO, "T", "b4", "main", "", { draft: true });
+    await t4.execute({ pr_url: draft4.url, summary: "s" }, ctx);
+    expect(c4.writes.filter((w) => w.op === "setPullRequestDraft")).toHaveLength(0);
+  });
+
+  it("rejects any PR but the task's own when the binding pins one (§29.1a same-PR invariant)", async () => {
+    // The implementation task is bound to its doc PR; a fresh same-repo PR the
+    // agent opened anyway is refused with an actionable, typed error.
+    const { client, store, tool } = setup({ expected: { prNumber: 1, branch: "marathon/doc-t1-plan" } });
+    const docPr = await client.createPullRequest(REPO, "Plan", "marathon/doc-t1-plan", "main", "", { draft: true });
+    expect(docPr.number).toBe(1);
+    const rogue = await client.createPullRequest(REPO, "Rogue", "marathon/other-branch", "main");
+    await expect(tool.execute({ pr_url: rogue.url, summary: "s", verification: green }, ctx)).rejects.toThrow(
+      /PR_MISMATCH.*must deliver on PR #1/,
+    );
+    // Nothing was recorded or delivered for the rogue PR.
+    expect(await store.getCodeChangeByTask(TASK)).toBeNull();
+
+    // The bound PR itself is accepted.
+    const ok = await tool.execute({ pr_url: docPr.url, summary: "s", verification: green }, ctx);
+    expect(ok.details).toMatchObject({ pr_number: 1, state: "submitted_ready" });
+  });
+
+  it("rejects a bound-number PR whose head branch is not the task's branch", async () => {
+    // Same number, wrong head: the binding validates the branch too.
+    const { client, tool } = setup({ expected: { prNumber: 1, branch: "marathon/doc-t1-plan" } });
+    await client.createPullRequest(REPO, "Other", "some/other-head", "main");
+    await expect(
+      tool.execute({ pr_url: `https://example.test/${REPO}/pull/1`, summary: "s", verification: green }, ctx),
+    ).rejects.toThrow(/PR_MISMATCH.*head branch is some\/other-head/);
   });
 
   it("refuses outside a BUILD stage and outside the task's repo", async () => {

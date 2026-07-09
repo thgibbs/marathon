@@ -125,11 +125,12 @@ describe("handleGithubApproval (§29.1a combined-PR approval)", () => {
     // inherited fan-out targets: the originating Slack thread AND the doc PR
     expect(input.deliveryTargets).toEqual([slackOrigin, docPrTarget]);
 
-    // The brief carries the plan, the doc branch, the pr-ready + delivery contract.
+    // The brief carries the plan, the doc branch, and the delivery contract
+    // (same-PR + draft-tracks-verification, both gateway-enforced).
     const brief = String(input.inputText);
     expect(brief).toContain(`docs/plan.md in ${REPO}, approved as ${APPROVED_SHA}`);
     expect(brief).toContain(`branch ${DOC_BRANCH}`);
-    expect(brief).toContain('github.exec { argv: ["pr", "ready"');
+    expect(brief).toContain(`refuse any PR except #${DOC_PR}`);
     expect(brief).toContain("delivery.report_pr EXACTLY ONCE");
     expect(brief).toContain("Slack channel C1");
 

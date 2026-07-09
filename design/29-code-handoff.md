@@ -64,11 +64,20 @@ lifecycle:
   collaborator-permission endpoint) before spawning the implementation task; anything less is
   silently ignored. The approval stays native, deliberate, and sha-pinned (§7.9) — the
   webhook carries the PR head SHA, which becomes `plan_ref.approved_sha`.
-* **The BUILD agent implements on the SAME branch.** The workspace is the doc branch at the
-  approved tip; the agent commits its work there, pushes back through the brokered `git.exec`
-  (fast-forward — force pushes are unrepresentable through the broker), and marks the PR
-  **ready for review** (`gh pr ready`, an allowlisted `github.exec` family). It never opens a
-  second PR; `delivery.report_pr` reports the same PR.
+* **The BUILD agent implements on the SAME branch — and the gateway enforces it.** The
+  workspace is the doc branch at the approved tip; the agent commits its work there and
+  pushes back through the brokered `git.exec` (fast-forward — force pushes are
+  unrepresentable through the broker). The same-PR invariant is NOT left to the prompt:
+  the BUILD binding carries the task's one expected PR number + head branch, and
+  `delivery.report_pr` **refuses** (typed `PR_MISMATCH`, agent-visible so a retry
+  self-corrects) a report of any other PR or branch — an agent that opens a fresh
+  same-repo PR cannot be recorded or delivered as success while the approved draft sits
+  unimplemented. The kernel BUILD grant carries no `pr create` at all.
+* **`delivery.report_pr` is the single authority for the PR's draft/ready state.** Green
+  reported verification marks the combined PR ready for review; red or missing
+  verification converts it (back) to draft — a premature `gh pr ready` (not granted to
+  the kernel agent, but available for operator grants) cannot leave a red combined PR
+  mergeable past the report. Marathon's recorded state and GitHub's never diverge.
 * **Merging the combined PR ships design + code atomically.** The default branch keeps the
   invariant: **a plan doc on main means the plan shipped, with its implementation.** If
   review forces divergence from the approved plan, the agent amends the doc on the branch —
@@ -122,6 +131,10 @@ Rules:
 * **Green → ready PR. Not green at the cap → the work is still delivered** as a **draft PR**
   labeled `marathon:unverified`, with an honest failure summary. Losing work is worse than
   shipping a draft; lying about test state is worst of all.
+* **Draft-tracks-verification is enforced, not requested:** `delivery.report_pr` sets the
+  PR's GitHub draft/ready state from the reported verification (green → ready; red/missing
+  → converted back to draft, even after a premature model-driven `pr ready`). The recorded
+  `CodeChange` state and GitHub's PR state cannot diverge.
 * Every command run, exit code, and a size-capped output summary is recorded on the task and
   echoed in the PR body.
 

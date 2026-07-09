@@ -92,9 +92,10 @@ const DEFAULT_BUILD_INSTRUCTIONS =
   "plan and implement it. Use normal git locally (status/diff/add/commit); the sandbox has " +
   "internet access for package installs and documentation, but holds no credentials — GitHub " +
   "writes go through the brokered tools: git.exec to push commits onto the SAME doc-PR branch " +
-  "(so the design PR updates in place), github.exec (gh pr ready) to mark it ready for review. " +
-  "Do NOT open a new PR. Verify with the repo's tests, then finish by calling delivery.report_pr " +
-  "exactly once with the existing PR URL and honest verification results.";
+  "(so the design PR updates in place). Do NOT open a new PR — delivery.report_pr refuses any " +
+  "PR but this task's own. Verify with the repo's tests, then finish by calling " +
+  "delivery.report_pr exactly once with the existing PR URL and honest verification results; " +
+  "Marathon sets the PR's draft/ready state from that report (green = ready, red/missing = draft).";
 
 /**
  * The BUILD-stage step runner (design §29.2, §11.2 BUILD-stage checkpoints;
@@ -153,12 +154,19 @@ export function makeBuildStepRunner(opts: BuildStepOptions) {
         const plan = await opts.loadPlanDoc(task, { planRef, baseSha });
         if (plan) await workspace.writeFile(plan.path, plan.content);
       }
+      // §29.1a: bind the task to its ONE PR (the doc PR for an implementation,
+      // the code PR for a revision) so `delivery.report_pr` can REJECT a report
+      // of any other PR — the same-PR invariant is enforced at the gateway,
+      // never left to the prompt.
+      const expected = expectedPrFromSourceRef(task.sourceRef);
       opts.registry.set(taskId, {
         workspace,
         planRef,
         repo: planRef.repo,
         baseSha,
         defaultBranch: opts.defaultBranch,
+        expectedPrNumber: expected?.prNumber,
+        expectedBranch: expected?.branch,
       });
 
       const resuming = checkpoint.turnIndex !== undefined;
@@ -283,6 +291,24 @@ export function buildBindingFromSourceRef(
     };
   }
   return null;
+}
+
+/**
+ * The ONE PR a BUILD-stage task is bound to (§29.1a): an implementation task
+ * updates its doc PR in place (`docPrNumber`), a code-revision task revises its
+ * code PR (`prNumber`) — both carry the head `branch`. Read from the task's
+ * immutable `sourceRef` (not the checkpoint), so resumes rebind identically.
+ * Null when the source ref carries no PR (a legacy/handoff path that opens a
+ * fresh PR), in which case `delivery.report_pr` keeps its unpinned behavior.
+ */
+export function expectedPrFromSourceRef(
+  sourceRef: Record<string, unknown> | null | undefined,
+): { prNumber: number; branch?: string } | null {
+  const ref = sourceRef as { docPrNumber?: unknown; prNumber?: unknown; branch?: unknown } | null;
+  const prNumber =
+    typeof ref?.docPrNumber === "number" ? ref.docPrNumber : typeof ref?.prNumber === "number" ? ref.prNumber : null;
+  if (prNumber === null) return null;
+  return { prNumber, branch: typeof ref?.branch === "string" ? ref.branch : undefined };
 }
 
 /** The BUILD binding for a task: plan ref + pinned base, from input or checkpoint. */

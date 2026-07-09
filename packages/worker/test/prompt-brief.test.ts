@@ -31,15 +31,17 @@ describe("renderImplementationBrief (§29.1a combined-PR flow)", () => {
     expect(brief).toContain("as-built plan");
   });
 
-  it("pushes onto the SAME doc branch and marks the PR ready — no new PR", () => {
+  it("pushes onto the SAME doc branch — no new PR (and says report_pr enforces it)", () => {
     expect(brief).toContain('git.exec { argv: ["push", "o/r", "HEAD:refs/heads/marathon/doc-t1-rate-limiting"] }');
-    expect(brief).toContain('github.exec { argv: ["pr", "ready", "5", "--repo", "o/r"] }');
     expect(brief).toContain("do NOT open a new PR");
+    expect(brief).toContain("refuse any PR except #5");
     expect(brief).toContain("design PR #5 updates in place");
   });
 
-  it("teaches the delivery.report_pr contract on the existing PR", () => {
+  it("teaches the delivery.report_pr contract: report once, Marathon owns the draft/ready state", () => {
     expect(brief).toContain("delivery.report_pr EXACTLY ONCE");
+    expect(brief).toContain("green verification marks PR #5 ready");
+    expect(brief).toContain("Do not toggle the draft state yourself");
     expect(brief).toContain("NO credentials");
   });
 

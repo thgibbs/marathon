@@ -95,7 +95,11 @@ export async function buildAgentPrompt(
  * The brokered git/gh + delivery.report_pr contract for the SAME-BRANCH
  * combined-PR flow (§29.1a): the workspace is already the doc-PR branch, so the
  * agent pushes commits back onto it (updating design PR #N in place) rather
- * than opening a new branch/PR.
+ * than opening a new branch/PR. The two invariants stated here are ALSO
+ * gateway-enforced (report-tools.ts): report_pr rejects any PR but this one,
+ * and it is the single authority for the draft/ready state (green verification
+ * marks the PR ready; red/missing converts it back to draft) — the brief
+ * teaches the contract, it does not enforce it.
  */
 function combinedPrContract(repo: string, branch: string, prNumber: number): string {
   return (
@@ -104,11 +108,12 @@ function combinedPrContract(repo: string, branch: string, prNumber: number): str
     `GitHub writes go through the brokered tools:\n` +
     `- git.exec { argv: ["push", "${repo}", "HEAD:refs/heads/${branch}"] } to push your commits ` +
     `onto the SAME branch, so design PR #${prNumber} updates in place;\n` +
-    `- github.exec { argv: ["pr", "ready", "${prNumber}", "--repo", "${repo}"] } to mark the PR ` +
-    `ready for review once verification is green;\n` +
-    `- do NOT open a new PR (no "pr create") — you are implementing on the existing design PR;\n` +
+    `- do NOT open a new PR — you are implementing on the existing design PR, and ` +
+    `delivery.report_pr will refuse any PR except #${prNumber};\n` +
     `- finish by calling delivery.report_pr EXACTLY ONCE with THIS PR's URL, a short summary, and ` +
-    `the verification commands you actually ran with their honest exit codes.\n` +
+    `the verification commands you actually ran with their honest exit codes. Marathon sets the ` +
+    `PR's draft/ready state from that report — green verification marks PR #${prNumber} ready ` +
+    `for review, red or missing verification keeps it a draft. Do not toggle the draft state yourself.\n` +
     `Verify before delivering (§29.3): run the repo's own verify commands — the "verify:" list in ` +
     `.marathon/config.yml if the repo has one, else the plan's Verification section, else your ` +
     `best judgment (make test, pnpm test, …).`
