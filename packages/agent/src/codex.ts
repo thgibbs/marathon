@@ -1,5 +1,18 @@
 import { createHash, randomBytes } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -183,6 +196,14 @@ export function assertSubscriptionAckIfNeeded(
  * the repo's git view, and OUTSIDE the sessions subtree so a per-turn snapshot
  * can never capture it — asserted by test). Throws fail-closed when the
  * configured file is missing/unreadable, BEFORE any resource is provisioned.
+ *
+ * Symlink defense (§4.1): `.marathon-home`/`.codex` are agent-writable and
+ * persist across a task's turns, so a prior turn could plant a symlink there to
+ * redirect this HOST-SIDE write onto an arbitrary host file (overwrite + secret
+ * exfiltration). Every existing destination path component is `lstat`-checked
+ * for a real directory (never followed), and `auth.json` itself is opened
+ * `O_NOFOLLOW|O_EXCL` after unlinking any prior entry — so a planted link can
+ * never redirect the credential.
  */
 export function stageSubscriptionAuthJson(params: {
   workspaceDir: string;
@@ -196,13 +217,48 @@ export function stageSubscriptionAuthJson(params: {
   } catch (e) {
     throw new Error(
       `codex subscription mode is configured (${AUTH_JSON_ENV}) but the auth.json is unreadable: ${params.authJsonPath} — ` +
-        `run \`codex login\` on the host or point ${AUTH_JSON_ENV} at a valid file (§4.1): ${(e as Error).message}`,
+        `run \`codex login\` on the host or point ${AUTH_JSON_ENV} at a valid file (§4.1): ${e instanceof Error ? e.message : String(e)}`,
     );
   }
   const home = codexHomeHostPath(params);
+  // Fail closed if any existing component of the destination directory tree is a
+  // symlink (or a non-directory): a sandbox-planted link would otherwise
+  // redirect the write onto an arbitrary host path. Walk from the workspace down
+  // (`.marathon-home`, `.codex`, …), lstat each existing component, and only
+  // mkdir the missing tail.
+  let cursor = params.workspaceDir;
+  for (const segment of home.slice(params.workspaceDir.length).split("/").filter(Boolean)) {
+    cursor = join(cursor, segment);
+    let st: ReturnType<typeof lstatSync> | undefined;
+    try {
+      st = lstatSync(cursor);
+    } catch {
+      st = undefined; // missing → created below via mkdirSync
+    }
+    if (st && !st.isDirectory()) {
+      throw new Error(
+        `codex subscription staging refuses to write the credential through a symlinked/non-directory path component: ${cursor} ` +
+          `— possible sandbox-planted link redirecting $CODEX_HOME to an arbitrary host path (§4.1)`,
+      );
+    }
+  }
   mkdirSync(home, { recursive: true });
   const dest = join(home, "auth.json");
-  writeFileSync(dest, contents, { mode: 0o600 });
+  // Remove any prior entry (the symlink itself, never its target: rmSync does not
+  // follow the final link), then create the file with an fd that cannot follow a
+  // link (O_NOFOLLOW) and must not pre-exist (O_EXCL) — a link at `dest` makes
+  // the open fail rather than write through it.
+  rmSync(dest, { force: true });
+  const fd = openSync(
+    dest,
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    writeSync(fd, contents);
+  } finally {
+    closeSync(fd);
+  }
   return dest;
 }
 

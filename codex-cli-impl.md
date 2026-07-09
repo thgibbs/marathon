@@ -274,7 +274,10 @@ rationale transfers unchanged because it was about the *network posture*, not th
   activate silently — require `MARATHON_CODEX_SUBSCRIPTION_DEV=1` (mirroring
   `MARATHON_CLAUDE_SUBSCRIPTION_DEV`). Containment, each asserted by test: the file sits
   **outside the sessions subtree** so per-turn snapshots can never capture it; the atomic
-  config write can't touch it; it never enters env, argv, `config.toml`, or logs; teardown
+  config write can't touch it; it never enters env, argv, `config.toml`, or logs; staging
+  refuses symlinked path components and opens `auth.json` `O_NOFOLLOW` — a sandbox-planted
+  link (the tree is agent-writable across a task's turns) cannot redirect the credential
+  onto an arbitrary host file; teardown
   destroys it with the workspace (`.marathon-home` is already excluded from the repo's git
   view). Under subscription the USD budget is inert (skip the mid-invocation kill; rate
   limits + the watchdog bound runaways) — same as K7.

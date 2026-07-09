@@ -1,4 +1,15 @@
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -197,6 +208,56 @@ describe("stageSubscriptionAuthJson (§4.1 — the credential moves as a file)",
     const dest = stageSubscriptionAuthJson({ workspaceDir: ws, authJsonPath: src });
     const sessions = codexSessionHostPath({ workspaceDir: ws });
     expect(dest.startsWith(`${sessions}/`)).toBe(false);
+  });
+
+  it("refuses a sandbox-planted `.codex` symlink and writes NOTHING into its target (§4.1)", () => {
+    const ws = mkdtempSync(join(tmpdir(), "cxws-"));
+    const src = join(mkdtempSync(join(tmpdir(), "cxauth-")), "auth.json");
+    writeFileSync(src, "PLANTED-CREDENTIAL");
+    // A prior turn plants `.codex` as a link to an attacker-controlled dir.
+    const attackerDir = mkdtempSync(join(tmpdir(), "cxatk-"));
+    mkdirSync(join(ws, ".marathon-home"), { recursive: true });
+    symlinkSync(attackerDir, join(ws, ".marathon-home", ".codex"));
+
+    expect(() => stageSubscriptionAuthJson({ workspaceDir: ws, authJsonPath: src })).toThrow(/symlink/i);
+    // Nothing was written through the link into the attacker's directory.
+    expect(readdirSync(attackerDir)).toEqual([]);
+  });
+
+  it("refuses a sandbox-planted `.marathon-home` symlink and writes NOTHING into its target (§4.1)", () => {
+    const ws = mkdtempSync(join(tmpdir(), "cxws-"));
+    const src = join(mkdtempSync(join(tmpdir(), "cxauth-")), "auth.json");
+    writeFileSync(src, "PLANTED-CREDENTIAL");
+    const attackerDir = mkdtempSync(join(tmpdir(), "cxatk-"));
+    symlinkSync(attackerDir, join(ws, ".marathon-home"));
+
+    expect(() => stageSubscriptionAuthJson({ workspaceDir: ws, authJsonPath: src })).toThrow(/symlink/i);
+    expect(readdirSync(attackerDir)).toEqual([]);
+  });
+
+  it("a symlinked `auth.json` is replaced by a real file — the victim it pointed at is untouched (§4.1)", () => {
+    const ws = mkdtempSync(join(tmpdir(), "cxws-"));
+    const src = join(mkdtempSync(join(tmpdir(), "cxauth-")), "auth.json");
+    writeFileSync(src, "CHATGPT-LOGIN-SECRET");
+    // A victim host file the sandbox tries to overwrite by pointing auth.json at it.
+    const victim = join(mkdtempSync(join(tmpdir(), "cxvictim-")), "important.txt");
+    writeFileSync(victim, "VICTIM-CONTENTS");
+    const codexHome = join(ws, ".marathon-home", ".codex");
+    mkdirSync(codexHome, { recursive: true });
+    const dest = join(codexHome, "auth.json");
+    symlinkSync(victim, dest);
+
+    // rm-then-O_EXCL: the stage SUCCEEDS by replacing the link with a real file.
+    const returned = stageSubscriptionAuthJson({ workspaceDir: ws, authJsonPath: src });
+    expect(returned).toBe(dest);
+    // The victim file is byte-identical and never received the credential.
+    expect(readFileSync(victim, "utf8")).toBe("VICTIM-CONTENTS");
+    // The staged dest is a REAL file (not a link) holding the credential at 0600.
+    expect(lstatSync(dest).isSymbolicLink()).toBe(false);
+    expect(readFileSync(dest, "utf8")).toBe("CHATGPT-LOGIN-SECRET");
+    expect(statSync(dest).mode & 0o777).toBe(0o600);
+
+    rmSync(ws, { recursive: true, force: true });
   });
 });
 
