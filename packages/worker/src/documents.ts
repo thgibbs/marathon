@@ -46,6 +46,25 @@ export function docPathSlug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "doc";
 }
 
+/**
+ * The durable job kind for the automatic design-doc review (§A.3a #19). The
+ * surface that drafts a doc PR enqueues one job AFTER the `DocumentArtifact` is
+ * committed — a race-free, surface-agnostic trigger: whichever process opened
+ * the PR (Slack worker or the GitHub app) enqueues, and the GitHub app leases
+ * and runs the review. It replaces triggering off the `pull_request.opened`
+ * webhook, which could beat the artifact write and silently drop the review.
+ */
+export const DESIGN_REVIEW_JOB_KIND = "design_review";
+
+/**
+ * Idempotency key for a doc PR's design-review job — dedupes redeliveries and
+ * repeated `document.create` calls down to exactly one review per PR (PR numbers
+ * are unique and never reused, so the key never collides across distinct docs).
+ */
+export function designReviewJobKey(repo: string, prNumber: number): string {
+  return `design-review:${repo}:${prNumber}`;
+}
+
 /** What the recorder needs from the database (`Database` satisfies this). */
 export interface DocumentRecorderDb {
   getTask(taskId: Id): Promise<Task | null>;
@@ -61,14 +80,34 @@ export interface DocumentRecorderDb {
   updateTaskDeliveryTargets(taskId: Id, targets: DeliveryTarget[]): Promise<void>;
 }
 
+/** Optional hooks for the doc-PR recorder. */
+export interface DocumentPrRecorderHooks {
+  /**
+   * Fired AFTER the `produced` doc-PR artifact is committed (§A.3a #19) — the
+   * race-free point to (re-)ensure the automatic design-review trigger. Fires on
+   * BOTH the create and the converged/existing path so that a crash between the
+   * artifact commit and the enqueue is recovered when the doc tool call is
+   * retried (which then finds the existing artifact): the enqueue MUST be
+   * idempotent (keyed on the PR), so repeats collapse to exactly one review.
+   * MUST be awaited by the implementation and MUST await the enqueue itself — a
+   * throw propagates so the doc tool call fails loudly instead of the trigger
+   * being silently dropped. `owningTaskId` is the artifact's PRODUCER task (so
+   * the job resolves back to the produced artifact even when a later revise
+   * re-ensures it).
+   */
+  onProduced?: (e: { tenantId: string; repo: string; prNumber: number; owningTaskId: string }) => Promise<void> | void;
+}
+
 /**
  * Build the `onDocumentPr` hook: record the `DocumentArtifact` (idempotent —
  * a converged retry finds the existing row) and extend the task's delivery
  * targets with the doc PR, seeding them from the task's source so the
  * merge-spawned implementation task inherits BOTH the originating thread and
- * the doc PR (K2).
+ * the doc PR (K2). It also (re-)fires `onProduced` — the durable design-review
+ * trigger — after the artifact is committed, on both the new and existing
+ * paths so a lost enqueue is recovered on retry (the hook is idempotent).
  */
-export function makeDocumentPrRecorder(db: DocumentRecorderDb) {
+export function makeDocumentPrRecorder(db: DocumentRecorderDb, hooks: DocumentPrRecorderHooks = {}) {
   return async (event: {
     taskId: string;
     tenantId: string;
@@ -91,6 +130,20 @@ export function makeDocumentPrRecorder(db: DocumentRecorderDb) {
         title: event.path,
       });
     }
+
+    // §A.3a #19: signal the reviewer AFTER the artifact is durably committed, so
+    // the review job can never observe a missing artifact (the webhook-trigger
+    // race this replaces). Fired on the existing path too — a crash after the
+    // commit but before the enqueue is recovered when the doc tool call retries
+    // and converges here — with the enqueue kept idempotent (keyed on the PR) so
+    // repeats (retry, revise, redelivery) collapse to exactly one review. Uses
+    // the PRODUCER's task id so the job resolves to the produced artifact.
+    await hooks.onProduced?.({
+      tenantId: event.tenantId,
+      repo: event.repo,
+      prNumber: event.prNumber,
+      owningTaskId: existing?.owningTaskId ?? event.taskId,
+    });
 
     if (task) {
       const seed: DeliveryTarget[] =

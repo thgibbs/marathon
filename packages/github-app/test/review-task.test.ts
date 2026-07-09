@@ -1,7 +1,7 @@
 import type { AgentTurnContext } from "@marathon/agent";
 import type { Task } from "@marathon/core";
 import { describe, expect, it } from "vitest";
-import { handleCodeReviewReady, handleReviewTask, runReviewCycle, type GithubAppDeps } from "../src/handlers";
+import { handleCodeReviewReady, handleDocReviewOpened, handleReviewTask, runDesignReviewJob, runReviewCycle, type GithubAppDeps } from "../src/handlers";
 
 /**
  * §A.3a review flow: a reviewer agent (task.agentId) reads the PR under review
@@ -233,5 +233,102 @@ describe("handleCodeReviewReady — code review fires when a code PR goes ready 
     } as never as GithubAppDeps;
     expect(await handleCodeReviewReady(deps, "o/r", 9)).toBe(true);
     expect(reviews).toBe(1);
+  });
+});
+
+describe("handleDocReviewOpened — design review fires when a doc PR opens (§A.3a, surface-agnostic)", () => {
+  it("ignores a PR with no produced doc artifact (code PR / human PR)", async () => {
+    const deps = { db: { findDocumentArtifactByPr: async () => null } } as never as GithubAppDeps;
+    expect(await handleDocReviewOpened(deps, "o/r", 9)).toBe(false);
+  });
+
+  it("ignores a non-produced doc artifact (e.g. a watched doc)", async () => {
+    const deps = {
+      db: { findDocumentArtifactByPr: async () => ({ role: "watched", owningAgentId: "a" }) },
+    } as never as GithubAppDeps;
+    expect(await handleDocReviewOpened(deps, "o/r", 9)).toBe(false);
+  });
+
+  it("runs the design review (owned by the drafter) for a Marathon-drafted doc PR — regardless of drafting surface", async () => {
+    let reviews = 0;
+    const submitted: Array<Record<string, unknown>> = [];
+    const deps = {
+      db: {
+        // A Slack-drafted doc PR: role 'produced', owned by the drafting agent.
+        findDocumentArtifactByPr: async () => ({ role: "produced", owningAgentId: "owner-id", location: { path: "docs/p.md", branch: "b" } }),
+        getReviewRound: async () => (reviews === 0 ? null : { lastVerdict: "approved", rounds: reviews }),
+        getLatestAgentVersion: async () => null,
+        transitionTask: async () => {},
+      },
+      client: { getPullRequestFiles: async () => [], readFileWithSha: async () => ({ content: "# doc", sha: "s" }) },
+      tenantId: "tn1",
+      orchestrator: {
+        submit: async (i: { agentId?: string; sourceRef?: Record<string, unknown> }) => {
+          submitted.push({ agentId: i.agentId, sourceRef: i.sourceRef });
+          return { task: { id: "rt", agentId: i.agentId, sourceRef: i.sourceRef, tenantId: "tn1" }, deduped: false };
+        },
+      },
+      reviewerFor: (event: string) => (event === "design-review" ? "reviewer-id" : undefined),
+      agentRegistry: (id: string | undefined) =>
+        id === "reviewer-id"
+          ? { runtime: { nextTurn: async () => { reviews++; return { text: "r", done: true }; } }, on: ["design-review"], models: { default: "m" } }
+          : undefined,
+    } as never as GithubAppDeps;
+    expect(await handleDocReviewOpened(deps, "o/r", 12)).toBe(true);
+    expect(reviews).toBe(1);
+    // The review task carried the design_review kind and the drafting agent as owner.
+    expect(submitted[0]).toMatchObject({ agentId: "reviewer-id", sourceRef: { kind: "design_review", number: 12 } });
+  });
+});
+
+describe("runDesignReviewJob — durable, race-free design-review trigger (§A.3a #19)", () => {
+  it("no-ops on an empty task id", async () => {
+    const deps = { db: {} } as never as GithubAppDeps;
+    expect(await runDesignReviewJob(deps, null)).toBe(false);
+  });
+
+  it("no-ops when the task produced no doc artifact (a non-doc task)", async () => {
+    const deps = { tenantId: "tn1", db: { findDocumentArtifactByTask: async () => null } } as never as GithubAppDeps;
+    expect(await runDesignReviewJob(deps, "task-x")).toBe(false);
+  });
+
+  // The interleaving the reviewer flagged: the job is only ever enqueued AFTER
+  // the recorder commits the produced artifact, so by the time the poller runs
+  // this job, findDocumentArtifactByTask resolves it — the review runs. There is
+  // no window in which the trigger observes a missing artifact and is dropped.
+  it("resolves the task's produced doc PR and runs the review — the artifact is always present by job time", async () => {
+    let reviews = 0;
+    const byPrCalls: Array<[string, number]> = [];
+    const deps = {
+      tenantId: "tn1",
+      db: {
+        // Enqueued after the write ⇒ the job's task resolves to its produced PR.
+        findDocumentArtifactByTask: async () => ({ role: "produced", location: { repo: "o/r", prNumber: 12, path: "docs/p.md", branch: "b" } }),
+        findDocumentArtifactByPr: async (_t: string, repo: string, pr: number) => {
+          byPrCalls.push([repo, pr]);
+          return { role: "produced", owningAgentId: "owner-id", location: { path: "docs/p.md", branch: "b" } };
+        },
+        getReviewRound: async () => (reviews === 0 ? null : { lastVerdict: "approved", rounds: reviews }),
+        getLatestAgentVersion: async () => null,
+        transitionTask: async () => {},
+      },
+      client: { getPullRequestFiles: async () => [], readFileWithSha: async () => ({ content: "# doc", sha: "s" }) },
+      orchestrator: {
+        submit: async (i: { agentId?: string; sourceRef?: Record<string, unknown> }) => ({
+          task: { id: "rt", agentId: i.agentId, sourceRef: i.sourceRef, tenantId: "tn1" },
+          deduped: false,
+        }),
+      },
+      reviewerFor: (event: string) => (event === "design-review" ? "reviewer-id" : undefined),
+      agentRegistry: (id: string | undefined) =>
+        id === "reviewer-id"
+          ? { runtime: { nextTurn: async () => { reviews++; return { text: "r", done: true }; } }, on: ["design-review"], models: { default: "m" } }
+          : undefined,
+    } as never as GithubAppDeps;
+
+    expect(await runDesignReviewJob(deps, "doc-task")).toBe(true);
+    expect(reviews).toBe(1);
+    // It routed by the PR resolved from the task (repo + number), not from the webhook.
+    expect(byPrCalls[0]).toEqual(["o/r", 12]);
   });
 });

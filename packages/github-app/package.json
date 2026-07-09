@@ -15,6 +15,7 @@
     "@marathon/db": "workspace:*",
     "@marathon/memory": "workspace:*",
     "@marathon/model-gateway": "workspace:*",
+    "@marathon/queue": "workspace:*",
     "@marathon/surface": "workspace:*",
     "@marathon/surface-github": "workspace:*",
     "@marathon/tools": "workspace:*",

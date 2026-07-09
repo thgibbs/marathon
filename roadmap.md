@@ -962,6 +962,60 @@ fold into M7–M9 sequencing as capacity allows.
     fail-closed cross-validation (Anthropic model + container-reachable proxy, §4.1/§13.1).
     Then `harness: claude-code` is genuinely selectable per deployment across BOTH surfaces
     (the §28 organ #1 "harnesses are replaceable" claim, fully realized). Pairs with K7.
+18. **Webhook proxy: classify normal stream-end vs. real error** *(dev UX / log noise;
+    follow-on to #12, surfaced 2026-07-09 dogfooding — the log showed a full
+    `TypeError: terminated` / `ETIMEDOUT` stack every time smee dropped the idle SSE
+    connection).* `WebhookProxyClient.connect` (`@marathon/surface-github`) already recovers
+    correctly — it catches, calls `onError`, and resubscribes after `reconnectDelayMs` — but
+    it hands *every* stream end to `onError`, so the live github-app's `console.error`
+    (`demos/github-app/live.ts`) renders routine idle drops as scary stack traces
+    indistinguishable from a genuine failure (smee down, HTTP 5xx). Fix in the client, not the
+    caller, so callers don't pattern-match on undici internals: detect the expected cases —
+    graceful stream end and the idle-timeout `terminated`/`ETIMEDOUT`/abort — and surface them
+    on a quiet path (an `onReconnect`/`onDisconnect` hook or an error tagged
+    `expected: true`), reserving `onError` for real failures. Then `live.ts` logs a terse
+    "webhook proxy reconnecting…" for the common case and keeps `console.error` loud for the
+    rest. Same ≤30-minute stranger-bar rationale as #12/#13 — noisy-but-benign logs read as
+    breakage to someone new to the loop. Add a unit test asserting an idle `terminated` takes
+    the quiet path while an HTTP-5xx/non-ok response still reaches `onError`.
+19. **Design-doc auto-review must be surface-agnostic — trigger on the doc PR, not the
+    drafting surface** *(kernel correctness; surfaced 2026-07-09 dogfooding: a doc PR drafted
+    from Slack (#46) never got the auto design-review — no `review_round` row, no reviewer
+    comment).* The §A.3a auto design-review was triggered INLINE at the tail of
+    `handleGithubMention` (`packages/github-app/src/handlers.ts`), so it only fired for docs
+    drafted via a GitHub mention. A Slack-drafted doc PR runs `handleMention` →
+    `runAndReport` (slack-app) — which opens the same doc PR but never calls
+    `runReviewCycle` — so the reviewer was skipped entirely. Root cause: the trigger was
+    coupled to *who drafted* rather than to *a doc PR being opened*. Code review already got
+    this right (it fires off the `ready_for_review` webhook via `handleCodeReviewReady`,
+    independent of surface). **Landed 2026-07-09:** the trigger is now a **durable queued
+    job**, not a webhook. `makeDocumentPrRecorder` gained an `onProduced` hook that fires
+    (awaited) AFTER it commits the `produced` `DocumentArtifact`; both live apps wire it to
+    `await queue.enqueue({ kind: DESIGN_REVIEW_JOB_KIND, idempotencyKey:
+    design-review:<repo>:<pr> })`. The github-app runs a dedicated poller whose
+    `processDesignReviewJob` leases a job and runs `runDesignReviewJob` →
+    `handleDocReviewOpened` → `runReviewCycle(kind: "design_review")`, owned by the drafting
+    agent. This is surface-agnostic (Slack worker or GitHub app enqueues; the github-app
+    reviews), **race-free** (enqueued strictly after the artifact write, closing the first P1
+    — `document.create` opens the PR before `onDocumentPr` persists the artifact, so a
+    `pull_request.opened` webhook could beat the write and drop the review), and **durable**.
+    Durability hardening from PR review (round 2): (a) the enqueue is **awaited**, not
+    fire-and-forget, so a failure fails the doc tool call rather than silently dropping the
+    trigger; (b) `onProduced` **re-fires on the converged/existing path** (not just on a new
+    artifact), keyed to the PRODUCER task, so a crash between the artifact commit and the
+    enqueue is recovered when the doc tool call retries — the idempotency key collapses repeats
+    (retry/revise/redelivery) to exactly one review; (c) `processDesignReviewJob`
+    **heartbeats the lease** across the multi-turn kickback loop and, on lease loss in a scaled
+    deployment, **abandons** (never acks/fails under a stale token, never double-runs effects
+    silently) — a rejected ack surfaces as `lease-lost`. Transient failures retry with backoff,
+    then dead-letter. The inline call in `handleGithubMention` is removed; no webhook `opened`
+    trigger. Same cross-surface-coupling class as #14. Unit tests: recorder fires `onProduced`
+    after the write and re-fires (idempotently) on a converged retry with the producer task id;
+    `runDesignReviewJob` resolves the task→produced-PR and runs the review (the interleaving the
+    review flagged); `processDesignReviewJob` acks on success, abandons on lease loss (no ack),
+    retries/dead-letters on error; `handleDocReviewOpened` ignores non-`produced` artifacts.
+    NOTE: #46 predates the fix and won't be reviewed retroactively (no job was enqueued for it)
+    — re-draft or close/reopen to exercise the path.
 
 ---
 
