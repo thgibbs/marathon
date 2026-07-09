@@ -1016,6 +1016,23 @@ fold into M7–M9 sequencing as capacity allows.
     retries/dead-letters on error; `handleDocReviewOpened` ignores non-`produced` artifacts.
     NOTE: #46 predates the fix and won't be reviewed retroactively (no job was enqueued for it)
     — re-draft or close/reopen to exercise the path.
+20. **`codex exec` dropped `--ask-for-approval` — the codex harness passed a removed flag**
+    *(harness/CLI compatibility; surfaced 2026-07-09 dogfooding #19: the design-review job for a
+    freshly drafted doc PR (#49) enqueued and the poller ran it, but the reviewer's codex
+    subprocess died 5× and dead-lettered).* `codexArgv` (`packages/agent/src/codex.ts`) always
+    appended `--ask-for-approval never` (per codex-impl.md §B.4, written against older codex
+    docs). **codex-cli 0.143.0 removed that flag from `codex exec`**, so every codex-harness turn
+    exited 2 before session start (`error: unexpected argument '--ask-for-approval' found`) — the
+    §2b #19 trigger/enqueue/poller all worked, but no verdict was ever produced. `codex exec` is
+    non-interactive by design (the [current docs](https://learn.chatgpt.com/docs/non-interactive-mode)
+    document no approval flag), and MCP pre-approval already rides in `config.toml`
+    (`default_tools_approval_mode = "approve"`), so the flag was pure liability. **Landed
+    2026-07-09:** dropped the flag from `codexArgv` (sandbox policy via `--sandbox` is the only
+    per-run execution control); updated the purity test to assert its absence; corrected
+    codex-impl.md §B.4. Affected ALL codex-harness agents (K8 put codex on every role surface),
+    not just the reviewer. The `--yolo` fallback for the MCP auto-cancel bug (#24135) is
+    unaffected. Follow-up worth considering: pin the codex CLI version so a silent upstream flag
+    change can't dead-letter the harness again.
 
 ---
 

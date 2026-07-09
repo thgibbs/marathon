@@ -225,10 +225,15 @@ applies to MCP tool names is cosmetic to the model and invisible to the broker.
 The CLI's own permission machinery is **defense-in-depth, never the security boundary** —
 containment (the container) and the gateway (host-side) are the boundary (design §12).
 
-- **Default: `--ask-for-approval never` with the Marathon MCP server pre-approved**
+- **Default: non-interactive `codex exec` with the Marathon MCP server pre-approved**
   (`default_tools_approval_mode = "approve"` on `[mcp_servers.marathon]`, or per-tool
-  `approval_mode` entries) — headless runs can't answer prompts, and this keeps
-  `--sandbox workspace-write` active as real defense-in-depth. No `--yolo` on the happy path.
+  `approval_mode` entries) — headless runs can't answer prompts, and `--sandbox workspace-write`
+  stays active as real defense-in-depth. No `--yolo` on the happy path.
+  > **Correction (2026-07-09, codex-cli 0.143.0):** `codex exec` no longer accepts
+  > `--ask-for-approval` — the flag was removed and passing it makes the CLI exit 2 before the
+  > session starts, which dead-lettered every codex turn (roadmap §2b #20). `exec` is
+  > non-interactive by design; the `config.toml` pre-approval above is what keeps shim calls
+  > from being prompted/cancelled. Every invocation shape below drops the flag.
 - **Fallback, not default: `--yolo`** (`--dangerously-bypass-approvals-and-sandbox`) **iff**
   the pinned CLI reproduces the auto-cancel bug
   ([openai/codex#24135](https://github.com/openai/codex/issues/24135): earlier builds
@@ -415,8 +420,8 @@ resolve model-access env fail-closed **first** → container + workspace up, bro
 `CODEX_HOME/config.toml`** (the one step Claude Code doesn't have; §3.1 — MCP server with
 `required = true`, `developer_instructions` persona (§2.4), the untrusted-project pin;
 config only, never the session state beside it) → spawn
-`codex exec --json [resume <sid>] "<prompt>" --sandbox workspace-write --ask-for-approval
-never --model <id> --cd /workspace` → reduce the event stream (progress, id capture, usage)
+`codex exec --json [resume <sid>] "<prompt>" --sandbox workspace-write --model <id> --cd
+/workspace` → reduce the event stream (progress, id capture, usage)
 → on `turn.completed`: snapshot → `onTurnCheckpoint` → `AgentTurn` → finally container stop.
 Pure, unit-testable seams: `codexArgv(opts, checkpoint)` (no secrets in argv),
 `codexConfigToml(...)` (the config writer), the stream reducer, snapshot/restore paths.
@@ -541,10 +546,12 @@ GitHub issue and two doc pages, not an exhaustive spec. Items 1–3 gate the bui
    watchdog knob (§2.1) suffices — noting K7 as-built runs uncapped too.
 2. Exact `turn.completed` usage/cost schema; per-invocation or cumulative across `resume`;
    whether any usage appears mid-stream (gates the mid-invocation budget kill, §4.3).
-3. `--ask-for-approval never` + `default_tools_approval_mode = "approve"` actually
+3. The no-flag `codex exec` + `default_tools_approval_mode = "approve"` actually
    pre-approves shim tool calls (vs the
-   [#24135](https://github.com/openai/codex/issues/24135) auto-cancel). Determines the
-   `--yolo` fallback (§3.3) — confirm **before committing the rest of the build**.
+   [#24135](https://github.com/openai/codex/issues/24135) auto-cancel). (`--ask-for-approval`
+   was removed from `exec` in codex-cli 0.143.0 — roadmap §2b #20 — so exec relies on the
+   `config.toml` pre-approval alone.) Determines the `--yolo` fallback (§3.3) — confirm
+   **before committing the rest of the build**.
 4. ~~Whether ChatGPT-subscription auth persists a token under `CODEX_HOME`~~ **Resolved
    as-built (2026-07-09):** the credential IS a file — the CLI reads `$CODEX_HOME/auth.json`,
    and Marathon stages it there per turn from `MARATHON_CODEX_AUTH_JSON` (§4.1). Persistence
@@ -579,9 +586,10 @@ GitHub issue and two doc pages, not an exhaustive spec. Items 1–3 gate the bui
 codex exec --json \
   [resume <session-id>] "<prompt>" \
   --sandbox workspace-write \
-  --ask-for-approval never \
   --model gpt-5-codex \
   --cd /workspace
+# exec is non-interactive; approval is not a flag here (codex-cli 0.143.0 removed
+# --ask-for-approval) — MCP pre-approval rides in config.toml (§B.4 / roadmap §2b #20).
 # fallback posture only (verify-on-pin #3): --dangerously-bypass-approvals-and-sandbox
 ```
 

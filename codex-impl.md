@@ -423,14 +423,21 @@ Codex attaches Marathon's governed tools exactly like Claude Code: `marathon-mcp
 stdio MCP server in `config.toml`'s `[mcp_servers.marathon]`, forwarding every `tools/call` to
 the host broker. **Reused verbatim — no new shim.**
 
-**Default: `--ask-for-approval never` with the Marathon MCP server pre-approved, not `--yolo`.**
-The current non-interactive-mode docs document `--ask-for-approval never` as the intended flag
-for headless runs, and the MCP configuration reference documents a `default_tools_approval_mode
-= "approve"` setting (plus a narrower per-tool `approval_mode` override) for marking specific
-MCP servers/tools as pre-approved rather than prompted. The primary invocation shape is:
+**Default: non-interactive `codex exec` with the Marathon MCP server pre-approved, not `--yolo`.**
+> **Correction (2026-07-09, verified against codex-cli 0.143.0 + the current
+> [non-interactive-mode docs](https://learn.chatgpt.com/docs/non-interactive-mode)):** `codex exec`
+> is non-interactive **by design** and no longer accepts `--ask-for-approval` — the flag was removed
+> from `exec` and passing it makes the CLI exit 2 *before the session starts* (`unexpected argument
+> '--ask-for-approval'`), which dead-lettered every codex-harness turn (roadmap §2b #20). The
+> invocation drops the flag; the sandbox policy (`--sandbox`) is the only per-run execution control,
+> and MCP pre-approval still comes from `config.toml`. The `--yolo` fallback below is unaffected.
+
+The MCP configuration reference documents a `default_tools_approval_mode = "approve"` setting (plus
+a narrower per-tool `approval_mode` override) for marking specific MCP servers/tools as pre-approved
+rather than prompted. The primary invocation shape is:
 
 ```
-codex exec --json --sandbox workspace-write --ask-for-approval never
+codex exec --json --sandbox workspace-write
 ```
 
 with `config.toml`'s `[mcp_servers.marathon]` entry setting `default_tools_approval_mode =
@@ -452,8 +459,8 @@ defense-in-depth, never the security boundary — containment (the container) an
 file/process boundary and `ToolGateway.run` is the effect boundary, regardless of whether the
 CLI's own sandbox layer is active. But treat it as a degraded posture specific to whichever
 pinned version needed it, not the design's default — log/flag it per deployment if triggered,
-and drop back to `--ask-for-approval never` on the next CLI pin where the bug is confirmed
-fixed.
+and drop back to the plain no-flag `codex exec` (relying on the `config.toml` MCP pre-approval)
+on the next CLI pin where the bug is confirmed fixed.
 
 ### B.5 Model access — provider constraint + auth modes
 
@@ -493,9 +500,9 @@ the boundary) applies unchanged to Codex, with one substitution and one addition
   telemetry/autoupdate-disable env var or config key is (*verify-on-pin* #6 — not found in the
   sources reviewed).
 - Add: `--sandbox workspace-write` is passed on the primary path (§B.4) and stays enforced
-  there, since `--ask-for-approval never` doesn't disable the CLI's own sandbox; on the
-  `--yolo` fallback path it's still passed anyway — harmless if bypassed, free defense-in-depth
-  if a future CLI version respects both flags together.
+  there — it is the only per-run execution control now that the primary path passes no approval
+  flag; on the `--yolo` fallback path it's still passed anyway — harmless if bypassed, free
+  defense-in-depth if a future CLI version respects both flags together.
 - Unchanged: read-only root, tmpfs scratch, cap-drop ALL, no-new-privileges, non-root uid,
   cpu/mem/pids limits, no business secrets forwarded (§12.6, `sandbox.ts:69`).
 
@@ -537,9 +544,11 @@ mandatory pre-build homework, not optional polish:
    not, confirm the Marathon-side watchdog approach (§B.3) is sufficient.
 2. Exact `turn.completed` JSON schema — does it carry token usage / cost fields, and are they
    per-invocation or cumulative across `resume`?
-3. Confirm `--ask-for-approval never` + `default_tools_approval_mode = "approve"` (§B.4)
-   actually pre-approves `marathon-mcp-shim` tool calls on the pinned CLI version, rather than
-   auto-cancelling them; check the status of
+3. Confirm the no-flag `codex exec` + `default_tools_approval_mode = "approve"` (§B.4) actually
+   pre-approves `marathon-mcp-shim` tool calls on the pinned CLI version, rather than
+   auto-cancelling them (the `--ask-for-approval` flag was removed from `exec` as of codex-cli
+   0.143.0 — §B.4 correction / roadmap §2b #20 — so exec relies on the `config.toml`
+   pre-approval alone); check the status of
    [openai/codex#24135](https://github.com/openai/codex/issues/24135) to see whether the
    auto-cancel bug it reported still reproduces, and fall back to `--yolo` only if it does.
 4. Whether ChatGPT-subscription auth persists a token to a host-visible path under `CODEX_HOME`
@@ -574,9 +583,9 @@ mandatory pre-build homework, not optional polish:
 Part A (event-scoped agent dispatch + stage-scoped model roles) is small, additive, and has no
 external dependency — it can ship immediately, ahead of and independent from Part B. Part B
 (Codex harness) is a K7-sized milestone (**K8**) gated on the verify-on-pin items in §B.9 —
-most importantly confirming that `--ask-for-approval never` plus MCP pre-approval (§B.4)
-actually works on the pinned CLI version, since that determines whether Codex ships with its
-own sandbox active by default or needs the `--yolo` fallback — recommend confirming that
+most importantly confirming that the no-flag `codex exec` plus `config.toml` MCP pre-approval
+(§B.4) actually works on the pinned CLI version, since that determines whether Codex ships with
+its own sandbox active by default or needs the `--yolo` fallback — recommend confirming that
 specifically before committing the rest of the build.
 
 ## Open questions / stated assumptions (flagging for review, not blocking on them)
