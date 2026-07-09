@@ -26,6 +26,16 @@ export interface EnqueueInput {
   kind?: string;
   idempotencyKey?: string;
   maxAttempts?: number;
+  /**
+   * When true, the job is inserted in the terminal 'done' state so no worker
+   * can ever lease it. Use for inline-driven tasks whose caller executes the
+   * work directly: the row still serves as an idempotency ledger entry (the
+   * same key on a re-submit finds this row and returns deduped=true), but it
+   * is never runnable work. Has no effect when idempotencyKey is absent —
+   * without a key there is nothing to deduplicate, so the insert is skipped
+   * entirely by the Orchestrator.
+   */
+  inline?: boolean;
 }
 
 export interface EnqueueResult {
@@ -54,12 +64,17 @@ export class Queue {
 
   /** Insert a job; a duplicate idempotency key is a no-op (returns deduped). */
   async enqueue(input: EnqueueInput): Promise<EnqueueResult> {
+    // Inline tasks insert as 'done' so the row acts as an idempotency ledger
+    // entry only — no worker can ever lease a 'done' job (dequeue selects
+    // 'ready' or expired-'leased' rows only). Without a key there is nothing
+    // to deduplicate, so skip the insert entirely (the caller handles that).
+    const status = input.inline ? "done" : "ready";
     const { rows } = await this.pool.query(
-      `insert into job(task_id, kind, idempotency_key, max_attempts)
-       values ($1, $2, $3, $4)
+      `insert into job(task_id, kind, idempotency_key, max_attempts, status)
+       values ($1, $2, $3, $4, $5)
        on conflict (idempotency_key) do nothing
        returning *`,
-      [input.taskId ?? null, input.kind ?? DEFAULT_JOB_KIND, input.idempotencyKey ?? null, input.maxAttempts ?? 5],
+      [input.taskId ?? null, input.kind ?? DEFAULT_JOB_KIND, input.idempotencyKey ?? null, input.maxAttempts ?? 5, status],
     );
     if (rows[0]) return { job: rowToJob(rows[0]), deduped: false };
     if (input.idempotencyKey) {

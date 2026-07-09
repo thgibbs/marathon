@@ -4,6 +4,7 @@ import { getRepoAccess, MAX_AUTO_REVIEW_ROUNDS, shouldKickBack, type GithubClien
 import {
   emptyCheckpoint,
   implementationTaskKey,
+  InvalidTransitionError,
   mergeDeliveryTargets,
   revisionTaskKey,
   type DeliveryTarget,
@@ -168,8 +169,7 @@ export async function handleReviewTask(deps: GithubAppDeps, task: Task): Promise
   const agent = resolveAgent(deps, task.agentId ?? undefined);
   // The reviewer must subscribe to this review event, else the task is a no-op.
   if (!agentSubscribesTo({ on: agent.on }, event)) {
-    await deps.db.transitionTask(task.id, "running");
-    await deps.db.transitionTask(task.id, "completed");
+    await safeCompleteTask(deps.db, task.id);
     return;
   }
 
@@ -198,8 +198,7 @@ export async function handleReviewTask(deps: GithubAppDeps, task: Task): Promise
         `⚠️ Automated review could not run — I couldn't read this PR's contents (${String(e).slice(0, 140)}). Leaving it for a human reviewer.`,
       )
       .catch(() => {});
-    await deps.db.transitionTask(task.id, "running");
-    await deps.db.transitionTask(task.id, "completed");
+    await safeCompleteTask(deps.db, task.id);
     return; // no verdict recorded — the loop reads no new round and stops.
   }
 
@@ -222,8 +221,7 @@ export async function handleReviewTask(deps: GithubAppDeps, task: Task): Promise
 
   // The review lands only if review.report ran; its onReviewed hook records the
   // verdict the kickback loop reads. Nothing else to do here.
-  await deps.db.transitionTask(task.id, "running");
-  await deps.db.transitionTask(task.id, "completed");
+  await safeCompleteTask(deps.db, task.id);
 }
 
 /**
@@ -258,6 +256,9 @@ export async function runReviewCycle(
       agentId: reviewerId,
       sourceType: "github",
       sourceRef: { kind, repo, number: prNumber },
+      // The review is driven inline by handleReviewTask below; no worker should
+      // lease this task from the queue.
+      inline: true,
     });
     await handleReviewTask(deps, reviewTask);
 
@@ -320,6 +321,9 @@ async function runOwnerRevision(
     agentId: ownerAgentId,
     sourceType: "github",
     sourceRef: { kind: "design_revision", repo, number: prNumber },
+    // The owner revision is driven inline (nextTurn called below); no worker
+    // should lease this task from the queue.
+    inline: true,
   });
   const current = await deps.client.readFileWithSha(repo, loc.path, loc.branch).catch(() => ({ content: "" }));
   // The reviewer's changes_requested comment rides in the PR context.
@@ -341,8 +345,7 @@ async function runOwnerRevision(
     },
     checkpoint: emptyCheckpoint(),
   });
-  await deps.db.transitionTask(task.id, "running");
-  await deps.db.transitionTask(task.id, "completed");
+  await safeCompleteTask(deps.db, task.id);
   return true; // re-review the revised doc inline
 }
 
@@ -367,6 +370,29 @@ function withFooter(reply: string | undefined, footer: string): string {
 
 function fanoutOf(deps: GithubAppDeps): DeliveryFanout {
   return deps.fanout ?? new DeliveryFanout({ github: deps.delivery }, deps.db);
+}
+
+/**
+ * Complete an inline-driven task with the queued→running→completed bookkeeping
+ * pair, tolerating a racing consumer that already completed it.
+ *
+ * Inline tasks are submitted with `inline: true` so no queue Worker should
+ * ever lease them, but a slack Worker could still race on a task that was
+ * created before the inline flag was deployed (or if a task reached the queue
+ * in any other unexpected path). If the task was already completed by a racing
+ * consumer, the post-turn side effects (PR comment, etc.) have already landed —
+ * throwing here would cause the queue job to retry the entire turn and
+ * duplicate those effects. We therefore tolerate InvalidTransitionError on
+ * these bookkeeping transitions only. Any other DB error still propagates.
+ */
+async function safeCompleteTask(db: Database, taskId: Id): Promise<void> {
+  try {
+    await db.transitionTask(taskId, "running");
+    await db.transitionTask(taskId, "completed");
+  } catch (err) {
+    if (err instanceof InvalidTransitionError) return;
+    throw err;
+  }
 }
 
 /** Mention on a PR/issue: revise the existing draft doc, or draft a new design-doc PR. */
@@ -404,6 +430,9 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
     agents: deps.agents,
     agentIdByName: deps.agentIdByName,
     defaultAgent: deps.defaultAgent,
+    // The mention is driven inline (nextTurn called further down in this
+    // handler); no worker should lease this task from the queue.
+    inline: true,
   });
   const agentId = deps.agentIdByName[agentName];
   // Multi-agent dispatch (§A.4): the routed agent's own runtime + subscription
@@ -430,8 +459,7 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
         { repo, number },
         { summary: "This agent isn't configured to respond to design-doc review comments (on: excludes design-review)." },
       );
-      await deps.db.transitionTask(task.id, "running");
-      await deps.db.transitionTask(task.id, "completed");
+      await safeCompleteTask(deps.db, task.id);
       return;
     }
     const current = await deps.client.readFileWithSha(repo, loc.path, loc.branch).catch(() => ({ content: "", sha: "" }));
@@ -471,8 +499,7 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
         costUsd: await deps.db.sumModelCostUsd(task.id),
       },
     );
-    await deps.db.transitionTask(task.id, "running");
-    await deps.db.transitionTask(task.id, "completed");
+    await safeCompleteTask(deps.db, task.id);
     return;
   }
 
@@ -483,8 +510,7 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
       { repo, number },
       { summary: "This agent isn't configured to draft design docs (on: excludes draft)." },
     );
-    await deps.db.transitionTask(task.id, "running");
-    await deps.db.transitionTask(task.id, "completed");
+    await safeCompleteTask(deps.db, task.id);
     return;
   }
 
@@ -526,8 +552,7 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
         costUsd: await deps.db.sumModelCostUsd(task.id),
       },
     );
-    await deps.db.transitionTask(task.id, "running");
-    await deps.db.transitionTask(task.id, "completed");
+    await safeCompleteTask(deps.db, task.id);
     return;
   }
   const prNumber = artifactLoc.prNumber;

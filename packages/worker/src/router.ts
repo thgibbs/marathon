@@ -9,6 +9,12 @@ export interface RouteOptions {
   /** Maps agent name -> agent id for the tenant. */
   agentIdByName: Record<string, Id>;
   defaultAgent?: string;
+  /**
+   * When true, the submitted task will not be leasable by a queue Worker.
+   * Pass this from call sites that drive the task inline immediately after
+   * routing. See Orchestrator.submit's `inline` option for the full contract.
+   */
+  inline?: boolean;
 }
 
 export interface RouteResult {
@@ -51,6 +57,7 @@ export class InvocationRouter {
       sourceRef: invocation.sourceRef,
       inputText: invocation.text,
       idempotencyKey,
+      inline: opts.inline,
     });
 
     return { task, agentName: agent.name, deduped };

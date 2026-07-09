@@ -263,6 +263,17 @@ export class Orchestrator {
     deliveryTargets?: DeliveryTarget[];
     inputText?: string;
     idempotencyKey?: string;
+    /**
+     * When true, the caller drives this task INLINE (immediately after submit)
+     * and no worker should ever lease it. If an idempotencyKey is provided, a
+     * 'done'-status job row is still inserted as an idempotency ledger entry so
+     * that webhook re-deliveries deduplicate correctly — the row is visible to
+     * findByIdempotencyKey but never returned by dequeue. When no idempotencyKey
+     * is provided, the insert is skipped entirely (nothing to deduplicate).
+     *
+     * Defaults to false. Do NOT set this for tasks the queue Worker should run.
+     */
+    inline?: boolean;
   }): Promise<{ task: Task; deduped: boolean }> {
     // If this invocation was already submitted, reuse its task.
     if (input.idempotencyKey) {
@@ -284,13 +295,27 @@ export class Orchestrator {
       deliveryTargets: input.deliveryTargets,
       inputText: input.inputText,
     });
-    const { deduped } = await this.queue.enqueue({
-      taskId: task.id,
-      // Partition by kind (Track 15): BUILD-stage tasks reach the BUILD worker.
-      kind: jobKindForSourceRef(input.sourceRef),
-      idempotencyKey: input.idempotencyKey,
-    });
+
+    // Inline tasks without an idempotency key have no job to enqueue: the
+    // caller drives them immediately, and without a key there is no dedup row
+    // needed. Inline tasks WITH a key still insert a 'done'-status ledger row.
+    if (!input.inline || input.idempotencyKey) {
+      const { deduped } = await this.queue.enqueue({
+        taskId: task.id,
+        // Partition by kind (Track 15): BUILD-stage tasks reach the BUILD worker.
+        kind: jobKindForSourceRef(input.sourceRef),
+        idempotencyKey: input.idempotencyKey,
+        inline: input.inline,
+      });
+      // deduped can only be true here if the findByIdempotencyKey above raced
+      // and found nothing (concurrent submit); the task row was already
+      // created, so just return it.
+      if (deduped) {
+        return { task, deduped: true };
+      }
+    }
+
     await this.db.transitionTask(task.id, "queued");
-    return { task, deduped };
+    return { task, deduped: false };
   }
 }
