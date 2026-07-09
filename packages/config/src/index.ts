@@ -514,19 +514,12 @@ export function validateHarnessConfig(
   warn: (msg: string) => void = console.warn,
 ): void {
   const source = `agent '${spec.name}'`;
-  // codex-impl.md §A.4 item 4: `design-review`/`code-review` are ownership-
-  // routed to whichever spec drafted/built the artifact, and `build`/
-  // `code-review` are first-registered-wins — a spec that subscribes to one
-  // without the event that would ever make it the owner can never actually be
-  // dispatched to. Likely a typo'd `on:` list, not unsafe, so warn only.
-  if (spec.on) {
-    if (spec.on.includes("design-review") && !spec.on.includes("draft")) {
-      warn(`${source}: 'on' lists 'design-review' without 'draft' — this spec can never own a drafted artifact, so it will never be dispatched to (§A.4)`);
-    }
-    if (spec.on.includes("code-review") && !spec.on.includes("build")) {
-      warn(`${source}: 'on' lists 'code-review' without 'build' — this spec can never own a built change, so it will never be dispatched to (§A.4)`);
-    }
-  }
+  // §A.3a: `design-review`/`code-review` dispatch to a REVIEWER agent (the one
+  // subscribed to that event), which produces the review; the owning agent
+  // (subscribed to `draft`/`build`) then revises on a `changes_requested`
+  // kickback. So a standalone reviewer legitimately subscribes to
+  // `design-review`/`code-review` WITHOUT `draft`/`build` — no longer a
+  // misconfiguration, so the old per-spec "can never own" warning is gone.
 
   if (spec.harness !== "claude-code") return;
   if (!spec.models) {
