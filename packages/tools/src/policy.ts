@@ -25,7 +25,7 @@ export function findGrant(policy: ToolPolicy, toolName: string): ToolGrant | und
  *                                artifact's own surface, e.g. PR merge)
  */
 /** Tool namespaces whose grants act on a repo and so require the ONE configured repo. */
-const REPO_SCOPED_TOOL_RE = /^(github|git|document|delivery)\./;
+const REPO_SCOPED_TOOL_RE = /^(github|git|document|delivery|review)\./;
 
 /**
  * The gateway policy for a YAML-configured agent (Track 14): one grant per

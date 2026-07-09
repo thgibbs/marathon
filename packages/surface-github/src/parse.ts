@@ -31,6 +31,17 @@ export type GithubAction =
       author: string;
       eventId: string;
     }
+  | {
+      /**
+       * A PR flipped from draft to ready-for-review (§A.3a). For a Marathon code
+       * PR this is the trigger for the automatic code review — the handler
+       * checks ownership before acting.
+       */
+      kind: "ready_for_review";
+      repo: string;
+      number: number;
+      eventId: string;
+    }
   | { kind: "ignore" };
 
 export interface ParseGithubOptions {
@@ -160,6 +171,18 @@ export function classifyGithubEvent(eventType: string, payload: any, opts: Parse
       repo: payload.repository?.full_name,
       number: payload.pull_request?.number,
       mergeCommitSha: payload.pull_request?.merge_commit_sha,
+    };
+  }
+
+  if (eventType === "pull_request" && payload?.action === "ready_for_review") {
+    // §A.3a: the PR just became ready for review — for a Marathon code PR
+    // (delivery.report_pr marked it ready on green verification) this triggers
+    // the automatic code review. Ownership is verified in the handler.
+    return {
+      kind: "ready_for_review",
+      repo: payload.repository?.full_name,
+      number: payload.pull_request?.number,
+      eventId: `rfr-${payload.pull_request?.number}-${payload.pull_request?.head?.sha ?? ""}`,
     };
   }
 

@@ -9,6 +9,17 @@ export interface GithubEntry {
   path: string;
 }
 
+/** A changed file in a pull request (§A.3a code review context). */
+export interface PullRequestFile {
+  filename: string;
+  /** GitHub file status: added | modified | removed | renamed | … */
+  status: string;
+  additions: number;
+  deletions: number;
+  /** The unified-diff hunk for the file; absent for very large/binary files. */
+  patch?: string;
+}
+
 /** One entry of a commit tree built from a captured workspace diff (§29.4 step 4). */
 export interface GitTreeEntry {
   path: string;
@@ -41,6 +52,8 @@ export interface GithubClient {
     reviewId: number,
     limit?: number,
   ): Promise<Array<{ id: number; author: string; body: string; path: string; line: number | null }>>;
+  /** The changed files of a PR with their unified-diff patches (§A.3a code review). */
+  getPullRequestFiles(repo: string, prNumber: number, limit?: number): Promise<PullRequestFile[]>;
   closeIssue(repo: string, issueNumber: number): Promise<void>;
   mergePullRequest(
     repo: string,
@@ -243,6 +256,19 @@ export class HttpGithubClient implements GithubClient {
       body: String(c.body ?? ""),
       path: String(c.path ?? ""),
       line: typeof c.line === "number" ? c.line : typeof c.original_line === "number" ? c.original_line : null,
+    }));
+  }
+
+  async getPullRequestFiles(repo: string, prNumber: number, limit = 100): Promise<PullRequestFile[]> {
+    const j = await this.api(`/repos/${repo}/pulls/${prNumber}/files?per_page=${limit}`);
+    const arr = Array.isArray(j) ? j : [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return arr.map((f: any) => ({
+      filename: String(f.filename ?? ""),
+      status: String(f.status ?? ""),
+      additions: Number(f.additions ?? 0),
+      deletions: Number(f.deletions ?? 0),
+      ...(typeof f.patch === "string" ? { patch: f.patch } : {}),
     }));
   }
 
@@ -453,8 +479,14 @@ export class FixturesGithubClient implements GithubClient {
       repos?: Record<string, { private?: boolean; botAccess?: boolean }>;
       /** "repo:username" -> permission; default: "write". */
       userPermissions?: Record<string, RepoPermission>;
+      /** "repo:prNumber" -> changed files (§A.3a code-review context). */
+      prFiles?: Record<string, PullRequestFile[]>;
     },
   ) {}
+
+  async getPullRequestFiles(repo: string, prNumber: number): Promise<PullRequestFile[]> {
+    return this.fixtures.prFiles?.[`${repo}:${prNumber}`] ?? [];
+  }
 
   async readFile(repo: string, path: string): Promise<GithubFile> {
     const f = this.fixtures.files?.[`${repo}:${path}`];

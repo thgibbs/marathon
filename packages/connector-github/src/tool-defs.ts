@@ -65,6 +65,22 @@ export const GOVERNED_TOOL_DEFS: Record<string, GovernedToolDef> = {
       required: ["repo", "path", "content", "branch"],
     },
   },
+  "review.report": {
+    name: "review.report",
+    description:
+      "Report your review of a pull request: post a summary comment and record your verdict. " +
+      "Does not approve, request changes as a formal GitHub review, merge, or trigger a build.",
+    parameters: {
+      type: "object",
+      properties: {
+        ...repoProp,
+        number: { type: "number", description: "The pull-request number under review." },
+        verdict: { type: "string", enum: ["approved", "changes_requested"], description: "Your overall verdict." },
+        summary: { type: "string", description: "Concise, human-readable review findings (posted as the PR comment)." },
+      },
+      required: ["repo", "number", "verdict", "summary"],
+    },
+  },
 };
 
 /** The catalog slice for a spec's tool grants (order follows the grants). */

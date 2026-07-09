@@ -271,6 +271,45 @@ export class Database implements AuditWriter, IdempotencyStore {
   }
 
   /**
+   * Record a reviewer's verdict for a PR and bump the automatic-review round
+   * count (§A.3a). Returns the NEW round count — the kickback loop caps on it
+   * (a `changes_requested` only bounces back while under the cap). One row per
+   * (tenant, repo, pr, kind): the design-doc review and the code review on the
+   * same combined PR count independently.
+   */
+  async recordReviewVerdict(
+    tenantId: Id,
+    repo: string,
+    prNumber: number,
+    kind: string,
+    verdict: string,
+  ): Promise<{ rounds: number }> {
+    const { rows } = await this.pool.query(
+      `insert into review_round(tenant_id, repo, pr_number, kind, rounds, last_verdict, updated_at)
+       values ($1, $2, $3, $4, 1, $5, now())
+       on conflict (tenant_id, repo, pr_number, kind)
+       do update set rounds = review_round.rounds + 1, last_verdict = $5, updated_at = now()
+       returning rounds`,
+      [tenantId, repo, prNumber, kind, verdict],
+    );
+    return { rounds: Number(rows[0]!.rounds) };
+  }
+
+  /** The current automatic-review state for a PR (§A.3a), or null if none yet. */
+  async getReviewRound(
+    tenantId: Id,
+    repo: string,
+    prNumber: number,
+    kind: string,
+  ): Promise<{ rounds: number; lastVerdict: string | null } | null> {
+    const { rows } = await this.pool.query(
+      `select rounds, last_verdict from review_round where tenant_id = $1 and repo = $2 and pr_number = $3 and kind = $4`,
+      [tenantId, repo, prNumber, kind],
+    );
+    return rows[0] ? { rounds: Number(rows[0].rounds), lastVerdict: rows[0].last_verdict } : null;
+  }
+
+  /**
    * An unfinished code-revision task anchored to a PR (§2b #11): while one is
    * queued/running/retrying, further review-submission triggers for the same
    * PR are absorbed — the GitHub mirror of Slack's "chatter while running".

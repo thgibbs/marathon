@@ -41,6 +41,20 @@ export interface AgentStepOptions {
 }
 
 /**
+ * A runtime, or a resolver that picks the runtime for a task's owning agent
+ * (multi-agent dispatch): with several configured agent specs, each gets its
+ * own `AgentRuntime` (distinct tool grants + model policy), and a task runs on
+ * the runtime for its `task.agentId`. A plain `AgentRuntime` keeps the
+ * single-runtime behavior (every task on one runtime — unchanged).
+ */
+export type RuntimeFor = AgentRuntime | ((agentId: string | undefined) => AgentRuntime);
+
+/** Resolve the concrete runtime for an agent id (identity for a plain runtime). */
+export function resolveRuntimeFor(runtime: RuntimeFor, agentId: string | undefined): AgentRuntime {
+  return typeof runtime === "function" ? runtime(agentId) : runtime;
+}
+
+/**
  * Adapts an {@link AgentRuntime} to the worker's StepRunner: each step is one
  * agent turn. The turn index is derived from the checkpoint, so resuming after a
  * crash continues from the next turn (no repeated model calls / effects).
@@ -137,7 +151,7 @@ function isDocDraftTask(task: Task | null): task is Task {
  * itself (loaded per step), so a single worker can run any agent task. Used by
  * the live Slack app (M5.5).
  */
-export function makeAgentTaskStepRunner(db: Database, runtime: AgentRuntime, opts: AgentTaskStepOptions) {
+export function makeAgentTaskStepRunner(db: Database, runtime: RuntimeFor, opts: AgentTaskStepOptions) {
   return async ({ taskId, checkpoint }: StepContext): Promise<StepResult> => {
     const task = await db.getTask(taskId);
     // Enforce the spend budgets before incurring more model cost: the
@@ -194,7 +208,12 @@ export function makeAgentTaskStepRunner(db: Database, runtime: AgentRuntime, opt
 
     let turn: AgentTurn;
     try {
-      turn = await runtime.nextTurn({ request, checkpoint, workspace: grounded?.workspace });
+      // Multi-agent dispatch: run on the runtime for this task's owning agent.
+      turn = await resolveRuntimeFor(runtime, task?.agentId ?? undefined).nextTurn({
+        request,
+        checkpoint,
+        workspace: grounded?.workspace,
+      });
     } finally {
       // The checkout is per-turn (§3.3, turn atomicity) — always torn down.
       await grounded?.dispose();

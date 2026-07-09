@@ -19,10 +19,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { assertSubscriptionAckIfNeeded, makeAgentRuntime, resolveSandboxNetwork, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
 import { agentSubscribesTo, EnvSecretStore, loadAgentSpecs, loadConfig, looseningAuditEvent, renderPostureBanner, renderSandboxResidualNote, resolveEffectiveBudget, resolvePosture, warnUnknownMarathonEnv } from "@marathon/config";
-import { githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
+import { githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools, makeReviewReportTool } from "@marathon/connector-github";
 import { WebhookProxyClient } from "@marathon/surface-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
-import { bootstrapGithubApp, handleIdentityRequest, handleWebhookRequest, makeBuildWiring, type GithubAppDeps, type IdentityLinkDeps } from "@marathon/github-app";
+import { bootstrapGithubApp, handleIdentityRequest, handleWebhookRequest, makeBuildWiring, type AgentRuntimeEntry, type GithubAppDeps, type IdentityLinkDeps } from "@marathon/github-app";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY } from "@marathon/model-gateway";
 import { Queue } from "@marathon/queue";
@@ -76,10 +76,6 @@ async function main(): Promise<void> {
   // become the gateway policy below — editing the YAML narrows the surface.
   const specs = await loadAgentSpecs(cfg.agentsDir);
   const flagship = specs[0]!;
-  // Floor #7 (§30.3): the effective per-task cap — the agent's own `budget:` or,
-  // when omitted, the trust profile's default (never unlimited). Applies to the
-  // doc/chat runtime here AND is recomputed inside makeBuildWiring for BUILD.
-  const effectiveBudget = resolveEffectiveBudget(flagship.budget, posture);
   // §30.3 fail-loud: state the one solo residual (bridge repo-text egress) at boot.
   for (const line of renderSandboxResidualNote(resolveSandboxNetwork(flagship.sandbox))) console.log(`[github-app] ${line}`);
   // Fail closed BEFORE building any runtime (same guard as makeBuildWiring and
@@ -127,22 +123,83 @@ async function main(): Promise<void> {
   //    evidence — without it every run reports a no-op);
   //  - makeDocumentPrRecorder persists the DocumentArtifact + doc-PR delivery
   //    target the approval handler needs to recognize the plan.
-  const toolGateway = new ToolGateway({
-    // The default branch is the AUTHORITATIVE doc-PR base (§29.1a).
-    registry: new ToolRegistry([
-      ...makeGithubReadTools(httpGithubClientFactory()),
-      ...makeDocumentTools(httpGithubClientFactory(), {
-        docBase: defaultBranch,
-        onDocumentPr: makeDocumentPrRecorder(db),
+  // Per-agent doc/chat runtime (§A.4 multi-agent dispatch): each configured
+  // spec gets its OWN gateway — its tool grants ∩ catalog, scoped to the ONE
+  // repo — and its own runtime, so a task runs on the runtime for its owning
+  // agent. Doc writes are tool calls, not committed chat text (§2b #16): the
+  // doc body flows through this gateway as a schema-validated tool argument,
+  // and dbToolRecorder + makeDocumentPrRecorder back the handlers' post-turn
+  // checks (the "did a doc write happen" evidence + the DocumentArtifact the
+  // approval handler needs).
+  const buildDocRuntime = (spec: typeof flagship) => {
+    // Fail closed per spec (same guard as flagship above / makeBuildWiring):
+    // locked-down claude-code needs the internal model-proxy network (§7.1).
+    if (spec.harness === "claude-code" && spec.sandbox.network === "none") {
+      throw new Error(
+        `agent '${spec.name}': locked-down claude-code (sandbox.network: none) needs the internal-network model-proxy wiring (K7 spike, §7.1) — not yet available; use 'bridge'`,
+      );
+    }
+    // Floor #7 (§30.3): the effective per-task cap — the agent's own `budget:`
+    // or, when omitted, the trust profile's default (never unlimited).
+    const specBudget = resolveEffectiveBudget(spec.budget, posture);
+    const gateway = new ToolGateway({
+      // The default branch is the AUTHORITATIVE doc-PR base (§29.1a).
+      registry: new ToolRegistry([
+        ...makeGithubReadTools(httpGithubClientFactory()),
+        ...makeDocumentTools(httpGithubClientFactory(), { docBase: defaultBranch, onDocumentPr: makeDocumentPrRecorder(db) }),
+        // §A.3a: a reviewer agent's terminal step — post the verdict comment +
+        // record the verdict/round for the kickback loop. Only agents granted
+        // `review.report` (the reviewer specs) can call it; the policy gates the rest.
+        makeReviewReportTool({
+          getClient: httpGithubClientFactory(),
+          onReviewed: async ({ taskId, repo, prNumber, verdict }) => {
+            const t = await db.getTask(taskId);
+            const kind = (t?.sourceRef as { kind?: string } | undefined)?.kind === "code_review" ? "code_review" : "design_review";
+            await db.recordReviewVerdict(boot.tenantId, repo, prNumber, kind, verdict);
+          },
+        }),
+      ]),
+      policy: toolPolicyFromSpec(spec),
+      secrets,
+      recorder: dbToolRecorder(db),
+      sourceLedger: new InMemorySourceLedger(),
+      // §7.8 / §30.4: the doc/read gateway reads the profile's internal egress mode.
+      internalEgressMode: posture.internalEgressMode,
+    });
+    // Harness from the spec (§2b #17): EITHER harness through the shared factory.
+    // Claude Code needs a container + workspace even for chat-shaped tasks —
+    // withChatWorkspace binds an ephemeral scratch dir per task; Pi is containerless.
+    return withChatWorkspace(
+      makeAgentRuntime(spec, {
+        secrets,
+        // Durable per-task sessions (K4) — same location the BUILD side uses.
+        sessionDir: join(tmpdir(), "marathon-sessions"),
+        governed: { gateway, tools: governedToolDefsFor(spec.tools.map((t) => t.tool)) },
+        sandbox: spec.harness === "claude-code" ? workspaceSandboxFromSpec(spec, { owner: sandboxOwner }) : undefined,
+        proxy:
+          spec.harness === "claude-code"
+            ? (process.env.MARATHON_MODEL_PROXY_URL?.trim() ? { baseUrl: process.env.MARATHON_MODEL_PROXY_URL.trim() } : undefined)
+            : undefined,
+        lockedDownEgress: spec.sandbox.network === "none",
+        cli: { settingsPath: "/etc/marathon/claude-settings.json" },
+        // TCP broker for macOS Docker Desktop (§3.1): set MARATHON_BROKER_HOST=host.docker.internal.
+        brokerHost: process.env.MARATHON_BROKER_HOST?.trim() || undefined,
+        // An omitted `budget:` means the profile default cap, never unlimited.
+        getRemainingBudgetUsd: async (ctx) => specBudget.limitUsd - (await db.sumModelCostUsd(ctx.request.taskId)),
       }),
-    ]),
-    policy: toolPolicyFromSpec(flagship),
-    secrets,
-    recorder: dbToolRecorder(db),
-    sourceLedger: new InMemorySourceLedger(),
-    // §7.8 / §30.4: the doc/read gateway reads the profile's internal egress mode.
-    internalEgressMode: posture.internalEgressMode,
-  });
+      { root: join(tmpdir(), "marathon-chat-workspaces") },
+    );
+  };
+  // One runtime entry per configured spec, keyed by agent id (§A.4). The
+  // agentRegistry below routes each routed task to its owning agent's runtime.
+  const runtimesByAgentId = new Map<string, AgentRuntimeEntry>();
+  for (const spec of specs) {
+    runtimesByAgentId.set(boot.agentIdByName[spec.name]!, {
+      runtime: buildDocRuntime(spec),
+      on: spec.on,
+      models: spec.models ?? DEFAULT_MODEL_POLICY,
+    });
+  }
   const deps: GithubAppDeps = {
     db,
     client,
@@ -151,37 +208,25 @@ async function main(): Promise<void> {
     orchestrator,
     delivery,
     fanout,
-    // Harness from the spec (§2b #17): the mention/doc flows run EITHER
-    // harness through the shared factory. Claude Code needs a container +
-    // workspace even for chat-shaped tasks — withChatWorkspace binds an
-    // ephemeral scratch dir per task; Pi keeps running containerless.
-    runtime: withChatWorkspace(
-      makeAgentRuntime(flagship, {
-        secrets,
-        // Durable per-task sessions (K4) — same location the BUILD side uses.
-        sessionDir: join(tmpdir(), "marathon-sessions"),
-        governed: { gateway: toolGateway, tools: governedToolDefsFor(flagship.tools.map((t) => t.tool)) },
-        sandbox: flagship.harness === "claude-code" ? workspaceSandboxFromSpec(flagship, { owner: sandboxOwner }) : undefined,
-        proxy:
-          flagship.harness === "claude-code"
-            ? (process.env.MARATHON_MODEL_PROXY_URL?.trim() ? { baseUrl: process.env.MARATHON_MODEL_PROXY_URL.trim() } : undefined)
-            : undefined,
-        lockedDownEgress: flagship.sandbox.network === "none",
-        cli: { settingsPath: "/etc/marathon/claude-settings.json" },
-        // TCP broker for macOS Docker Desktop (§3.1): set MARATHON_BROKER_HOST=host.docker.internal.
-        brokerHost: process.env.MARATHON_BROKER_HOST?.trim() || undefined,
-        // Floor #7 (§30.3): an omitted `budget:` means the profile default cap,
-        // never unlimited — so draft/design-review doc tasks are always capped.
-        getRemainingBudgetUsd: async (ctx) => effectiveBudget.limitUsd - (await db.sumModelCostUsd(ctx.request.taskId)),
-      }),
-      { root: join(tmpdir(), "marathon-chat-workspaces") },
-    ),
+    // Default runtime = the flagship's; agentRegistry routes each task to the
+    // runtime for its owning agent (§A.4). Falls back to the default per resolveAgent.
+    runtime: runtimesByAgentId.get(boot.agentIdByName[flagship.name]!)!.runtime,
+    agentRegistry: (id) => (id ? runtimesByAgentId.get(id) : undefined),
+    // §A.3a: the DEDICATED reviewer for a review event — a spec that subscribes
+    // to it WITHOUT the paired producer (so Forge, which drafts+reviews its own,
+    // is not picked). Undefined when none is configured → the auto review is a no-op.
+    reviewerFor: (event) => {
+      const producer = event === "design-review" ? "draft" : event === "code-review" ? "build" : undefined;
+      const reviewer = specs.find(
+        (s) => agentSubscribesTo(s, event) && (producer ? !agentSubscribesTo(s, producer) : true) && Boolean(s.repo),
+      );
+      return reviewer ? boot.agentIdByName[reviewer.name] : undefined;
+    },
     tenantId: boot.tenantId,
     agents: boot.agents,
     agentIdByName: boot.agentIdByName,
     defaultAgent: boot.defaultAgent,
-    // Model policy from the spec (codex-impl.md §A.3/§A.4): draft/design-review
-    // resolve their own role at the call site — no hardcoded flat default.
+    // Deployment defaults (used when a task has no resolvable agent entry).
     models: flagship.models ?? DEFAULT_MODEL_POLICY,
     on: flagship.on,
     defaultBranch,

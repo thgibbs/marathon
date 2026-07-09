@@ -286,3 +286,45 @@ describe("makeAgentTaskStepRunner repo grounding (chat-repo.md §3.2)", () => {
     expect(result.checkpoint.groundedSha).toBeUndefined();
   });
 });
+
+/** §A.4 — one worker, many agents: the step runner resolves the runtime per task. */
+describe("makeAgentTaskStepRunner multi-agent dispatch (§A.4)", () => {
+  function dbForAgent(agentId: string | null) {
+    // Stubs are `as never` at the test boundary (see AGENTS.md rule 1).
+    return {
+      getTask: async () => ({
+        id: "t1",
+        tenantId: "tn1",
+        agentId,
+        sourceType: "slack",
+        sourceRef: { channel: "C1", thread_ts: "1.1" },
+        inputText: "hello",
+        status: "running",
+        costUsd: 0,
+        createdAt: new Date(),
+      }),
+      getLatestAgentVersion: async () => null,
+    } as never as Database;
+  }
+  function label(id: string): AgentRuntime {
+    return { async nextTurn() { return { text: id, done: true }; } };
+  }
+
+  it("runs each task on the runtime for its owning agent id", async () => {
+    const seen: Array<string | undefined> = [];
+    const resolver = (id: string | undefined) => {
+      seen.push(id);
+      return id === "reviewer" ? label("reviewer-ran") : label("forge-ran");
+    };
+    const rev = await makeAgentTaskStepRunner(dbForAgent("reviewer"), resolver, { modelRef: "m" })({ taskId: "t1", checkpoint: emptyCheckpoint() });
+    expect(rev.checkpoint.findings.at(-1)).toBe("reviewer-ran");
+    const forge = await makeAgentTaskStepRunner(dbForAgent("forge"), resolver, { modelRef: "m" })({ taskId: "t1", checkpoint: emptyCheckpoint() });
+    expect(forge.checkpoint.findings.at(-1)).toBe("forge-ran");
+    expect(seen).toEqual(["reviewer", "forge"]);
+  });
+
+  it("still accepts a plain runtime (single-agent behavior unchanged)", async () => {
+    const res = await makeAgentTaskStepRunner(dbForAgent("a1"), label("single"), { modelRef: "m" })({ taskId: "t1", checkpoint: emptyCheckpoint() });
+    expect(res.checkpoint.findings.at(-1)).toBe("single");
+  });
+});
