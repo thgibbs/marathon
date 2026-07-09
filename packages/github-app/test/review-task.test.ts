@@ -103,6 +103,40 @@ describe("handleReviewTask (§A.3a)", () => {
     expect(turns).toHaveLength(0);
     expect(transitions).toEqual([["rev-task", "running"], ["rev-task", "completed"]]);
   });
+
+  it("FAILS CLOSED when the PR contents can't be read — never runs the reviewer on a fabricated empty diff", async () => {
+    const turns: AgentTurnContext[] = [];
+    const posted: string[] = [];
+    // Stubs are `as never` at the test boundary (see AGENTS.md rule 1).
+    const deps = {
+      db: {
+        getPullRequestFiles: async () => [],
+        getLatestAgentVersion: async () => null,
+        transitionTask: async () => {},
+      },
+      client: {
+        getPullRequestFiles: async () => {
+          throw new Error("github 500 fetching files");
+        },
+      },
+      delivery: { postProgress: async (_ref: unknown, msg: string) => void posted.push(msg) },
+      tenantId: "tn1",
+      agentRegistry: (id: string | undefined) =>
+        id === "reviewer-id"
+          ? {
+              runtime: { nextTurn: async (ctx: AgentTurnContext) => { turns.push(ctx); return { text: "x", done: true }; } },
+              on: ["code-review"],
+              models: { default: "m" },
+            }
+          : undefined,
+    } as never as GithubAppDeps;
+
+    await handleReviewTask(deps, reviewTask("code_review"));
+    // The reviewer NEVER ran (so it can't report a bogus `approved` on no diff)…
+    expect(turns).toHaveLength(0);
+    // …and an explicit infra-failure note was posted instead.
+    expect(posted[0]).toContain("could not run");
+  });
 });
 
 describe("runReviewCycle — auto review + capped kickback loop (§A.3a, design-doc)", () => {

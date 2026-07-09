@@ -173,18 +173,34 @@ export async function handleReviewTask(deps: GithubAppDeps, task: Task): Promise
     return;
   }
 
-  // Assemble the review material as UNTRUSTED context.
-  let documents: Array<{ path: string; content: string }> = [];
-  if (kind === "design_review") {
-    const artifact = await deps.db.findDocumentArtifactByPr(deps.tenantId, repo, prNumber);
-    const loc = (artifact?.location ?? {}) as { path?: string; branch?: string };
-    if (loc.path && loc.branch) {
-      const cur = await deps.client.readFileWithSha(repo, loc.path, loc.branch).catch(() => ({ content: "" }));
+  // Assemble the review material as UNTRUSTED context. FAIL CLOSED (§A.3a): a
+  // GitHub read failure (or a missing doc branch) must NOT be converted into an
+  // empty doc/diff the reviewer could "approve" — review.report is a machine
+  // signal for the kickback loop, so a fabricated empty review could wrongly
+  // stop the loop. On failure, post an explicit note and leave the PR for a
+  // human instead of recording a verdict.
+  let documents: Array<{ path: string; content: string }>;
+  try {
+    if (kind === "design_review") {
+      const artifact = await deps.db.findDocumentArtifactByPr(deps.tenantId, repo, prNumber);
+      const loc = (artifact?.location ?? {}) as { path?: string; branch?: string };
+      if (!loc.path || !loc.branch) throw new Error(`no doc artifact/branch for ${repo} PR #${prNumber}`);
+      const cur = await deps.client.readFileWithSha(repo, loc.path, loc.branch);
       documents = [{ path: loc.path, content: cur.content }];
+    } else {
+      const files = await deps.client.getPullRequestFiles(repo, prNumber);
+      documents = [{ path: `PR #${prNumber} diff`, content: renderPrFiles(files) }];
     }
-  } else {
-    const files = await deps.client.getPullRequestFiles(repo, prNumber).catch(() => [] as PullRequestFile[]);
-    documents = [{ path: `PR #${prNumber} diff`, content: renderPrFiles(files) }];
+  } catch (e) {
+    await deps.delivery
+      .postProgress(
+        { repo, number: prNumber },
+        `⚠️ Automated review could not run — I couldn't read this PR's contents (${String(e).slice(0, 140)}). Leaving it for a human reviewer.`,
+      )
+      .catch(() => {});
+    await deps.db.transitionTask(task.id, "running");
+    await deps.db.transitionTask(task.id, "completed");
+    return; // no verdict recorded — the loop reads no new round and stops.
   }
 
   const prompt = await buildAgentPrompt({ db: deps.db, memory: deps.memory }, task, {
@@ -233,6 +249,10 @@ export async function runReviewCycle(
   // Each iteration does one review (which bumps the round); shouldKickBack()
   // returns false once the rounds exceed the cap, so this cannot loop forever.
   for (let i = 0; i <= MAX_AUTO_REVIEW_ROUNDS; i++) {
+    // Snapshot the round BEFORE this pass so we only act on a verdict THIS pass
+    // recorded — a review that failed closed or never called review.report bumps
+    // nothing, and a stale earlier verdict must not re-trigger a kickback.
+    const before = (await deps.db.getReviewRound(deps.tenantId, repo, prNumber, kind))?.rounds ?? 0;
     const { task: reviewTask } = await deps.orchestrator.submit({
       tenantId: deps.tenantId,
       agentId: reviewerId,
@@ -242,12 +262,19 @@ export async function runReviewCycle(
     await handleReviewTask(deps, reviewTask);
 
     const round = await deps.db.getReviewRound(deps.tenantId, repo, prNumber, kind);
-    if (round?.lastVerdict !== "changes_requested" || !shouldKickBack("changes_requested", round.rounds)) {
-      return; // approved, nothing recorded, or cap reached — stop.
+    if (!round || round.rounds <= before) return; // this pass recorded no verdict — stop (fail closed).
+    if (round.lastVerdict !== "changes_requested" || !shouldKickBack("changes_requested", round.rounds)) {
+      return; // approved or cap reached — stop.
     }
     // Kick back to the owner. Doc revises inline (loop continues); code revises
     // asynchronously (this returns — the ready_for_review webhook re-triggers).
-    const continueInline = await runOwnerRevision(deps, { repo, prNumber, kind, ownerAgentId: opts.ownerAgentId });
+    const continueInline = await runOwnerRevision(deps, {
+      repo,
+      prNumber,
+      kind,
+      ownerAgentId: opts.ownerAgentId,
+      round: round.rounds,
+    });
     if (!continueInline) return;
   }
 }
@@ -260,19 +287,23 @@ export async function runReviewCycle(
  */
 async function runOwnerRevision(
   deps: GithubAppDeps,
-  opts: { repo: string; prNumber: number; kind: ReviewKind; ownerAgentId?: Id },
+  opts: { repo: string; prNumber: number; kind: ReviewKind; ownerAgentId?: Id; round: number },
 ): Promise<boolean> {
-  const { repo, prNumber, kind, ownerAgentId } = opts;
+  const { repo, prNumber, kind, ownerAgentId, round } = opts;
   if (kind === "code_review") {
     // Enqueue a code_revision BUILD task carrying the review as the ask; the
-    // BUILD worker runs it and re-reports the PR (re-marking it ready).
+    // BUILD worker runs it and re-reports the PR (re-marking it ready). The
+    // eventId is ROUND-SCOPED so each kickback round produces its OWN revision
+    // task — `handleCodePrRevision` keys idempotency on it, and a stable id
+    // would dedupe every later round to the first task (no new revision). A
+    // webhook retry of the same round still converges (same round → same key).
     await handleCodePrRevision(deps, {
       surfaceType: "github",
       sourceRef: { repo, number: prNumber, kind: "pr" },
       userExternalId: "marathon",
       agentName: null,
       text: "A code reviewer requested changes on this PR — address the review comments and re-push.",
-      eventId: `autorev-code-${repo}-${prNumber}`,
+      eventId: `autorev-code-${repo}-${prNumber}-r${round}`,
     });
     return false; // async — the webhook re-triggers the review
   }
