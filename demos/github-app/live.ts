@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { assertSubscriptionAckIfNeeded, makeAgentRuntime, resolveSandboxNetwork, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
 import { agentSubscribesTo, EnvSecretStore, loadAgentSpecs, loadConfig, looseningAuditEvent, renderPostureBanner, renderSandboxResidualNote, resolveEffectiveBudget, resolvePosture, warnUnknownMarathonEnv } from "@marathon/config";
-import { ensureBranch, githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
+import { githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools } from "@marathon/connector-github";
 import { WebhookProxyClient } from "@marathon/surface-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { bootstrapGithubApp, handleIdentityRequest, handleWebhookRequest, makeBuildWiring, type GithubAppDeps, type IdentityLinkDeps } from "@marathon/github-app";
@@ -115,11 +115,10 @@ async function main(): Promise<void> {
   const orchestrator = new Orchestrator(db, queue);
   const delivery = new GithubDelivery(client);
   const fanout = new DeliveryFanout({ github: delivery }, db);
-  // §29.1a: plan docs merge into the plans branch, never the default branch.
-  // Create it when missing; operators should branch-protect it like main
-  // (docs/quickstart.md §3) — it is an approval boundary.
-  const plansBranch = flagship.plans.branch;
-  if (flagship.repo) await ensureBranch(client, flagship.repo, plansBranch, "main");
+  // §29.1a (combined-PR flow): design-doc PRs are DRAFTS against the default
+  // branch — no dedicated plans branch to provision. An approving review is
+  // the approval; merging the combined PR ships design + code together.
+  const defaultBranch = "main";
   // Doc writes are tool calls, not committed chat text (§2b #16): the agent's
   // session gets the governed document tools (spec grants ∩ catalog), and the
   // doc body flows through this gateway as a schema-validated tool argument.
@@ -127,13 +126,13 @@ async function main(): Promise<void> {
   //  - dbToolRecorder persists ToolInvocations (the "did a doc write happen"
   //    evidence — without it every run reports a no-op);
   //  - makeDocumentPrRecorder persists the DocumentArtifact + doc-PR delivery
-  //    target the merge webhook needs to recognize the plan.
+  //    target the approval handler needs to recognize the plan.
   const toolGateway = new ToolGateway({
-    // The configured plans branch is the AUTHORITATIVE doc-PR base (§29.1a).
+    // The default branch is the AUTHORITATIVE doc-PR base (§29.1a).
     registry: new ToolRegistry([
       ...makeGithubReadTools(httpGithubClientFactory()),
       ...makeDocumentTools(httpGithubClientFactory(), {
-        docBase: plansBranch,
+        docBase: defaultBranch,
         onDocumentPr: makeDocumentPrRecorder(db),
       }),
     ]),
@@ -185,8 +184,7 @@ async function main(): Promise<void> {
     // resolve their own role at the call site — no hardcoded flat default.
     models: flagship.models ?? DEFAULT_MODEL_POLICY,
     on: flagship.on,
-    plansBranch,
-    defaultBranch: "main",
+    defaultBranch,
   };
 
   // The BUILD side of the loop (Track 15): a worker that consumes the

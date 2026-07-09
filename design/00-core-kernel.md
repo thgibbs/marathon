@@ -14,24 +14,30 @@
 ```text
 1. ASK      @marathon in Slack: "ship rate-limiting for the public API"
       |
-2. DRAFT    the agent writes a design document — a markdown PR in the repo
+2. DRAFT    the agent writes a design document — a DRAFT markdown PR against
+      |     the default branch (main is untouched until the final merge)
       |
 3. ITERATE  people comment on the doc PR and reply in the Slack thread;
       |     the agent revises the doc and asks clarifying questions
       |
-4. BUILD    a human merges the doc PR into the PLANS branch (the merge IS
-      |     the approval — §29.1a; main is untouched); the agent implements
-      |     the plan — sandboxed code edits, tests run
+4. BUILD    a human submits an APPROVING REVIEW on the draft doc PR (the
+      |     review IS the approval — §29.1a; it pins the PR head SHA); the
+      |     agent implements the plan on the SAME branch — sandboxed code
+      |     edits, tests run — and marks the PR ready for review
       |
-5. DELIVER  the agent opens a code PR carrying code + the plan doc together,
-            posts the link + summary back to the Slack thread and the doc;
-            a human reviews and merges — only then does the plan reach main
+5. DELIVER  the SAME PR now carries the plan doc + its code together; the
+            agent posts the link + summary back to the Slack thread and the
+            PR; a human reviews and merges — design and code ship atomically
 ```
 
 This is §6.8 (document-driven execution) plus one emphasis the corpus underweights: **the
 agent writes code**, so the sandboxed code path (§12.6 Pattern 2) is kernel, not hardening.
-The loop's every approval is **native** (a PR a human merges) — the kernel needs **zero
-in-app approvals**, which is what lets so much be deferred.
+The loop's every approval is **native** (a GitHub PR review/merge a human performs — the
+build trigger is an approving PR review, the ship is the merge) — the kernel needs **zero
+in-app approvals**, which is what lets so much be deferred. One check is load-bearing
+(§29.1a): on a public repo *anyone* can submit an approving review (GitHub only gates
+merging), so Marathon verifies the approver has **write access** before treating the review
+as the approval.
 
 ## 0.2 Kernel — must work *correctly* (not just demo)
 
@@ -44,10 +50,10 @@ in-app approvals**, which is what lets so much be deferred.
 | 2 | `document.*` tools: create/update via branch + PR; SHA idempotency | §7.17, §14.6 | built (M6) |
 | 3 | Doc-PR comments revise the draft on its branch (`document.revise`) | §6.8, roadmap M7 | built |
 | 3 | Thread continuity: replies with thread context + thread memory; clarifying questions = ask, end turn, new task on the reply (§11.6 async shape) | §7.12, §7.18, §11.6 | built (M7) — verify against the loop (K3) |
-| 4 | Merge webhook = approval → execution task spawns | §6.8 | built (M6) |
+| 4 | Approving-review webhook = approval → execution task spawns (§29.1a) | §6.8 | built (M6) |
 | 4 | Sandboxed code work: ephemeral workspace, `bash/read/write/edit` in the container, creds never inside | §12.6 | built (M9 Pattern 2) — not stitched end-to-end (K1) |
 | 4 | Verification inside the session: the agent runs tests/build via sandboxed `bash` before opening the PR | §28.2 (verifier) | Pi's in-session loop suffices — **no M11 machinery needed** |
-| 5 | The handoff contract: `github.submit_code_changes` → `marathon/` branch → code PR; PR link + summary delivered to the Slack thread *and* the doc PR | **§29**, §10.8 | gap (K1, K2) |
+| 5 | The delivery contract: push onto the doc-PR branch → `delivery.report_pr`, which ENFORCES the same-PR invariant and sets draft/ready from verification; PR link + summary delivered to the Slack thread *and* the (same) PR | **§29**, §10.8 | gap (K1, K2) |
 | all | Inspectability data: per-task timeline, cost | §8.5, M8 | built (API); UI deferred |
 | all | Quickstart: compose up → YAML agent → Slack + GitHub apps → first loop | §2.7, §6.2 | gap (K6) |
 
@@ -62,13 +68,14 @@ simplified below.
 
 - **K1 — Code-writing path end-to-end.** Implements the **execution contract in
   [[29-code-handoff]]** — the product's central path, specified, not glue: pinned
-  `base_sha` (default-branch head at approval; the plan itself is pinned separately by
-  `plan_ref` on the plans branch — §29.1a) → host-materialized, credential-stripped workspace →
+  `base_sha` = the doc-PR head at the approving review (`plan_ref.approved_sha`, the same
+  pin — §29.1a) → host-materialized, credential-stripped workspace on the doc branch →
   sandboxed edits + verify (repo `verify:` config → plan's Verification section → judgment)
-  → the single `github.submit_code_changes` handoff, whose **diff the gateway reads from the
-  workspace itself** (protected-path + secret + size checks) → `marathon/<task>-<slug>`
-  branch → code PR (draft + `marathon:unverified` if red at the cap). Proof: merged plan in,
-  green-tested code PR out, live.
+  → push onto the SAME doc-PR branch → `delivery.report_pr`, which enforces the same-PR
+  invariant (refuses any other PR/branch) and marks the PR ready iff verification is green
+  (protected-path + secret + size checks stay on the strict-mode handoff path) → the
+  combined PR now carries plan + code. Proof: approved plan in, green-tested combined PR
+  out, live.
 - **K2 — Loop task chain + `delivery_targets`.** The merge-spawned execution task must
   inherit `delivery_targets = [originating Slack thread, doc PR]` (§10.8) so progress and the
   final PR link land in both places. This is task-chain plumbing — it needs **no identity
@@ -102,7 +109,7 @@ simplified below.
 | Agents | **one flagship agent** (Forge — [[21-example-agents]] §21.0), YAML-defined | registry, discovery, default-agent selection (§7.2–§7.3) |
 | Repos | **one configured target repo** per deployment (the dogfood repo) | multi-repo + the project resolver (§7.12) |
 | Harness | one of **Pi** or **Claude Code (headless)** per deployment (`harness:` in the YAML — §7.5, K7) | router picks the harness per task (§28 organ #2) |
-| Approvals | **native-only** (doc PR merge, code PR merge) | Proposed Effects + Agent Hub (§7.9, M10) |
+| Approvals | **native-only** (approving review on the draft doc PR → build; merge of the combined PR → ship; the approver must have write access — §29.1a) | Proposed Effects + Agent Hub (§7.9, M10) |
 | Egress | OQ-4 calibration: repos company-viewable; **external egress simply not wired** (no external-channel or email tools registered) | full egress policy modes + deny path (§7.8) |
 | Memory | thread short-term + task summaries to project scope | audience-gated recall, corrections, promotion gates (§7.12, §2b #9) |
 | Models | one fixed default model + a hard per-task cost cap | routing, tiers, fallback, budgets (§7.10, §7.19, §13) |
@@ -125,9 +132,9 @@ The kernel is done when **we use Marathon to build Marathon** — the loop, run 
 repo, is how changes get made:
 
 > Ask in Slack → the agent drafts a design-doc PR in the `marathon` repo → we comment, it
-> revises and asks clarifying questions → we merge → it implements in the sandbox, runs the
-> test suite (`vitest`, the `make demo-*` regression demos), and opens a code PR → we review
-> and merge.
+> revises and asks clarifying questions → we submit an approving review → it implements in
+> the sandbox on the same branch, runs the test suite (`vitest`, the `make demo-*` regression
+> demos), and marks the PR ready → we review and merge the combined PR.
 
 Dogfooding is the bar because it makes every kernel gap **self-enforcing**: whatever is
 broken, slow, confusing, or unsafe in the loop, we hit it before any customer does — and this
@@ -144,11 +151,11 @@ The ratchet, in order:
 
 Beneath the lived bar, one scripted proof stays as the CI regression guard:
 
-> `make demo-kernel` — a Slack ask produces a design-doc PR; a review comment produces a
-> revision; a clarifying question gets asked and answered in-thread; the merge triggers
-> implementation; the agent edits code in the sandbox, runs the tests, and opens a green code
-> PR; the PR link and summary appear in the Slack thread and on the doc. Kill the worker
-> mid-BUILD and it resumes.
+> `make demo-kernel` — a Slack ask produces a draft design-doc PR; a review comment produces
+> a revision; a clarifying question gets asked and answered in-thread; an approving review
+> triggers implementation; the agent edits code in the sandbox on the same branch, runs the
+> tests, and marks the PR ready; the PR link and summary appear in the Slack thread and on
+> the PR. Kill the worker mid-BUILD and it resumes.
 
 Only when the loop is how Marathon itself gets built does the deferred list start competing
 for time again.

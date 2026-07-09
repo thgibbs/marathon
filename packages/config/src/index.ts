@@ -190,20 +190,6 @@ export interface AgentBudget {
 }
 
 /**
- * The default plans branch (§29.1a): where design-doc PRs merge (the approval).
- * Deliberately OUTSIDE the agent-owned `marathon/*` push namespace — rulesets
- * are the final enforcement on the brokered push path, so the approval
- * boundary must not live in the prefix agents push to.
- */
-export const DEFAULT_PLANS_BRANCH = "marathon-plans";
-
-/** Plan-document settings (§29.1a): where doc PRs merge. */
-export interface AgentPlansConfig {
-  /** The plans branch; must NOT be under `marathon/` (the agent push namespace). */
-  branch: string;
-}
-
-/**
  * Chat-surface repo grounding (chat-repo.md). When on, a chat task materializes
  * a read-only checkout of the agent's `repo` so the agent has local files to
  * read — gated by the invoking user's access + the task's audience.
@@ -255,8 +241,6 @@ export interface AgentSpec {
   tools: AgentToolGrant[];
   /** Sandbox settings; default internet-enabled ("bridge"), credential-free. */
   sandbox: AgentSandboxConfig;
-  /** Plans-branch settings (§29.1a); default `marathon-plans`. */
-  plans: AgentPlansConfig;
   /** Chat-surface repo grounding (chat-repo.md); default on when `repo` is set. */
   chat: AgentChatConfig;
   /** Model routing; when omitted the deployment default policy applies. */
@@ -313,7 +297,6 @@ export function parseAgentSpec(value: unknown, source = "agent spec"): AgentSpec
     harness: "pi",
     tools: [],
     sandbox: { network: "bridge" },
-    plans: { branch: DEFAULT_PLANS_BRANCH },
     // Default resolved after `repo` is parsed (grounding is on iff a repo is set).
     // `trustedDeployment` is left unset (tri-state): its default is profile-implied
     // (§30.4), resolved at wiring by resolveEffectiveTrustedDeployment.
@@ -348,27 +331,6 @@ export function parseAgentSpec(value: unknown, source = "agent spec"): AgentSpec
         throw new Error(`${source}: 'sandbox.network' must be one of ${NETWORKS.join(" | ")}`);
       }
       spec.sandbox.network = s.network as AgentSandboxConfig["network"];
-    }
-  }
-  if (v.plans !== undefined) {
-    if (!v.plans || typeof v.plans !== "object") {
-      throw new Error(`${source}: 'plans' must be a mapping`);
-    }
-    const p = v.plans as Record<string, unknown>;
-    if (p.branch !== undefined) {
-      if (typeof p.branch !== "string" || !p.branch.trim()) {
-        throw new Error(`${source}: 'plans.branch' must be a non-empty branch name`);
-      }
-      const branch = p.branch.trim();
-      // §29.1a: the plans branch is an approval boundary — it must sit OUTSIDE
-      // the agent-owned push namespace, or rulesets that open marathon/* to
-      // agent pushes would open the approval boundary too. Refuse at boot.
-      if (branch === "marathon" || branch.startsWith("marathon/")) {
-        throw new Error(
-          `${source}: 'plans.branch' must not be under the agent push namespace 'marathon/' (got "${branch}") — §29.1a`,
-        );
-      }
-      spec.plans.branch = branch;
     }
   }
   // Chat grounding (chat-repo.md): default on when a repo is configured, and

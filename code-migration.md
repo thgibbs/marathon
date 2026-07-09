@@ -4,8 +4,9 @@ This guide compares the current codebase to the updated design docs and identifi
 implementation migrations needed to make Marathon match the kernel loop:
 
 ```text
-Slack ask -> design-doc PR -> iterate -> merge-as-approval -> sandboxed code work ->
-green-tested code PR -> deliver links back to Slack and the doc PR
+Slack ask -> draft design-doc PR -> iterate -> approving review = approval (§29.1a) ->
+sandboxed code work on the SAME PR -> green-tested, ready for review ->
+deliver links back to Slack and the PR -> merge ships design + code
 ```
 
 The code still reflects the earlier M0-M9 milestone implementation. That code is useful as
@@ -18,7 +19,12 @@ features.
 Progress against the tracks below, most recent first. The "Current mismatch" lists in each
 track describe the codebase *before* its work landed; completed tracks carry a status note.
 
-- **Track 18: plans branch — done (2026-07-05, §29.1a / OQ-9).** Plan docs no longer merge
+- **Track 18: plans branch — done (2026-07-05, §29.1a / OQ-9). ⚠ SUPERSEDED 2026-07-08 by
+  the combined-PR flow** (§29.1a re-resolution): doc PRs are now DRAFTS against the default
+  branch, an approving review (write-access-gated) is the approval, the BUILD agent
+  implements on the same branch and marks the PR ready, and the plans branch (config,
+  bootstrap, merge-filtered approval) was removed entirely. The entry below is kept as
+  history of the interim design. Plan docs no longer merge
   into the default branch. `AgentSpec.plans.branch` (default `marathon-plans`; parse REFUSES
   a branch under the agent push namespace `marathon/*` — the approval boundary cannot live
   in the prefix rulesets leave open to agent pushes) drives everything: `makeDocumentTools`

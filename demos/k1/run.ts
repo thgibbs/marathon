@@ -69,19 +69,19 @@ await writeFile(
 );
 await git(origin, "add", "-A");
 await git(origin, "commit", "--quiet", "-m", "plan: greet by name (merged)");
-const mergeCommitSha = (await git(origin, "rev-parse", "HEAD")).trim();
-const planRef = { repo: REPO, docPath: "docs/plan.md", mergeCommitSha };
+const approvedSha = (await git(origin, "rev-parse", "HEAD")).trim();
+const planRef = { repo: REPO, docPath: "docs/plan.md", approvedSha };
 
 // --- 2. Implementation task: workspace pinned to the plan's merge commit (§29.1-2). ---
 const TASK = "k1-task";
-const ws = await CodeWorkspace.materialize({ source: origin, baseSha: mergeCommitSha });
+const ws = await CodeWorkspace.materialize({ source: origin, baseSha: approvedSha });
 assert((await ws.remotes()).length === 0, "workspace has no remotes (credential-free)");
 assert((await ws.credentialHelpers()).filter(Boolean).length === 0, "credential helpers stripped");
 
 const client = new FixturesGithubClient({});
 const store = new InMemoryCodeChangeStore();
 const registry = new CodeTaskRegistry();
-registry.set(TASK, { workspace: ws, planRef, repo: REPO, baseSha: mergeCommitSha });
+registry.set(TASK, { workspace: ws, planRef, repo: REPO, baseSha: approvedSha });
 
 const invocations: ToolInvocationRecord[] = [];
 const audits: AuditRecord[] = [];
@@ -101,7 +101,7 @@ const submit = (input: Record<string, unknown>) =>
     {
       title: "Greet by name",
       summary: "greet() now includes the caller's name, per the merged plan.",
-      plan_ref: { repo: REPO, doc_path: planRef.docPath, merge_commit_sha: mergeCommitSha },
+      plan_ref: { repo: REPO, doc_path: planRef.docPath, merge_commit_sha: approvedSha },
       ...input,
     },
     { taskId: TASK, tenantId: "tenant-1" },

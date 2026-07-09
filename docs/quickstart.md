@@ -6,9 +6,10 @@ GitHub App → first loop` on your own repo, in under ~30 minutes.
 The loop you are setting up (design §0.1):
 
 ```text
-Slack ask -> design-doc PR (against the plans branch) -> iterate ->
-merge-as-approval (into the plans branch; main untouched) -> sandboxed code work ->
-verified code PR carrying code + plan -> deliver links back to Slack and the doc PR
+Slack ask -> draft design-doc PR (against the default branch) -> iterate ->
+approving review = approval (§29.1a; main untouched) -> sandboxed code work on
+the SAME branch -> the PR (code + plan) marked ready -> deliver links back to
+Slack and the PR -> merge ships design + code atomically
 ```
 
 > **Status.** The migration tracks (1–18) have all landed: the loop is proven
@@ -100,8 +101,7 @@ The full config shape (design §6.2 / §21.0):
 | `instructions` | the persona — how the agent runs the loop |
 | `harness` | `pi` (default) — `claude-code` arrives with K7 |
 | `repo` | the ONE target repo; scopes every GitHub grant by construction |
-| `tools` | grants, incl. brokered command families (`github.exec: pr view, pr create, …`; `git.exec: push, fetch`) |
-| `plans.branch` | where design-doc PRs merge — the approval (§29.1a); default `marathon-plans`, refused if under `marathon/*` (the agent push namespace); the plan doc reaches main only WITH its implementation's code PR |
+| `tools` | grants, incl. brokered command families (`github.exec: pr view, pr edit, …`; `git.exec: push, fetch`) — the kernel BUILD grant deliberately has no `pr create`/`pr ready`: the build lands on the EXISTING doc PR and `delivery.report_pr` owns the draft/ready state |
 | `sandbox.network` | BUILD container network: `bridge` (internet, default) or `none` — `none` from the YAML, `MARATHON_SANDBOX_NETWORK`, or code wins (strictness composes) |
 | `models` | role → `provider:model` routing (`default`, `reasoning`, `cheap`; a `build` role routes the BUILD stage) |
 | `budget` | hard spend cap in USD (`limit_usd`, fails closed) + `warn_ratio` — enforced per agent AND per task, at every turn boundary |
@@ -117,11 +117,15 @@ Marathon does not hand the model a GitHub token. The credential layout
 - **Reads** — direct API tools (`github.read_file`, …) or brokered
   (`github.exec` read families like `pr view`, `pr diff`, read-only `gh api`).
   Either way the token is injected host-side.
-- **Writes** — always brokered: `git.exec push` and `github.exec pr create/edit`
+- **Writes** — always brokered: `git.exec push` and `github.exec pr edit`
   run on the host with the token in the child process env only. The BUILD
   sandbox itself is **credential-free** (internet access, no secrets).
-- **Destructive actions** — never direct. Merging a PR is either a human's
-  native review (merge the PR yourself — that *is* the approval) or a
+  `delivery.report_pr` enforces the same-PR invariant (a BUILD task may only
+  report its own doc PR) and sets the PR's draft/ready state from the
+  reported verification — those invariants are gateway-enforced, not prompt
+  rules.
+- **Destructive actions** — never direct. Merging a PR is always a human's
+  native action (merge the combined PR yourself — that ships it) or a
   **Proposed Effect** the model proposes and a non-model executor performs
   after human approval. GitHub's own controls (branch protection, rulesets,
   CODEOWNERS, secret scanning, CI) stay the enforcement layer.
@@ -131,23 +135,20 @@ Setup:
 1. Create a fine-grained token with Contents + Pull requests read/write on your
    target repo → `GITHUB_TOKEN` in `.env`. For production, use the GitHub App
    fields in `.env.example`; the broker model is the same.
-2. Protect your default branch (Marathon only pushes `marathon/*` branches;
-   branch protection makes that structural).
-3. **Protect the plans branch too** (`marathon-plans` by default — created at
-   boot when missing). It is an approval boundary (§29.1a): design-doc PRs
-   merge into it, and that merge is what triggers implementation — so it must
-   accept changes only via reviewed PRs, never direct pushes. It deliberately
-   sits outside `marathon/*` so rulesets that open that prefix to agent pushes
-   don't open the approval boundary. An abandoned plan just stays there; an
-   implemented plan reaches main with its code PR.
-4. For the document surface webhooks: create a GitHub App, subscribe to
+2. Protect your default branch (Marathon only pushes `marathon/*` branches —
+   design-doc PRs live on `marathon/doc-*` branches and implementations push
+   onto those same branches; branch protection makes that structural).
+   The **approval** (§29.1a) is an **approving review on the draft doc PR** —
+   Marathon only acts on it when the approver has **write access** to the repo,
+   so drive-by approvals on public repos cannot trigger builds.
+3. For the document surface webhooks: create a GitHub App, subscribe to
    `issue_comment`, `pull_request_review_comment`, `pull_request_review`, and
    `pull_request`, set a
    webhook secret → `GITHUB_WEBHOOK_SECRET`, and install it on the repo. For
    the webhook URL, create a channel at [smee.io/new](https://smee.io/new) and
    use it — no tunnel needed, and the URL is set once (the channel is stable
    across restarts).
-5. Set `GITHUB_OWNER` to the repository owner used for this Marathon tenant
+4. Set `GITHUB_OWNER` to the repository owner used for this Marathon tenant
    and `MARATHON_WEBHOOK_PROXY` to the same smee channel URL, then run
    `make github-app` — it subscribes outbound to the channel and feeds each
    delivery through the same signature-verified receiver. (Production shape:
@@ -155,8 +156,8 @@ Setup:
    public URL/tunnel to this host's `/webhooks/github`.)
 
 `make github-app` runs both halves of the GitHub side: the webhook receiver
-(mention → doc PR, comment → revision, merge → implementation task) **and the
-BUILD worker** that consumes those implementation/revision tasks — Pi in the
+(mention → draft doc PR, comment → revision, approving review → implementation
+task) **and the BUILD worker** that consumes those implementation/revision tasks — Pi in the
 credential-free sandbox (network mode from the agent YAML), brokered
 `gh`/`git`, `delivery.report_pr`, model + budget from the same YAML. Workers on
 a shared queue partition by job kind, so the BUILD worker and the Slack app's
@@ -227,7 +228,7 @@ make demo-k3             # clarify -> resume; finished-thread reply -> continuat
 make demo-k4             # mid-BUILD kill -> resume -> exactly one PR
 make demo-k5             # @agent status views + cost footers
 make demo-slack-app      # the Slack dispatcher end-to-end (ask/feedback/dedupe/resume)
-make demo-github-app     # mention -> doc PR -> revise -> merge spawns implementation task
+make demo-github-app     # mention -> draft doc PR -> revise -> approving review spawns implementation task
 ```
 
 All demos are deterministic (fakes/fixtures); the `smoke-*` targets run the

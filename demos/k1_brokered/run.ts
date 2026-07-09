@@ -1,21 +1,23 @@
 /**
- * K1 demo, corrected path (code-migration.md Tracks 6-9): agent-driven
- * delivery through the credentialed `gh`/`git` broker instead of the semantic
- * `github.submit_code_changes` tool.
+ * K1 demo, corrected path (code-migration.md Tracks 6-9; §29.1a combined-PR
+ * flow): agent-driven delivery through the credentialed `gh`/`git` broker
+ * instead of the semantic `github.submit_code_changes` tool.
  *
- *   fake merged plan -> workspace edits + local git (the sandbox's job) ->
- *   brokered `git push` (REAL git, credential-free workspace) ->
- *   brokered `gh pr create` -> `delivery.report_pr` fan-out ->
+ *   approved draft design PR -> workspace edits + local git (the sandbox's
+ *   job) -> brokered `git push` onto the SAME doc branch (REAL git,
+ *   credential-free workspace) -> `delivery.report_pr` on the SAME PR
+ *   (enforced; green verification marks it ready) -> fan-out ->
  *   model-initiated merge = Proposed Effect -> human approves the EXACT
  *   payload -> non-model executor merges.
  *
  * Asserts:
  *  - the workspace has no remotes or credential helpers; the push credential
  *    exists only in the brokered child env — never in argv, trace, or results;
- *  - non-allowlisted gh families (pr merge, api POST) and foreign repos are
- *    refused before any command runs;
- *  - delivery.report_pr validates the PR against the configured repo, records
- *    the CodeChange, and fans out idempotently to Slack + the doc PR;
+ *  - non-allowlisted gh families (pr merge, pr create, api POST) and foreign
+ *    repos are refused before any command runs;
+ *  - delivery.report_pr REFUSES any PR but the task's own doc PR (§29.1a),
+ *    marks the draft PR ready when verification is green, records the
+ *    CodeChange, and fans out idempotently to Slack + the doc PR;
  *  - a direct merge tool call returns a typed requires_proposal; approval
  *    binds to the payload hash (a tampered hash is void); the executor runs
  *    exactly once.
@@ -95,22 +97,35 @@ await execFileAsync("mkdir", ["-p", join(origin, "docs")]);
 await writeFile(join(origin, "docs", "plan.md"), "# Plan: greet by name\n");
 await git(origin, "add", "-A");
 await git(origin, "commit", "--quiet", "-m", "plan: greet by name (merged)");
-const mergeCommitSha = (await git(origin, "rev-parse", "HEAD")).trim();
-const planRef = { repo: REPO, docPath: "docs/plan.md", mergeCommitSha };
+const approvedSha = (await git(origin, "rev-parse", "HEAD")).trim();
+const planRef = { repo: REPO, docPath: "docs/plan.md", approvedSha };
 
 const bare = await mkdtemp(join(tmpdir(), "marathon-k1b-github-"));
 await execFileAsync("git", ["init", "--bare", "--quiet", bare]);
 
-// --- 2. Workspace pinned to the merge commit; credential-free (§29.2). ---
-const ws = await CodeWorkspace.materialize({ source: origin, baseSha: mergeCommitSha });
+// --- 2. Workspace pinned to the approved doc-branch tip; credential-free (§29.2). ---
+const ws = await CodeWorkspace.materialize({ source: origin, baseSha: approvedSha });
 assert((await ws.remotes()).length === 0, "workspace has no remotes (credential-free)");
 assert((await ws.credentialHelpers()).filter(Boolean).length === 0, "credential helpers stripped");
 
+// The draft design PR the approving review pinned (§29.1a): it already exists
+// on the fixtures "GitHub" — the BUILD task is bound to it, and delivery
+// happens ON it (no `pr create` anywhere in the BUILD grant).
+const branch = `marathon/doc-${TASK}-plan`;
+const fixtures = new FixturesGithubClient({});
+const designPr = await fixtures.createPullRequest(REPO, "Plan: greet by name", branch, "main", "…", { draft: true });
+
 const registry = new CodeTaskRegistry();
-registry.set(TASK, { workspace: ws, planRef, repo: REPO, baseSha: mergeCommitSha });
+registry.set(TASK, {
+  workspace: ws,
+  planRef,
+  repo: REPO,
+  baseSha: approvedSha,
+  expectedPrNumber: designPr.number,
+  expectedBranch: branch,
+});
 
 // --- 3. Gateway with the brokered tool surface (Tracks 6-7). ---
-const fixtures = new FixturesGithubClient({});
 const store = new InMemoryCodeChangeStore();
 
 class RecordingAdapter implements SurfaceAdapter {
@@ -129,15 +144,11 @@ const targets: DeliveryTarget[] = [
   { surfaceType: "github", ref: { repo: REPO, number: 41, kind: "pr" } },
 ];
 
-// The fake `gh` binary: reads return canned JSON; `pr create` creates the PR
-// on the fixtures "GitHub" and prints its URL — exactly what real gh does.
+// The fake `gh` binary: reads return canned JSON. There is deliberately no
+// `pr create` handler — the family is not in the kernel grant (§29.1a).
 const ghRunner = new FakeCommandRunner(async (_bin, argv) => {
   if (argv[0] === "pr" && argv[1] === "view") {
     return { exitCode: 0, stdout: '{"title":"Greet by name","state":"OPEN"}', stderr: "" };
-  }
-  if (argv[0] === "pr" && argv[1] === "create") {
-    const pr = await fixtures.createPullRequest(REPO, "Greet by name", `marathon/${TASK}-greet`, "main", "…");
-    return { exitCode: 0, stdout: `${pr.url}\n`, stderr: "" };
   }
   return { exitCode: 1, stdout: "", stderr: `unexpected gh call: ${argv.join(" ")}` };
 });
@@ -182,6 +193,12 @@ const ctx = { taskId: TASK, tenantId: "tenant-1" };
 // --- 4. Broker policy: denied families never reach a child process (Track 6). ---
 const merge = await gateway.run("github.exec", { argv: ["pr", "merge", "1", "--repo", REPO] }, ctx).catch((e: Error) => e);
 assert(merge instanceof Error && /not in an allowlisted gh family/.test(String(merge)), "gh pr merge is not a brokered family");
+// §29.1a: `pr create` is deliberately absent from the kernel BUILD grant — the
+// build lands on the EXISTING design PR.
+const create = await gateway
+  .run("github.exec", { argv: ["pr", "create", "--repo", REPO, "--title", "rogue"] }, ctx)
+  .catch((e: Error) => e);
+assert(create instanceof Error && /not in an allowlisted gh family/.test(String(create)), "gh pr create is not granted to the BUILD agent");
 const post = await gateway
   .run("github.exec", { argv: ["api", `repos/${REPO}/pulls`, "--method", "POST"] }, ctx)
   .catch((e: Error) => e);
@@ -205,8 +222,8 @@ assert(verify.exitCode === 0, "verification is green after the fix");
 await git(ws.dir, "add", "-A");
 await git(ws.dir, "commit", "--quiet", "-m", "feat: greet by name\n\nMarathon-Task: " + TASK);
 
-// --- 6. Brokered push: REAL git, no remotes/credentials in the workspace (Track 6). ---
-const branch = `marathon/${TASK}-greet`;
+// --- 6. Brokered push onto the SAME doc branch: REAL git, no remotes/credentials
+// in the workspace (Track 6, §29.1a). ---
 const push = await gateway.run("git.exec", { argv: ["push", REPO, `HEAD:refs/heads/${branch}`] }, ctx);
 assert((push.details as { ok?: boolean }).ok === true, "brokered git push succeeded");
 const pushedSha = (await git(bare, "rev-parse", `refs/heads/${branch}`)).trim();
@@ -214,20 +231,23 @@ const localSha = (await git(ws.dir, "rev-parse", "HEAD")).trim();
 assert(pushedSha === localSha, "the pushed branch matches the workspace HEAD");
 assert((await ws.remotes()).length === 0, "push added no remote to the workspace");
 
-// --- 7. Brokered `gh pr create`, then delivery.report_pr (Track 7). ---
-const created = await gateway.run(
-  "github.exec",
-  { argv: ["pr", "create", "--repo", REPO, "--title", "Greet by name", "--head", branch] },
-  ctx,
+// --- 7. delivery.report_pr on the SAME design PR (Track 7, §29.1a). ---
+// The same-PR invariant is gateway-enforced: a rogue same-repo PR is refused.
+const rogue = await fixtures.createPullRequest(REPO, "Rogue", "marathon/rogue-branch", "main");
+const mismatch = await gateway
+  .run("delivery.report_pr", { pr_url: rogue.url, summary: "rogue" }, ctx)
+  .catch((e: Error) => e);
+assert(
+  mismatch instanceof Error && /PR_MISMATCH/.test(String(mismatch)),
+  "delivery.report_pr refuses any PR but the task's own design PR",
 );
-const prUrl = created.content.trim();
-assert(/\/pull\/\d+$/.test(prUrl), `gh pr create returned the PR url: ${prUrl}`);
 
+const prUrl = designPr.url;
 const report = await gateway.run(
   "delivery.report_pr",
   {
     pr_url: prUrl,
-    summary: "greet() now includes the caller's name, per the merged plan.",
+    summary: "greet() now includes the caller's name, per the approved plan.",
     verification: [{ command: "node test.mjs", exit_code: 0, summary: "ok" }],
   },
   ctx,
@@ -236,6 +256,8 @@ const reportDetails = report.details as Record<string, unknown>;
 assert(reportDetails.state === "submitted_ready", "green verification → submitted_ready");
 assert(reportDetails.branch === branch, "the recorded branch comes from GitHub, not the model");
 assert(reportDetails.delivered === 2, "PR link fanned out to Slack + doc PR");
+// The draft/ready transition is owned by report_pr: the draft design PR is now ready.
+assert((await fixtures.getPullRequest(REPO, designPr.number))?.draft === false, "green report marked the draft design PR ready for review");
 const change = await store.getCodeChangeByTask(TASK);
 assert(change?.prUrl === prUrl && change.state === "submitted_ready", "CodeChange records the reported PR");
 

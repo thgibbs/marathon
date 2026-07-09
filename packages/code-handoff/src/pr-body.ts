@@ -17,10 +17,10 @@ export interface PrBodyInput {
  */
 export function buildPrBody(input: PrBodyInput): string {
   const { planRef } = input;
-  const planUrl = `https://github.com/${planRef.repo}/blob/${planRef.mergeCommitSha}/${planRef.docPath}`;
+  const planUrl = `https://github.com/${planRef.repo}/blob/${planRef.approvedSha}/${planRef.docPath}`;
   const parts: string[] = [input.summary.trim()];
 
-  parts.push(`## Plan\n\n[\`${planRef.docPath}\`](${planUrl}) @ \`${planRef.mergeCommitSha.slice(0, 12)}\``);
+  parts.push(`## Plan\n\n[\`${planRef.docPath}\`](${planUrl}) @ \`${planRef.approvedSha.slice(0, 12)}\``);
 
   if (input.verification.length > 0) {
     const rows = input.verification.map(

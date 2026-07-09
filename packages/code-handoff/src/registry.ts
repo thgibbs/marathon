@@ -14,6 +14,16 @@ export interface CodeTaskContext {
   baseSha: string;
   /** PR base; defaults to "main". */
   defaultBranch?: string;
+  /**
+   * The ONE PR this task is bound to (§29.1a combined-PR flow): the doc PR an
+   * implementation task updates in place, or the code PR a revision task
+   * revises. When set, `delivery.report_pr` REJECTS a report of any other PR —
+   * the same-PR invariant is gateway-enforced, not prompt-enforced. Absent for
+   * paths that legitimately open a fresh PR (none in the kernel loop today).
+   */
+  expectedPrNumber?: number;
+  /** The head branch of the expected PR (validated alongside the number). */
+  expectedBranch?: string;
 }
 
 export class CodeTaskRegistry {

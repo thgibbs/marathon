@@ -257,6 +257,26 @@ export class Database implements AuditWriter, IdempotencyStore {
     return rows[0] ? rowToTask(rows[0]) : null;
   }
 
+  /**
+   * An unfinished implementation task anchored to a doc PR (§29.1a): while one
+   * is queued/running/retrying, further approving reviews on the same PR are
+   * absorbed — even a re-approval at a NEW head SHA becomes a fresh task only
+   * after the in-flight build finishes (the implementation mirror of
+   * `findActiveRevisionTask` above).
+   */
+  async findActiveImplementationTask(tenantId: Id, repo: string, docPrNumber: number): Promise<Task | null> {
+    const { rows } = await this.pool.query(
+      `select * from task
+       where tenant_id = $1 and source_type = 'github'
+         and source_ref->>'kind' = 'implementation'
+         and source_ref->>'repo' = $2 and (source_ref->>'docPrNumber')::int = $3
+         and status in ('created', 'queued', 'running', 'retrying')
+       order by created_at desc limit 1`,
+      [tenantId, repo, docPrNumber],
+    );
+    return rows[0] ? rowToTask(rows[0]) : null;
+  }
+
   async findTaskBySourceTask(sourceTaskId: Id): Promise<Task | null> {
     const { rows } = await this.pool.query(
       `select * from task where source_task_id = $1 order by created_at desc limit 1`,

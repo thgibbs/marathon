@@ -58,12 +58,13 @@ export interface BuildStepOptions {
    */
   taskBudget?: BudgetPolicy;
   /**
-   * Fetch the approved plan doc's content (§29.1a): the plan lives on the
-   * plans branch, not in the tree at `base_sha`, so fresh provisioning writes
-   * it into the workspace at its `doc_path` — the agent reads it with normal
-   * file tools AND it rides the diff into the code PR (main only carries
-   * shipped plans). Resumes restore it via the checkpointed diff instead, so
-   * agent amendments to the plan are never overwritten.
+   * Fetch the approved plan doc's content (§29.1a, combined-PR flow). The
+   * workspace IS the doc-PR branch, checked out at `approvedSha`, so the plan
+   * doc is already in the tree at its `doc_path`; this hook is a defensive
+   * fallback that writes it only if provisioning somehow lacked it (an
+   * identical write is a no-op and never dirties the diff). Resumes restore
+   * the tree via the checkpointed diff instead, so agent amendments to the
+   * plan are never overwritten.
    */
   loadPlanDoc?: (task: Task, binding: { planRef: PlanRef; baseSha: string }) => Promise<{ path: string; content: string } | null>;
   /** PR base for the handoff; defaults to "main". */
@@ -87,12 +88,14 @@ const MAX_FINDINGS = 200;
 
 const DEFAULT_BUILD_INSTRUCTIONS =
   "You are Marathon's implementation agent. Work in /workspace (the repo, checked out at the " +
-  "plan's merge commit). Read the merged plan and implement it. Use normal git locally " +
-  "(status/diff/add/commit, branching); the sandbox has internet access for package installs " +
-  "and documentation, but holds no credentials — GitHub writes go through the brokered tools: " +
-  "git.exec to push your branch, github.exec (gh pr create / gh pr edit) to open or update the " +
-  "PR. Verify with the repo's tests, then finish by calling delivery.report_pr exactly once " +
-  "with the PR URL and honest verification results.";
+  "approved design-doc PR's branch tip, with the plan already in the tree). Read the approved " +
+  "plan and implement it. Use normal git locally (status/diff/add/commit); the sandbox has " +
+  "internet access for package installs and documentation, but holds no credentials — GitHub " +
+  "writes go through the brokered tools: git.exec to push commits onto the SAME doc-PR branch " +
+  "(so the design PR updates in place). Do NOT open a new PR — delivery.report_pr refuses any " +
+  "PR but this task's own. Verify with the repo's tests, then finish by calling " +
+  "delivery.report_pr exactly once with the existing PR URL and honest verification results; " +
+  "Marathon sets the PR's draft/ready state from that report (green = ready, red/missing = draft).";
 
 /**
  * The BUILD-stage step runner (design §29.2, §11.2 BUILD-stage checkpoints;
@@ -151,12 +154,19 @@ export function makeBuildStepRunner(opts: BuildStepOptions) {
         const plan = await opts.loadPlanDoc(task, { planRef, baseSha });
         if (plan) await workspace.writeFile(plan.path, plan.content);
       }
+      // §29.1a: bind the task to its ONE PR (the doc PR for an implementation,
+      // the code PR for a revision) so `delivery.report_pr` can REJECT a report
+      // of any other PR — the same-PR invariant is enforced at the gateway,
+      // never left to the prompt.
+      const expected = expectedPrFromSourceRef(task.sourceRef);
       opts.registry.set(taskId, {
         workspace,
         planRef,
         repo: planRef.repo,
         baseSha,
         defaultBranch: opts.defaultBranch,
+        expectedPrNumber: expected?.prNumber,
+        expectedBranch: expected?.branch,
       });
 
       const resuming = checkpoint.turnIndex !== undefined;
@@ -265,22 +275,40 @@ export function buildBindingFromSourceRef(
 ): { planRef: PlanRef; baseSha: string } | null {
   const ref = sourceRef as {
     kind?: unknown;
-    planRef?: { repo?: unknown; docPath?: unknown; mergeCommitSha?: unknown };
+    planRef?: { repo?: unknown; docPath?: unknown; approvedSha?: unknown };
     baseSha?: unknown;
   } | null;
   const p = ref?.planRef;
   if (
     typeof p?.repo === "string" &&
     typeof p.docPath === "string" &&
-    typeof p.mergeCommitSha === "string" &&
+    typeof p.approvedSha === "string" &&
     typeof ref?.baseSha === "string"
   ) {
     return {
-      planRef: { repo: p.repo, docPath: p.docPath, mergeCommitSha: p.mergeCommitSha },
+      planRef: { repo: p.repo, docPath: p.docPath, approvedSha: p.approvedSha },
       baseSha: ref.baseSha,
     };
   }
   return null;
+}
+
+/**
+ * The ONE PR a BUILD-stage task is bound to (§29.1a): an implementation task
+ * updates its doc PR in place (`docPrNumber`), a code-revision task revises its
+ * code PR (`prNumber`) — both carry the head `branch`. Read from the task's
+ * immutable `sourceRef` (not the checkpoint), so resumes rebind identically.
+ * Null when the source ref carries no PR (a legacy/handoff path that opens a
+ * fresh PR), in which case `delivery.report_pr` keeps its unpinned behavior.
+ */
+export function expectedPrFromSourceRef(
+  sourceRef: Record<string, unknown> | null | undefined,
+): { prNumber: number; branch?: string } | null {
+  const ref = sourceRef as { docPrNumber?: unknown; prNumber?: unknown; branch?: unknown } | null;
+  const prNumber =
+    typeof ref?.docPrNumber === "number" ? ref.docPrNumber : typeof ref?.prNumber === "number" ? ref.prNumber : null;
+  if (prNumber === null) return null;
+  return { prNumber, branch: typeof ref?.branch === "string" ? ref.branch : undefined };
 }
 
 /** The BUILD binding for a task: plan ref + pinned base, from input or checkpoint. */

@@ -2,7 +2,7 @@
 
 Answers a Slack ask (thread with `@forge`): run agents on **Codex CLI in headless mode** as
 a third harness, and let a deployment pick a **different model for each kernel-loop stage** —
-drafting the design plan, reviewing the plan PR, implementing the merged plan, and reviewing
+drafting the design plan, reviewing the plan PR, implementing the approved plan, and reviewing
 the implementation PR.
 
 These are two independent, additive changes to the same seam (`AgentRuntime` + the agent
@@ -76,11 +76,11 @@ const modelRef = resolveModelRef(spec.models ?? DEFAULT_MODEL_POLICY, "build");
 What's missing is not the mechanism — it's that only **one** of the kernel loop's four stages
 is wired to a distinct role. The other three all collapse onto a single flat value:
 
-| Kernel stage (§0.1 loop: ask → design doc → review → merged plan → code → PR) | Call site | Model used today |
+| Kernel stage (§0.1 loop: ask → draft design doc → review → approving review → code on the same PR → merge) | Call site | Model used today |
 | --- | --- | --- |
 | **Draft** the design doc | `handleGithubMention` draft path (`packages/github-app/src/handlers.ts`) | `deps.modelRef ?? "openai:gpt-4o-mini"` — a flat default, ignores `spec.models` |
 | **Design-review**: revise the design doc from PR review comments | `handleGithubMention` revise path + `handleGithubReview` (doc branch) | same flat `deps.modelRef` as draft — indistinguishable from it |
-| **Build**: implement the merged plan | `makeBuildWiring` → `makeBuildStepRunner` | `resolveModelRef(spec.models, "build")` — already role-routed |
+| **Build**: implement the approved plan | `makeBuildWiring` → `makeBuildStepRunner` | `resolveModelRef(spec.models, "build")` — already role-routed |
 | **Code-review**: revise the code PR from review comments/mentions | `handleCodePrRevision` → routed through `isBuildTask` to the same BUILD step runner | same `"build"` role as fresh implementation — indistinguishable from it |
 
 So today an operator can already give BUILD its own model, but cannot give DRAFT a cheaper
@@ -122,7 +122,7 @@ models:
   default:        openai:gpt-4o-mini   # required; fallback for any event not set below
   draft:          openai:gpt-4o        # drafting the design-doc PR
   design-review:  openai:gpt-4o        # revising the design doc from human review comments
-  build:          openai:gpt-4o        # implementing the merged plan               (existing role)
+  build:          openai:gpt-4o        # implementing the approved plan             (existing role)
   code-review:    openai:gpt-4o        # revising the code PR from human review comments/mentions
 ```
 
@@ -284,7 +284,7 @@ multi-agent-capable one:
   scope; `resolveModelRef`'s existing default-fallback is all that's needed here.
 - **Not** a general event bus / pub-sub infrastructure — `on:` is a static subscription list
   checked against the four fixed events the kernel loop already produces from GitHub webhooks
-  (issue mention, doc-PR review, plan-merge, code-PR review/mention). No new event sources, no
+  (issue mention, doc-PR review, plan approval — an approving review, §29.1a — code-PR review/mention). No new event sources, no
   dynamic registration, no cross-repo fan-out in this pass.
 - **Not** multi-agent fan-out for `build`/`code-review` — see the conflict note in §A.4 item 3;
   first-registered-spec-wins plus a warning is the interim behavior, not a real solution.

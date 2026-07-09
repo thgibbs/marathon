@@ -62,7 +62,7 @@ async function main(): Promise<void> {
   );
   await git("add", "-A");
   await git("commit", "--quiet", "-m", "plan: greet by name (merged)");
-  const mergeCommitSha = (await git("rev-parse", "HEAD")).stdout.trim();
+  const approvedSha = (await git("rev-parse", "HEAD")).stdout.trim();
 
   // --- 2. The BUILD-stage machinery shared by both workers (§29.4). ---
   const client = new FixturesGithubClient({});
@@ -103,7 +103,7 @@ async function main(): Promise<void> {
         {
           title: "Greet by name",
           summary: "greet() now includes the caller's name, per the merged plan.",
-          plan_ref: { repo: REPO, doc_path: "docs/plan.md", merge_commit_sha: mergeCommitSha },
+          plan_ref: { repo: REPO, doc_path: "docs/plan.md", merge_commit_sha: approvedSha },
           verification: verification.map((v) => ({ command: v.command, exit_code: v.exitCode, summary: v.summary })),
         },
         { taskId: request.taskId, tenantId: request.tenantId ?? "" },
@@ -125,11 +125,11 @@ async function main(): Promise<void> {
       sourceRef: {
         kind: "implementation",
         repo: REPO,
-        planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha },
-        baseSha: mergeCommitSha,
+        planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha },
+        baseSha: approvedSha,
       },
       inputText: "Implement the approved plan in docs/plan.md.",
-      idempotencyKey: `${REPO}:docs/plan.md:${mergeCommitSha}:implement:k4`,
+      idempotencyKey: `${REPO}:docs/plan.md:${approvedSha}:implement:k4`,
     });
 
     // --- 4. Worker #1: crash mid-BUILD, right after turn 1's checkpoint lands. ---
@@ -145,7 +145,7 @@ async function main(): Promise<void> {
     const cp = parseCheckpoint(afterCrash!.checkpoint);
     assert(cp.turnIndex === 1, `checkpoint is at turn 1 (got ${cp.turnIndex})`);
     assert(cp.phase === "build", "checkpoint phase is 'build'");
-    assert(cp.baseSha === mergeCommitSha, "checkpoint pins base_sha to the plan's merge commit");
+    assert(cp.baseSha === approvedSha, "checkpoint pins base_sha to the plan's merge commit");
     assert(
       (cp.workspaceDiff ?? "").includes("hi ${name}"),
       "checkpoint carries the workspace diff vs base_sha",

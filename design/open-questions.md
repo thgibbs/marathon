@@ -221,21 +221,20 @@ whose precondition most Marathon tasks don't meet.
 
 ## OQ-9 — Where do plan documents live? (merge-as-approval vs. a clean main)
 
-> **Resolved 2026-07-04 (design; implementation = code-migration Track 18).** **Plans branch
-> + plan-rides-the-code-PR** (§29.1a). Doc PRs target a long-lived plans branch (default
-> `marathon-plans` — deliberately OUTSIDE the agent-owned `marathon/*` push namespace, and
-> branch-protected like main, since rulesets are the final enforcement on the brokered push
-> path); merging **there** is the approval — same deliberate, sha-pinned, natively
-> attributable signal, same review UX/CODEOWNERS/branch protection, but the default branch is
-> untouched. The BUILD workspace materializes the approved plan at its `doc_path`, so the code
-> PR carries **code + plan as one unit** and the plan reaches main only when the work merges
-> (amended on the code branch if review forces divergence — main gets the **as-built** plan).
-> Abandoned plans stay on the plans branch. Invariant: **a plan doc on main means the plan
-> shipped.** Consequence: `plan_ref.merge_commit_sha` (plans branch) and `base_sha` (default-
-> branch head at approval) **decouple** — already separate fields (§10.19). Alternatives
-> rejected: merge-to-main + cleanup (churn), approve-without-merge (weaker ritual, review-state
-> machinery, no canonical merged plan), separate plans repo (fights K6 setup), ADR-log-on-main
-> (the litter being declined).
+> **Re-resolved 2026-07-08 (supersedes the 2026-07-04 plans-branch resolution).**
+> **Combined PR** (§29.1a). Doc PRs open as **drafts against the default branch**; a human's
+> **approving review** (from a write-access holder — the load-bearing check, since public
+> repos let anyone submit approving reviews) is the approval; the BUILD agent implements
+> **on the same branch**, marks the PR ready, and merging that one PR ships **plan + code
+> atomically**. The plan is pinned at `plan_ref.approved_sha` (the doc-PR head at the
+> review), which is also `base_sha` — the pins re-couple by construction. Abandoned plans
+> are closed draft PRs. Invariant preserved: **a plan doc on main means the plan shipped.**
+> The 2026-07-04 objection to approve-via-review ("weaker ritual, no canonical merged plan")
+> is answered by the combined PR: the ritual is GitHub's native review flow, the canonical
+> plan is the doc at `approved_sha` (then on main), and the write-access gate keeps the
+> signal merge-strength. Alternatives rejected: the plans branch (a second long-lived
+> protected branch + a two-PR lifecycle), merge-to-main + cleanup (churn), separate plans
+> repo (fights K6 setup), ADR-log-on-main (the litter being declined).
 
 **Question.** Merge-as-approval originally merged design docs into the default branch, which
 accretes plan documents on main that may never be implemented or may not match the final

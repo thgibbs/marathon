@@ -6,6 +6,7 @@
 export type CodeHandoffErrorCode =
   | "NO_WORKSPACE"        // no code workspace bound to this task (not in BUILD stage)
   | "PLAN_REF_MISMATCH"   // echoed plan_ref does not match the task's plan_ref
+  | "PR_MISMATCH"         // reported PR is not the ONE PR this task is bound to (§29.1a)
   | "EMPTY_DIFF"          // nothing changed in the workspace
   | "DIFF_TOO_LARGE"      // over the files/lines/bytes caps
   | "PROTECTED_PATH"      // touches a refused path (e.g. .github/workflows/**)

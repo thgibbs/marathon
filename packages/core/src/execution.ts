@@ -97,8 +97,8 @@ function parsePlanRef(x: unknown): PlanRef | undefined {
   const p = x as PlanRef;
   return typeof p.repo === "string" &&
     typeof p.docPath === "string" &&
-    typeof p.mergeCommitSha === "string"
-    ? { repo: p.repo, docPath: p.docPath, mergeCommitSha: p.mergeCommitSha }
+    typeof p.approvedSha === "string"
+    ? { repo: p.repo, docPath: p.docPath, approvedSha: p.approvedSha }
     : undefined;
 }
 

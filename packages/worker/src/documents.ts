@@ -4,9 +4,9 @@ import { mergeDeliveryTargets, type DeliveryTarget, type DocumentArtifact, type 
  * Plan-artifact bookkeeping for model-driven doc PRs (§29.1a). The GitHub
  * app's inline mention flow records its own artifact; on surfaces where the
  * MODEL opens the doc PR through the gateway (the Slack loop), this is the
- * `onDocumentPr` hook that persists what the merge webhook needs — without
- * it, a plan drafted from Slack would merge into the plans branch and be
- * silently ignored (no artifact → no approval → no implementation task).
+ * `onDocumentPr` hook that persists what the approval handler needs — without
+ * it, an approving review on a plan drafted from Slack would find no artifact
+ * (no owning task → no approval → no implementation task).
  */
 
 /**

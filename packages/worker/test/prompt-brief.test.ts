@@ -5,58 +5,43 @@ import {
   buildAgentPrompt,
   renderImplementationBrief,
   renderRevisionBrief,
-  suggestedImplementationBranch,
 } from "../src/prompt";
 
-const PLAN: PlanRef = { repo: "o/r", docPath: "docs/Rate Limiting.md", mergeCommitSha: "cafe1234deadbeef" };
+const PLAN: PlanRef = { repo: "o/r", docPath: "docs/Rate Limiting.md", approvedSha: "cafe1234deadbeef" };
 
-describe("suggestedImplementationBranch (Track 10)", () => {
-  it("is deterministic per merged plan version", () => {
-    expect(suggestedImplementationBranch(PLAN)).toBe("marathon/docs-rate-limiting-cafe123");
-    expect(suggestedImplementationBranch(PLAN)).toBe(suggestedImplementationBranch(PLAN));
-  });
-
-  it("changes when the plan is re-merged (new sha ⇒ new suggested branch)", () => {
-    expect(suggestedImplementationBranch({ ...PLAN, mergeCommitSha: "0123456789ab" })).toBe(
-      "marathon/docs-rate-limiting-0123456",
-    );
-  });
-
-  it("falls back to a safe slug for degenerate paths", () => {
-    expect(suggestedImplementationBranch({ ...PLAN, docPath: "…" })).toBe("marathon/impl-cafe123");
-  });
-});
-
-describe("renderImplementationBrief (Track 10)", () => {
+describe("renderImplementationBrief (§29.1a combined-PR flow)", () => {
   const brief = renderImplementationBrief({
     planRef: PLAN,
     docPrNumber: 5,
+    branch: "marathon/doc-t1-rate-limiting",
     deliveryTargets: [
       { surfaceType: "slack", ref: { channel: "C1", thread_ts: "1.1" } },
       { surfaceType: "github", ref: { repo: "o/r", number: 5, kind: "pr" } },
     ],
   });
 
-  it("carries the approved plan, its materialized location, and the design PR", () => {
+  it("carries the approved plan, the doc branch, and the design PR", () => {
     expect(brief).toContain("docs/Rate Limiting.md in o/r, approved as cafe1234deadbeef");
-    expect(brief).toContain("(design PR #5)");
-    expect(brief).toContain("materialized at docs/Rate Limiting.md");
+    expect(brief).toContain("design PR #5, branch marathon/doc-t1-rate-limiting");
+    expect(brief).toContain("plan already in the tree at docs/Rate Limiting.md");
   });
 
-  it("teaches the §29.1a plan lifecycle: commit the doc, amend on divergence", () => {
-    expect(brief).toContain("merges to the default branch WITH your code");
+  it("teaches the §29.1a combined-PR lifecycle: ships with the code, amend on divergence", () => {
+    expect(brief).toContain("ships to the default branch WITH your code");
     expect(brief).toContain("as-built plan");
   });
 
-  it("suggests (but does not mandate) the branch", () => {
-    expect(brief).toContain("Suggested branch: marathon/docs-rate-limiting-cafe123");
-    expect(brief).toContain("yours to change");
+  it("pushes onto the SAME doc branch — no new PR (and says report_pr enforces it)", () => {
+    expect(brief).toContain('git.exec { argv: ["push", "o/r", "HEAD:refs/heads/marathon/doc-t1-rate-limiting"] }');
+    expect(brief).toContain("do NOT open a new PR");
+    expect(brief).toContain("refuse any PR except #5");
+    expect(brief).toContain("design PR #5 updates in place");
   });
 
-  it("teaches the brokered git/gh + delivery.report_pr contract", () => {
-    expect(brief).toContain('git.exec { argv: ["push"');
-    expect(brief).toContain("github.exec");
+  it("teaches the delivery.report_pr contract: report once, Marathon owns the draft/ready state", () => {
     expect(brief).toContain("delivery.report_pr EXACTLY ONCE");
+    expect(brief).toContain("green verification marks PR #5 ready");
+    expect(brief).toContain("Do not toggle the draft state yourself");
     expect(brief).toContain("NO credentials");
   });
 
@@ -66,7 +51,7 @@ describe("renderImplementationBrief (Track 10)", () => {
   });
 
   it("omits the target section when there are none", () => {
-    const bare = renderImplementationBrief({ planRef: PLAN });
+    const bare = renderImplementationBrief({ planRef: PLAN, docPrNumber: 5, branch: "marathon/doc-t1-x" });
     expect(bare).not.toContain("delivered to:");
   });
 });

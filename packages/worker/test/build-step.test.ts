@@ -9,6 +9,7 @@ import { emptyCheckpoint, parseCheckpoint, type Checkpoint, type Task } from "@m
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   BUILD_JOB_KIND,
+  expectedPrFromSourceRef,
   jobKindForSourceRef,
   loadDiffSnapshot,
   makeBuildStepRunner,
@@ -45,7 +46,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     sourceType: "github",
     sourceRef: {
       kind: "implementation",
-      planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: baseSha },
+      planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha: baseSha },
       baseSha,
     },
     deliveryTargets: null,
@@ -119,6 +120,50 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
     expect(res.checkpoint.completedSteps).toEqual(["turn:0", "turn:1", "build:final"]);
   });
 
+  it("binds the task's ONE expected PR into the registry (§29.1a same-PR enforcement)", async () => {
+    // The implementation sourceRef carries the doc PR + branch; the registry
+    // binding must carry them so delivery.report_pr can refuse any other PR.
+    const task = makeTask({
+      sourceRef: {
+        kind: "implementation",
+        repo: REPO,
+        docPrNumber: 7,
+        branch: "marathon/doc-t1-plan",
+        planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha: baseSha },
+        baseSha,
+      },
+    });
+    const { db } = makeDb(task);
+    const registry = new CodeTaskRegistry();
+    let boundDuringRun: { expectedPrNumber?: number; expectedBranch?: string } | undefined;
+    const runtime = new ScriptedBuildRuntime({
+      turns: [
+        async () => {
+          const b = registry.get(task.id);
+          boundDuringRun = { expectedPrNumber: b?.expectedPrNumber, expectedBranch: b?.expectedBranch };
+          return "checked binding";
+        },
+      ],
+    });
+    const run = makeBuildStepRunner({ db, runtime, registry, source: origin, modelRef: "fake:scripted" });
+    await run({ taskId: task.id, checkpoint: emptyCheckpoint() });
+    expect(boundDuringRun).toEqual({ expectedPrNumber: 7, expectedBranch: "marathon/doc-t1-plan" });
+  });
+
+  it("expectedPrFromSourceRef reads the doc PR, the revision PR, or nothing", () => {
+    expect(expectedPrFromSourceRef({ kind: "implementation", docPrNumber: 7, branch: "marathon/doc-x" })).toEqual({
+      prNumber: 7,
+      branch: "marathon/doc-x",
+    });
+    expect(expectedPrFromSourceRef({ kind: "code_revision", prNumber: 9, branch: "marathon/doc-y" })).toEqual({
+      prNumber: 9,
+      branch: "marathon/doc-y",
+    });
+    // No PR in the source ref (a path that opens a fresh PR) → unpinned.
+    expect(expectedPrFromSourceRef({ kind: "implementation", planRef: {} })).toBeNull();
+    expect(expectedPrFromSourceRef(null)).toBeNull();
+  });
+
   it("modelRef as a function resolves PER TASK (codex-impl.md §A.4 item 3: build vs code-review)", async () => {
     const seenModelRefs: string[] = [];
     const runtime = new ScriptedBuildRuntime({
@@ -135,7 +180,7 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
     const revisionTask = makeTask({
       sourceRef: {
         kind: "code_revision",
-        planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: baseSha },
+        planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha: baseSha },
         baseSha,
       },
     });
@@ -230,7 +275,7 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
       source: origin,
       modelRef: "fake:scripted",
     });
-    await run({ taskId: task.id, checkpoint: { ...emptyCheckpoint(), turnIndex: 0, baseSha, planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: baseSha } } });
+    await run({ taskId: task.id, checkpoint: { ...emptyCheckpoint(), turnIndex: 0, baseSha, planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha: baseSha } } });
     expect(input).toContain("restored to your last checkpoint (turn 0)");
     expect(input).toContain("Implement the approved plan.");
   });
@@ -356,7 +401,7 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
     const cpBinding = resolveBuildBinding(task, {
       ...emptyCheckpoint(),
       baseSha: "other-sha",
-      planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: "other-sha" },
+      planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha: "other-sha" },
     });
     expect(cpBinding?.baseSha).toBe("other-sha");
 
@@ -368,7 +413,7 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
     expect(
       jobKindForSourceRef({
         kind: "code_revision",
-        planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: "sha" },
+        planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha: "sha" },
         baseSha: "tip",
       }),
     ).toBe(BUILD_JOB_KIND);

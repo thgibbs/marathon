@@ -545,11 +545,11 @@ id
 tenant_id
 task_id
 repo
-plan_ref             # { doc_path, merge_commit_sha } — the approved plan, at its merge
-                     #   commit on the PLANS branch (§29.1a)
-base_sha             # pinned base the work builds on (the default-branch head at approval;
-                     #   the branch tip for revisions) — decoupled from plan_ref (§29.1a)
-branch               # marathon/<task_id>-<slug>
+plan_ref             # { doc_path, approved_sha } — the approved plan, at the doc-PR
+                     #   head pinned by the approving review (§29.1a)
+base_sha             # pinned base the work builds on (= approved_sha for a fresh
+                     #   implementation — the doc branch tip; the branch tip for revisions)
+branch               # the doc-PR branch (marathon/doc-<task>-<slug>) — the combined PR
 tree_hash            # idempotency anchor for submit (§29.4)
 pr_number
 pr_url

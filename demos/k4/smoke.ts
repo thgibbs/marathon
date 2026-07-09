@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   );
   await git("add", "-A");
   await git("commit", "--quiet", "-m", "plan: greet by name (merged)");
-  const mergeCommitSha = (await git("rev-parse", "HEAD")).stdout.trim();
+  const approvedSha = (await git("rev-parse", "HEAD")).stdout.trim();
 
   const env: SmokeEnv = {
     databaseUrl: cfg.databaseUrl,
@@ -78,14 +78,14 @@ async function main(): Promise<void> {
       sourceRef: {
         kind: "implementation",
         repo: REPO,
-        planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha },
-        baseSha: mergeCommitSha,
+        planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha },
+        baseSha: approvedSha,
       },
       inputText:
         `Implement the approved plan: greet() must include the caller's name so \`node test.mjs\` passes. ` +
         `When green, call github_submit_code_changes with plan_ref ` +
-        `{ repo: "${REPO}", doc_path: "docs/plan.md", merge_commit_sha: "${mergeCommitSha}" }.`,
-      idempotencyKey: `${REPO}:docs/plan.md:${mergeCommitSha}:implement:smoke-k4:${Date.now()}`,
+        `{ repo: "${REPO}", doc_path: "docs/plan.md", merge_commit_sha: "${approvedSha}" }.`,
+      idempotencyKey: `${REPO}:docs/plan.md:${approvedSha}:implement:smoke-k4:${Date.now()}`,
     });
 
     // --- child worker: the real run we will kill. Short lease so the parent

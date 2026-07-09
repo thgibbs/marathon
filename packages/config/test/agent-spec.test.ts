@@ -16,7 +16,6 @@ describe("parseAgentSpec (Tracks 12 + 14)", () => {
       harness: "pi",
       tools: [],
       sandbox: { network: "bridge" },
-      plans: { branch: "marathon-plans" },
       // Chat grounding is off by default when no repo is configured.
       // trusted_deployment is left UNSET (tri-state, §30.4): its default is
       // profile-implied, resolved at wiring — not defaulted to false at parse.
@@ -57,17 +56,6 @@ describe("parseAgentSpec (Tracks 12 + 14)", () => {
       /chat.ground_ref/,
     );
     expect(() => parseAgentSpec({ name: "forge", instructions: "x", chat: "on" })).toThrow(/'chat' must be a mapping/);
-  });
-
-  it("parses plans.branch and refuses the agent push namespace (§29.1a)", () => {
-    const spec = parseAgentSpec({ name: "forge", instructions: "x", plans: { branch: "design-plans" } });
-    expect(spec.plans).toEqual({ branch: "design-plans" });
-    // The plans branch is an approval boundary — it cannot live in the prefix
-    // rulesets leave open to agent pushes.
-    expect(() => parseAgentSpec({ name: "forge", instructions: "x", plans: { branch: "marathon/plans" } })).toThrow(
-      /push namespace/,
-    );
-    expect(() => parseAgentSpec({ name: "forge", instructions: "x", plans: { branch: "  " } })).toThrow(/plans.branch/);
   });
 
   it("carries display_name and description through", () => {

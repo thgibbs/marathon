@@ -58,10 +58,10 @@ async function main(): Promise<void> {
     // the docBase pins doc PRs to the plans branch (§29.1a, authoritative),
     // dbToolRecorder backs the post-turn "did a doc write happen" check, and
     // makeDocumentPrRecorder persists the DocumentArtifact + delivery target
-    // the merge webhook needs.
+    // the approval handler needs.
     const gateway = new ToolGateway({
       registry: new ToolRegistry(
-        makeDocumentTools(() => gh, { docBase: "marathon-plans", onDocumentPr: makeDocumentPrRecorder(db) }),
+        makeDocumentTools(() => gh, { docBase: "main", onDocumentPr: makeDocumentPrRecorder(db) }),
       ),
       policy: { grants: [{ tool: "document.create" }, { tool: "document.revise" }, { tool: "document.comment" }] } as ToolPolicy,
       secrets: new EnvSecretStore({}),
@@ -103,14 +103,15 @@ async function main(): Promise<void> {
       comment: { id: u, body: "@marathon quill draft a plan for rate limiting", user: { login: "thgibbs" } },
     }));
     assert(count(gh, "createPullRequest") === 1, "a design-doc PR should be opened");
-    // §29.1a: the doc PR targets the plans branch, never the default branch.
+    // §29.1a (combined-PR flow): the doc PR is a DRAFT against the default branch.
     const docPr = gh.writes.find((w) => w.op === "createPullRequest")!;
     assert(
-      (docPr.args as { base?: string }).base === "marathon-plans",
-      `doc PR must target the plans branch (got ${(docPr.args as { base?: string }).base})`,
+      (docPr.args as { base?: string }).base === "main",
+      `doc PR must target the default branch (got ${(docPr.args as { base?: string }).base})`,
     );
+    assert((docPr.args as { draft?: boolean }).draft === true, "doc PR must open as a DRAFT (§29.1a)");
     assert((await db.countDocumentArtifacts(boot.tenantId)) === 1, "a document artifact should be recorded");
-    console.log("[github-app demo] mention -> drafted design-doc PR #1 against the plans branch");
+    console.log("[github-app demo] mention -> drafted design-doc PR #1 (draft, against the default branch)");
 
     // 2. PR comment on PR #1 -> the AGENT revises the doc on its branch by
     //    calling document.revise (no new PR)   [M7 #3, §2b #16]
@@ -193,51 +194,60 @@ async function main(): Promise<void> {
     const bad = await handleWebhookRequest(deps, SECRET, { eventType: "issue_comment", deliveryId: "d-x", rawBody: "{}", signature: "sha256=bad" });
     assert(bad.status === 401, "bad signature should be 401");
 
-    // 4a. §29.1a: merging the doc PR into the DEFAULT branch is NOT an approval.
-    const mergeSha = `abc123-${u}`;
-    await handleWebhookRequest(deps, SECRET, signed("pull_request", `d-merge-main-${u}`, {
-      action: "closed",
-      repository: { full_name: REPO },
-      pull_request: { number: 1, merged: true, merge_commit_sha: mergeSha, base: { ref: "main" } },
-    }));
+    // 4a. §29.1a (combined-PR flow): an APPROVING review on the draft doc PR is
+    //     the approval — the doc task completes and a chained implementation
+    //     task spawns on the SAME doc branch: plan_ref + base_sha both pin the
+    //     approved head SHA, delivery targets are inherited (K2, §29.1a).
+    const approvedSha = `head-sha-${u}`;
     const artifact = await db.findDocumentArtifactByPr(boot.tenantId, REPO, 1);
     const docTask = (await db.getTask(artifact!.owningTaskId!))!;
-    assert((await db.findTaskBySourceTask(docTask.id)) === null, "a merge into main must NOT spawn an implementation task");
-    console.log("[github-app demo] doc PR merged into main -> ignored (not an approval)");
-
-    // 4b. merge PR #1 into the PLANS branch -> the doc task completes and a
-    //     chained implementation task spawns: plan_ref pins the plans-branch
-    //     merge commit, base_sha pins the default branch's head (§29.1a), and
-    //     delivery targets are inherited (K2, §29.1).
-    gh.refSha = `main-head-${u}`; // the default branch's head at approval
-    await handleWebhookRequest(deps, SECRET, signed("pull_request", `d-merge-${u}`, {
-      action: "closed",
-      repository: { full_name: REPO },
-      pull_request: { number: 1, merged: true, merge_commit_sha: mergeSha, base: { ref: "marathon-plans" } },
+    await handleWebhookRequest(deps, SECRET, signed("pull_request_review", `d-approve-${u}`, {
+      action: "submitted",
+      repository: { full_name: REPO, owner: { login: "thgibbs" } },
+      pull_request: { number: 1, head: { sha: approvedSha } },
+      review: { id: u + 500, state: "approved", user: { login: "thgibbs", type: "User" } },
+      sender: { login: "thgibbs" },
     }));
-    assert(docTask !== null, "doc task exists");
-    assert((await db.getTask(docTask.id))!.status === "completed", "merged doc task should complete");
+    assert((await db.getTask(docTask.id))!.status === "completed", "approved doc task should complete");
     const implTask = await db.findTaskBySourceTask(docTask.id);
-    assert(implTask !== null, "merge should spawn an implementation task chained to the doc task");
-    const implRef = implTask!.sourceRef as { kind?: string; baseSha?: string; planRef?: { mergeCommitSha?: string; docPath?: string } };
+    assert(implTask !== null, "an approving review should spawn an implementation task chained to the doc task");
+    const implRef = implTask!.sourceRef as {
+      kind?: string;
+      baseSha?: string;
+      branch?: string;
+      planRef?: { approvedSha?: string; docPath?: string };
+    };
     assert(
-      implRef.kind === "implementation" && implRef.baseSha === `main-head-${u}`,
-      "implementation task pins base_sha to the DEFAULT branch's head (decoupled from the plan merge, §29.1a)",
+      implRef.kind === "implementation" && implRef.baseSha === approvedSha,
+      "implementation task pins base_sha to the approved doc-PR head SHA (§29.1a)",
     );
-    assert(implRef.planRef?.mergeCommitSha === mergeSha, "implementation task carries the plan_ref (plans-branch merge commit)");
+    assert(implRef.planRef?.approvedSha === approvedSha, "implementation task carries the plan_ref (approved head SHA)");
+    assert(typeof implRef.branch === "string" && implRef.branch.length > 0, "implementation task carries the doc branch to push back onto");
     const implTargets = implTask!.deliveryTargets ?? [];
     assert(implTargets.some((t) => t.surfaceType === "github" && t.ref.number === 1), "implementation task inherits the doc PR delivery target");
     assert(implTargets.some((t) => t.ref.number === 20), "implementation task inherits the originating thread target");
     assert(implTask!.status === "queued", "implementation task is queued for the BUILD stage");
 
-    // 4b. re-delivered merge webhook -> no second implementation task (§29.7)
-    await handleWebhookRequest(deps, SECRET, signed("pull_request", `d-merge2-${u}`, {
-      action: "closed",
-      repository: { full_name: REPO },
-      pull_request: { number: 1, merged: true, merge_commit_sha: mergeSha, base: { ref: "marathon-plans" } },
+    // 4b. re-delivered approval webhook (same head SHA) -> no second task (§29.7)
+    await handleWebhookRequest(deps, SECRET, signed("pull_request_review", `d-approve2-${u}`, {
+      action: "submitted",
+      repository: { full_name: REPO, owner: { login: "thgibbs" } },
+      pull_request: { number: 1, head: { sha: approvedSha } },
+      review: { id: u + 500, state: "approved", user: { login: "thgibbs", type: "User" } },
+      sender: { login: "thgibbs" },
     }));
     assert((await db.countTasksBySourceTask(docTask.id)) === 1, "webhook re-delivery must not spawn a second implementation task");
-    console.log("[github-app demo] bad sig -> 401; merged PR -> chained implementation task (idempotent)");
+
+    // 4c. merging the combined PR is the SHIP, not the approval: it records the
+    //     merge commit but spawns nothing new (§29.1a).
+    const mergeSha = `merge-${u}`;
+    await handleWebhookRequest(deps, SECRET, signed("pull_request", `d-merge-${u}`, {
+      action: "closed",
+      repository: { full_name: REPO },
+      pull_request: { number: 1, merged: true, merge_commit_sha: mergeSha },
+    }));
+    assert((await db.countTasksBySourceTask(docTask.id)) === 1, "merging the combined PR must not spawn another implementation task");
+    console.log("[github-app demo] bad sig -> 401; approving review -> chained implementation task (idempotent); merge -> ship");
 
     // This demo scripts the document side only — the live app's BUILD worker
     // (makeBuildWiring, Track 15) is what consumes implementation tasks. Sweep

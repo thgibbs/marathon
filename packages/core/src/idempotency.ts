@@ -21,12 +21,14 @@ export function taskToolInputKey(taskId: string, tool: string, input: unknown): 
 }
 
 /**
- * Idempotency key for spawning the implementation task off a merged plan
- * (design §29.1): one task per merged plan version, so a re-delivered merge
- * webhook is a no-op and a re-merged revision is a new task.
+ * Idempotency key for spawning the implementation task off an approved plan
+ * (design §29.1a): one task per approved plan version (the doc-PR head SHA
+ * pinned at the approving review), so a re-delivered `pull_request_review`
+ * webhook is a no-op while a re-approval after new commits (a new head SHA)
+ * spawns a fresh implementation task.
  */
-export function implementationTaskKey(repo: string, docPath: string, mergeCommitSha: string): string {
-  return `implement:${repo}:${docPath}:${mergeCommitSha}`;
+export function implementationTaskKey(repo: string, docPath: string, approvedSha: string): string {
+  return `implement:${repo}:${docPath}:${approvedSha}`;
 }
 
 /**

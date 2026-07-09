@@ -41,8 +41,9 @@ export function composeInstructions(spec: AgentSpec): string {
     `Deployment configuration (trusted):\n` +
     `- The ONE configured repository is ${spec.repo}. Pass exactly "${spec.repo}" as the ` +
     `repo argument in every github.*/document.*/git tool call — no other repository is allowed.\n` +
-    `- Design documents branch from and merge into the plans branch (${spec.plans.branch}); ` +
-    `code PRs target the default branch.`
+    `- Design documents open as DRAFT pull requests against the default branch (§29.1a). An ` +
+    `approving review is the approval — it starts the build, which lands the code on the SAME ` +
+    `PR; merging that combined PR ships the design doc and its code together.`
   );
 }
 

@@ -33,7 +33,7 @@ function makeChange(): CodeChange {
     tenantId: "tn1",
     taskId: "impl-task",
     repo: REPO,
-    planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: "cafe1234" },
+    planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha: "cafe1234" },
     baseSha: "cafe1234",
     branch: BRANCH,
     treeHash: null,

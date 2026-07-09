@@ -240,12 +240,16 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
     // Hard per-task cost cap (fails closed — Track 15): the spec's `budget:` or,
     // under a posture, the profile default (floor #7, §30.3).
     taskBudget: effectiveBudget,
-    // §29.1a: the plan lives on the plans branch, not in the tree at base_sha —
-    // fresh provisioning materializes it at its doc_path so it is readable AND
-    // rides the diff into the code PR (main only carries shipped plans).
+    // §29.1a (combined-PR flow): the workspace IS the doc-PR branch, checked
+    // out at `approvedSha` (the pinned doc-PR head), so the plan doc is ALREADY
+    // in the tree at its doc_path — no materialization needed. This hook stays
+    // as a defensive fallback (e.g. a shallow clone that somehow lacks the doc)
+    // and reads at the commit SHA, which resolves regardless of branch; the
+    // fresh-provision write is a no-op when the identical content is already
+    // present, so it never dirties the diff.
     loadPlanDoc: async (task, { planRef }) => {
       const client = await opts.getClient({ taskId: task.id, tenantId: task.tenantId, secrets });
-      const file = await client.readFileWithSha(planRef.repo, planRef.docPath, planRef.mergeCommitSha);
+      const file = await client.readFileWithSha(planRef.repo, planRef.docPath, planRef.approvedSha);
       return { path: planRef.docPath, content: file.content };
     },
     defaultBranch: opts.defaultBranch,

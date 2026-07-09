@@ -8,20 +8,31 @@ const tool = (name: string, gh: FixturesGithubClient) =>
   makeDocumentTools(() => gh).find((t) => t.name === name)!;
 
 describe("document tools", () => {
-  it("a configured docBase (the plans branch, §29.1a) is authoritative over model input", async () => {
+  it("a configured docBase (the default branch, §29.1a) is authoritative over model input", async () => {
     const gh = new FixturesGithubClient({});
-    const create = makeDocumentTools(() => gh, { docBase: "marathon-plans" }).find((t) => t.name === "document.create")!;
-    // The model tries to retarget the doc PR at main — the config wins.
-    await create.execute({ repo: "o/r", path: "docs/x.md", content: "# Hi", base: "main" }, ctx);
+    const create = makeDocumentTools(() => gh, { docBase: "main" }).find((t) => t.name === "document.create")!;
+    // The model tries to retarget the doc PR at another branch — the config wins.
+    await create.execute({ repo: "o/r", path: "docs/x.md", content: "# Hi", base: "some-branch" }, ctx);
     const pr = gh.writes.find((w) => w.op === "createPullRequest")!;
-    expect((pr.args as { base: string }).base).toBe("marathon-plans");
+    expect((pr.args as { base: string }).base).toBe("main");
+  });
+
+  it("document.create opens a DRAFT PR against the default branch (§29.1a combined-PR flow)", async () => {
+    const gh = new FixturesGithubClient({});
+    const create = makeDocumentTools(() => gh, { docBase: "main" }).find((t) => t.name === "document.create")!;
+    await create.execute({ repo: "o/r", path: "docs/x.md", content: "# Hi" }, ctx);
+    const pr = gh.writes.find((w) => w.op === "createPullRequest")!.args as { base: string; draft: boolean; body?: string };
+    expect(pr.base).toBe("main");
+    expect(pr.draft).toBe(true);
+    // The body tells the reviewer how to approve in the combined-PR flow.
+    expect(pr.body).toContain("approving review");
   });
 
   it("onDocumentPr fires with the PR info — on creation AND on a converged retry (§29.1a)", async () => {
     const gh = new FixturesGithubClient({});
     const events: Array<Record<string, unknown>> = [];
     const create = makeDocumentTools(() => gh, {
-      docBase: "marathon-plans",
+      docBase: "main",
       onDocumentPr: (ev) => void events.push(ev as never),
     }).find((t) => t.name === "document.create")!;
 
@@ -43,7 +54,7 @@ describe("document tools", () => {
     expect(events[1]).toMatchObject({ prNumber: 1, converged: true });
   });
 
-  it("without a configured docBase, input.base is honored (pre-§29.1a behavior)", async () => {
+  it("without a configured docBase, input.base is honored (default 'main')", async () => {
     const gh = new FixturesGithubClient({});
     await tool("document.create", gh).execute({ repo: "o/r", path: "docs/x.md", content: "# Hi", base: "develop" }, ctx);
     const pr = gh.writes.find((w) => w.op === "createPullRequest")!;

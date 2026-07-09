@@ -36,7 +36,7 @@ beforeAll(async () => {
   await git(originDir, "add", "-A");
   await git(originDir, "commit", "--quiet", "-m", "init");
   baseSha = (await git(originDir, "rev-parse", "HEAD")).trim();
-  planRef = { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: baseSha };
+  planRef = { repo: REPO, docPath: "docs/plan.md", approvedSha: baseSha };
 });
 
 afterAll(async () => {

@@ -73,6 +73,14 @@ export const DEFAULT_GH_FAMILIES: GhCommandFamily[] = [
   { prefix: ["api"], kind: "read", repo: apiRepo, check: apiReadOnlyCheck },
   { prefix: ["pr", "create"], kind: "write", repo: repoFlag },
   { prefix: ["pr", "edit"], kind: "write", repo: repoFlag },
+  // Available for operator grants, but NOT granted to the kernel BUILD agent:
+  // in the combined-PR flow (§29.1a) `delivery.report_pr` is the single
+  // authority for the draft/ready state (green verification marks the PR
+  // ready; red/missing converts it back to draft), so even where this IS
+  // granted a model-driven `pr ready` cannot leave a red PR mergeable past the
+  // report. Merging stays absent — merge is the human's native approval
+  // (Track 9, §7.9).
+  { prefix: ["pr", "ready"], kind: "write", repo: repoFlag },
 ];
 
 /**

@@ -92,28 +92,28 @@ export async function buildAgentPrompt(
 }
 
 /**
- * The branch Marathon *suggests* for an implementation task (Track 7/10):
- * deterministic per merged plan version, so retries converge — but the agent
- * (or repo convention) may choose differently; GitHub policy, not Marathon,
- * polices branches.
+ * The brokered git/gh + delivery.report_pr contract for the SAME-BRANCH
+ * combined-PR flow (§29.1a): the workspace is already the doc-PR branch, so the
+ * agent pushes commits back onto it (updating design PR #N in place) rather
+ * than opening a new branch/PR. The two invariants stated here are ALSO
+ * gateway-enforced (report-tools.ts): report_pr rejects any PR but this one,
+ * and it is the single authority for the draft/ready state (green verification
+ * marks the PR ready; red/missing converts it back to draft) — the brief
+ * teaches the contract, it does not enforce it.
  */
-export function suggestedImplementationBranch(planRef: PlanRef): string {
-  const slug =
-    planRef.docPath.toLowerCase().replace(/\.md$/, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) ||
-    "impl";
-  return `marathon/${slug}-${planRef.mergeCommitSha.slice(0, 7)}`;
-}
-
-/** The brokered git/gh + delivery.report_pr contract, shared by both briefs (Track 10/12). */
-function deliveryContract(branch: string): string {
+function combinedPrContract(repo: string, branch: string, prNumber: number): string {
   return (
     `Work in /workspace (a normal git checkout; use git status/diff/add/commit locally). ` +
     `The sandbox has internet access for package installs and docs but holds NO credentials — ` +
     `GitHub writes go through the brokered tools:\n` +
-    `- git.exec { argv: ["push", "<owner/repo>", "HEAD:refs/heads/${branch}"] } to push your branch;\n` +
-    `- github.exec { argv: ["pr", "create", "--repo", "<owner/repo>", ...] } (or "pr edit") for the PR;\n` +
-    `- finish by calling delivery.report_pr EXACTLY ONCE with the PR URL, a short summary, and the ` +
-    `verification commands you actually ran with their honest exit codes.\n` +
+    `- git.exec { argv: ["push", "${repo}", "HEAD:refs/heads/${branch}"] } to push your commits ` +
+    `onto the SAME branch, so design PR #${prNumber} updates in place;\n` +
+    `- do NOT open a new PR — you are implementing on the existing design PR, and ` +
+    `delivery.report_pr will refuse any PR except #${prNumber};\n` +
+    `- finish by calling delivery.report_pr EXACTLY ONCE with THIS PR's URL, a short summary, and ` +
+    `the verification commands you actually ran with their honest exit codes. Marathon sets the ` +
+    `PR's draft/ready state from that report — green verification marks PR #${prNumber} ready ` +
+    `for review, red or missing verification keeps it a draft. Do not toggle the draft state yourself.\n` +
     `Verify before delivering (§29.3): run the repo's own verify commands — the "verify:" list in ` +
     `.marathon/config.yml if the repo has one, else the plan's Verification section, else your ` +
     `best judgment (make test, pnpm test, …).`
@@ -124,33 +124,33 @@ export interface ImplementationBrief {
   planRef: PlanRef;
   /** Where progress/results will be delivered (K2 fan-out). */
   deliveryTargets?: DeliveryTarget[];
-  /** The design-doc PR the plan was merged from. */
-  docPrNumber?: number;
+  /** The design-doc PR the implementation lands on (combined-PR flow, §29.1a). */
+  docPrNumber: number;
+  /** The doc-PR branch the workspace is checked out on — pushed back in place. */
+  branch: string;
 }
 
 /**
- * The implementation task's input text (Track 10): the merged plan, the pinned
- * base, the suggested branch, the delivery targets, and the
- * `delivery.report_pr` contract — everything the BUILD agent needs to run the
- * corrected agent-driven loop.
+ * The implementation task's input text (§29.1a, combined-PR flow): the approved
+ * plan (already in the tree at the doc-branch tip), the doc-PR branch to push
+ * back onto, the doc PR to mark ready, the delivery targets, and the
+ * `delivery.report_pr` contract — everything the BUILD agent needs to
+ * implement the plan on the SAME PR (no new branch, no new PR).
  */
 export function renderImplementationBrief(brief: ImplementationBrief): string {
-  const branch = suggestedImplementationBranch(brief.planRef);
+  const { branch, docPrNumber } = brief;
   const targets = (brief.deliveryTargets ?? []).map((t) => `- ${describeTarget(t)}`).join("\n");
   return [
-    `Implement the approved plan.`,
+    `Implement the approved plan on the existing design PR.`,
     ``,
-    `Plan: ${brief.planRef.docPath} in ${brief.planRef.repo}, approved as ${brief.planRef.mergeCommitSha}` +
-      (brief.docPrNumber !== undefined ? ` (design PR #${brief.docPrNumber})` : "") +
-      `. Your workspace is checked out at the base your work builds on, with the approved plan ` +
-      `materialized at ${brief.planRef.docPath} — read the plan file first. The plan doc is part ` +
-      `of your change (it merges to the default branch WITH your code, §29.1a): commit it with ` +
-      `your work, and if you must diverge from the plan, amend the plan doc on your branch so ` +
-      `what merges is the as-built plan.`,
+    `Plan: ${brief.planRef.docPath} in ${brief.planRef.repo}, approved as ${brief.planRef.approvedSha} ` +
+      `(design PR #${docPrNumber}, branch ${branch}). Your workspace is checked out at the approved ` +
+      `doc-branch tip, with the plan already in the tree at ${brief.planRef.docPath} — read the plan ` +
+      `file first. The plan doc is part of this same PR (it ships to the default branch WITH your ` +
+      `code when the PR merges, §29.1a): if you must diverge from the plan, amend the plan doc on ` +
+      `this branch so what merges is the as-built plan.`,
     ``,
-    `Suggested branch: ${branch} (yours to change if the repo has a convention).`,
-    ``,
-    deliveryContract(branch),
+    combinedPrContract(brief.planRef.repo, branch, docPrNumber),
     ...(targets ? ["", "Your PR link will be delivered to:", targets] : []),
   ].join("\n");
 }
@@ -178,7 +178,7 @@ export function renderRevisionBrief(brief: RevisionBrief): string {
     ``,
     `PR: ${brief.prUrl ?? `#${brief.prNumber}`} in ${brief.repo}, branch ${brief.branch}. ` +
       `Your workspace is checked out at that branch's current tip; the plan it implements is ` +
-      `${brief.planRef.docPath} @ ${brief.planRef.mergeCommitSha}.`,
+      `${brief.planRef.docPath} @ ${brief.planRef.approvedSha}.`,
     ``,
     `Reviewer${brief.commentAuthor ? ` (@${brief.commentAuthor})` : ""} feedback:`,
     fenceUntrusted("review comment", brief.comment),
