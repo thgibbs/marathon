@@ -38,8 +38,12 @@ export interface CodexUsage {
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type CodexEvent = { type: string; [k: string]: any };
+/**
+ * A parsed stream event: only `type` is guaranteed; every other field is
+ * `unknown` and must be narrowed at the read site (the deserialization edge
+ * stays explicit — no `any` weakening the reducer).
+ */
+export type CodexEvent = Record<string, unknown> & { type: string };
 
 const EVENT_SUMMARY_CAP = 400;
 
@@ -58,6 +62,21 @@ function safeJson(v: unknown): string {
 /** A finite number, or undefined — never NaN (defensive usage parse, §4.3). */
 function num(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+/** A non-empty string, or undefined (narrowing accessor for unknown event fields). */
+function str(v: unknown): string | undefined {
+  return typeof v === "string" && v ? v : undefined;
+}
+
+/** A `turn.failed` error field: a bare string, or an object carrying `.message`. */
+function errorMessage(e: unknown): string | undefined {
+  if (typeof e === "string") return e || undefined;
+  if (e && typeof e === "object") {
+    const m = (e as { message?: unknown }).message;
+    if (typeof m === "string") return m;
+  }
+  return undefined;
 }
 
 /**
@@ -151,17 +170,34 @@ export class CodexStreamAccumulator {
   terminal?: "completed" | "failed";
   /** A failure reason from `turn.failed`, for the surfaced error. */
   failureReason?: string;
-  /** Accumulated usage across the invocation (defensive; absent counts stay 0). */
-  usage = { input: 0, output: 0, cached: 0 };
+  /**
+   * Pre-terminal per-item usage, accumulated for the mid-turn budget kill
+   * (§4.3) — kept SEPARATE from the terminal usage so the two are never
+   * summed: if the pinned CLI emits per-item usage AND `turn.completed.usage`
+   * is the invocation total, folding both into one accumulator would
+   * double-count tokens, over-record `ModelInvocation.costUsd`, and trip the
+   * next turn's budget check early.
+   */
+  private liveUsage = { input: 0, output: 0, cached: 0 };
+  /** Usage from `turn.completed`, when the terminal event carried any (§4.3). */
+  private terminalUsage?: { input: number; output: number; cached: number };
   /** Whether ANY usage was observed before `turn.completed` (gates the mid-turn kill, §4.3). */
   sawUsageBeforeTerminal = false;
+
+  /**
+   * The usage to account: the terminal total when `turn.completed` carried one
+   * (authoritative for the invocation), else the pre-terminal accumulation.
+   * Mid-stream (no terminal yet) this is the live accumulation, which is what
+   * the budget-kill's cost estimate should see.
+   */
+  get usage(): { input: number; output: number; cached: number } {
+    return this.terminalUsage ?? this.liveUsage;
+  }
 
   push(event: CodexEvent, onEvent?: (ev: AgentProgressEvent) => void): void {
     switch (event.type) {
       case "thread.started":
-        if (typeof event.thread_id === "string") this.sessionId = event.thread_id;
-        else if (typeof event.session_id === "string") this.sessionId = event.session_id;
-        else if (typeof event.id === "string") this.sessionId = event.id;
+        this.sessionId = str(event.thread_id) ?? str(event.session_id) ?? str(event.id) ?? this.sessionId;
         break;
       case "item.started": {
         const { kind, toolName, summary } = itemLabel(event.item ?? event);
@@ -186,21 +222,20 @@ export class CodexStreamAccumulator {
         this.terminal = "completed";
         // The final agent message may ride the terminal event or be the last
         // streamed agent-message item; prefer the explicit terminal field.
-        const msg = event.agent_message ?? event.final_message ?? event.text;
-        if (typeof msg === "string") this.finalMessage = msg;
+        const msg = str(event.agent_message) ?? str(event.final_message) ?? str(event.text);
+        if (msg !== undefined) this.finalMessage = msg;
         else if (event.item) this.finalMessage = messageText(event.item as Record<string, unknown>);
-        // Usage lands here (the confirmed carrier); accept both shapes.
-        this.addUsage(readUsage(event.usage as CodexUsage | undefined));
+        // Terminal usage is authoritative when present — recorded standalone,
+        // never summed with the pre-terminal accumulation (see `liveUsage`).
+        const r = readUsage(event.usage as CodexUsage | undefined);
+        if (r.input !== undefined || r.output !== undefined || r.cached !== undefined) {
+          this.terminalUsage = { input: r.input ?? 0, output: r.output ?? 0, cached: r.cached ?? 0 };
+        }
         break;
       }
       case "turn.failed":
         this.terminal = "failed";
-        this.failureReason =
-          (typeof event.error === "string" && event.error) ||
-          (event.error && typeof event.error === "object" && typeof event.error.message === "string"
-            ? event.error.message
-            : undefined) ||
-          (typeof event.reason === "string" ? event.reason : undefined);
+        this.failureReason = errorMessage(event.error) ?? str(event.reason);
         break;
     }
   }
@@ -211,13 +246,9 @@ export class CodexStreamAccumulator {
     const r = readUsage(u);
     if (r.input === undefined && r.output === undefined && r.cached === undefined) return;
     this.sawUsageBeforeTerminal = true;
-    this.addUsage(r);
-  }
-
-  private addUsage(r: { input?: number; output?: number; cached?: number }): void {
-    this.usage.input += r.input ?? 0;
-    this.usage.output += r.output ?? 0;
-    this.usage.cached += r.cached ?? 0;
+    this.liveUsage.input += r.input ?? 0;
+    this.liveUsage.output += r.output ?? 0;
+    this.liveUsage.cached += r.cached ?? 0;
   }
 
   /** Estimated cost from accumulated tokens (for the mid-invocation budget kill, §4.3). */

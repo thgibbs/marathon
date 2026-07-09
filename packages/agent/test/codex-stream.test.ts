@@ -83,15 +83,37 @@ describe("codex JSONL reducer (K8 §2.2/§4.2)", () => {
       { type: "turn.completed", agent_message: "ok", usage: { input_tokens: 5, output_tokens: 1 } },
     ]);
     expect(withMidUsage.sawUsageBeforeTerminal).toBe(true);
-    // 10+5 input, 1+1 output accumulated across the two events.
-    expect(withMidUsage.usage.input).toBe(15);
-    expect(withMidUsage.usage.output).toBe(2);
 
     const noMidUsage = reduceStreamJson([
       { type: "thread.started", thread_id: "t" },
       { type: "turn.completed", usage: { input_tokens: 5, output_tokens: 1 } },
     ]);
     expect(noMidUsage.sawUsageBeforeTerminal).toBe(false);
+  });
+
+  it("never double-counts: terminal usage is authoritative over pre-terminal per-item usage (§4.3)", () => {
+    // Per-item usage (100/20) powers the mid-turn kill; turn.completed then
+    // reports the invocation TOTAL (150/30). Summing both would over-record
+    // ModelInvocation.costUsd and trip the next turn's budget check early —
+    // the terminal total must win outright.
+    const acc = new CodexStreamAccumulator();
+    acc.push({ type: "thread.started", thread_id: "t" });
+    acc.push({ type: "item.completed", item: { item_type: "agent_message", text: "x", usage: { input_tokens: 100, output_tokens: 20 } } });
+    // Mid-stream (no terminal yet): the budget-kill estimate sees the live accumulation.
+    expect(acc.usage).toEqual({ input: 100, output: 20, cached: 0 });
+    acc.push({ type: "turn.completed", agent_message: "ok", usage: { input_tokens: 150, output_tokens: 30 } });
+    expect(acc.usage).toEqual({ input: 150, output: 30, cached: 0 });
+    expect(acc.estimatedCostUsd(SPEC)).toBeCloseTo((150 * 3 + 30 * 15) / 1_000_000, 10);
+  });
+
+  it("falls back to the pre-terminal accumulation when turn.completed carries no usage (§4.3)", () => {
+    const acc = reduceStreamJson([
+      { type: "thread.started", thread_id: "t" },
+      { type: "item.completed", item: { item_type: "agent_message", text: "x", usage: { input_tokens: 10, output_tokens: 1 } } },
+      { type: "item.completed", item: { item_type: "agent_message", text: "y", usage: { input_tokens: 7, output_tokens: 2 } } },
+      { type: "turn.completed", agent_message: "ok", usage: {} },
+    ]);
+    expect(acc.usage).toEqual({ input: 17, output: 3, cached: 0 });
   });
 
   it("interprets turn.completed as done, turn.failed as not-done+error (§2.2)", () => {
