@@ -44,6 +44,14 @@ describe("codexArgv (K8 §11)", () => {
     expect(codexArgv({ ...base, resumeSessionId: "s" })).not.toContain("--ask-for-approval");
   });
 
+  it("passes --skip-git-repo-check (the workspace has no checkout; codex exits 1 otherwise)", () => {
+    // Reviewer/chat run in an ephemeral scratch dir with no git repo — codex's
+    // trusted-git-dir guard would kill the turn without this flag.
+    expect(codexArgv(base)).toContain("--skip-git-repo-check");
+    expect(codexArgv({ ...base, readOnly: true })).toContain("--skip-git-repo-check");
+    expect(codexArgv({ ...base, resumeSessionId: "s" })).toContain("--skip-git-repo-check");
+  });
+
   it("resume: `resume <sid>` is a subcommand right after exec, prompt after it (§2.1)", () => {
     const argv = codexArgv({ ...base, resumeSessionId: "sess-xyz" });
     const ex = argv.indexOf("exec");

@@ -1033,6 +1033,19 @@ fold into M7–M9 sequencing as capacity allows.
     not just the reviewer. The `--yolo` fallback for the MCP auto-cancel bug (#24135) is
     unaffected. Follow-up worth considering: pin the codex CLI version so a silent upstream flag
     change can't dead-letter the harness again.
+21. **`codex exec` needs `--skip-git-repo-check` for the no-checkout workspace** *(harness/CLI
+    compatibility; surfaced 2026-07-09 dogfooding immediately after #20 — the design-review job
+    for PR #51 got PAST the removed-flag error and hit the next codex guard).* With #20 fixed,
+    the reviewer's codex subprocess launched but exited 1 with `Not inside a trusted directory
+    and --skip-git-repo-check was not specified`. codex-cli 0.143.0 refuses to start a session
+    outside a "trusted" git repo unless `--skip-git-repo-check` is passed — and the reviewer/chat
+    workspace is an ephemeral scratch dir with NO checkout (grounding is via governed MCP tools,
+    not a local tree). **Landed 2026-07-09:** `codexArgv` now always passes
+    `--skip-git-repo-check`; skipping codex's own git/trust guard is safe (defense-in-depth only —
+    the container is the file/process boundary and `ToolGateway.run` the effect boundary, §B.6),
+    and it's a harmless no-op on BUILD where `/workspace` IS a git clone. Updated the purity test
+    + the invocation shapes in codex-impl.md §B.4 / codex-cli-impl.md. Reinforces #20's follow-up:
+    **pin the codex CLI** — two incompatibilities surfaced in one dogfood session.
 
 ---
 

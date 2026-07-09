@@ -420,8 +420,8 @@ resolve model-access env fail-closed **first** → container + workspace up, bro
 `CODEX_HOME/config.toml`** (the one step Claude Code doesn't have; §3.1 — MCP server with
 `required = true`, `developer_instructions` persona (§2.4), the untrusted-project pin;
 config only, never the session state beside it) → spawn
-`codex exec --json [resume <sid>] "<prompt>" --sandbox workspace-write --model <id> --cd
-/workspace` → reduce the event stream (progress, id capture, usage)
+`codex exec --json [resume <sid>] "<prompt>" --sandbox workspace-write --skip-git-repo-check
+--model <id> --cd /workspace` → reduce the event stream (progress, id capture, usage)
 → on `turn.completed`: snapshot → `onTurnCheckpoint` → `AgentTurn` → finally container stop.
 Pure, unit-testable seams: `codexArgv(opts, checkpoint)` (no secrets in argv),
 `codexConfigToml(...)` (the config writer), the stream reducer, snapshot/restore paths.
@@ -586,10 +586,13 @@ GitHub issue and two doc pages, not an exhaustive spec. Items 1–3 gate the bui
 codex exec --json \
   [resume <session-id>] "<prompt>" \
   --sandbox workspace-write \
+  --skip-git-repo-check \
   --model gpt-5-codex \
   --cd /workspace
 # exec is non-interactive; approval is not a flag here (codex-cli 0.143.0 removed
 # --ask-for-approval) — MCP pre-approval rides in config.toml (§B.4 / roadmap §2b #20).
+# --skip-git-repo-check: the workspace has no checkout; codex refuses to start outside a
+# trusted git repo otherwise (exit 1, roadmap §2b #21). Harmless no-op on BUILD.
 # fallback posture only (verify-on-pin #3): --dangerously-bypass-approvals-and-sandbox
 ```
 

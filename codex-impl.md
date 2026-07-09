@@ -437,8 +437,12 @@ a narrower per-tool `approval_mode` override) for marking specific MCP servers/t
 rather than prompted. The primary invocation shape is:
 
 ```
-codex exec --json --sandbox workspace-write
+codex exec --json --sandbox workspace-write --skip-git-repo-check
 ```
+
+(`--skip-git-repo-check` because the reviewer/chat workspace is an ephemeral scratch dir with no
+checkout — codex refuses to start outside a trusted git repo otherwise, exit 1; roadmap §2b #21.
+Harmless no-op on BUILD, where `/workspace` is a git clone.)
 
 with `config.toml`'s `[mcp_servers.marathon]` entry setting `default_tools_approval_mode =
 "approve"` (or per-tool `approval_mode` entries scoped to the specific governed tools) so every
