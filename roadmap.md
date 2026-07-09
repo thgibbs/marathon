@@ -988,17 +988,25 @@ fold into M7–M9 sequencing as capacity allows.
     `runReviewCycle` — so the reviewer was skipped entirely. Root cause: the trigger was
     coupled to *who drafted* rather than to *a doc PR being opened*. Code review already got
     this right (it fires off the `ready_for_review` webhook via `handleCodeReviewReady`,
-    independent of surface). **Landed 2026-07-09:** design-review now triggers off the
-    `pull_request.opened` webhook — `classifyGithubEvent` emits a `doc_opened` action, and
-    `handleDocReviewOpened` runs `runReviewCycle(kind: "design_review")` when the opened PR
-    resolves to a `produced` `DocumentArtifact` (owned by the drafting agent), gating out code
-    PRs and human PRs; the inline call in `handleGithubMention` is removed so there's a single
-    surface-agnostic trigger. Doc PRs stay draft until approval, so `opened` (not
-    `ready_for_review`) is their signal. Depends on the github-app receiving its own
-    `pull_request.opened` delivery (same webhook/smee path as merge + ready_for_review — see
-    #12). Same cross-surface-coupling class as #14. Unit tests: `opened` → `doc_opened`
-    classification; `handleDocReviewOpened` ignores non-`produced` artifacts and runs the
-    drafter-owned review for a Marathon doc PR.
+    independent of surface). **Landed 2026-07-09:** the trigger is now a **durable queued
+    job**, not a webhook. `makeDocumentPrRecorder` gained an `onProduced` hook that fires
+    once, right AFTER it commits a NEW `produced` `DocumentArtifact` (not on converged
+    retries); both live apps wire it to `queue.enqueue({ kind: DESIGN_REVIEW_JOB_KIND,
+    idempotencyKey: design-review:<repo>:<pr> })`. The github-app runs a dedicated poller
+    that leases those jobs and runs `runDesignReviewJob` → `handleDocReviewOpened` →
+    `runReviewCycle(kind: "design_review")`, owned by the drafting agent. This is
+    surface-agnostic (Slack worker or GitHub app enqueues; the github-app reviews),
+    **race-free** (enqueued strictly after the artifact write, closing the P1 the first cut
+    had — `document.create` opens the PR before `onDocumentPr` persists the artifact, so a
+    `pull_request.opened` webhook could beat the write and drop the review), and **durable**
+    (the job survives a crash via the queue's lease/backoff; a transient GitHub/model failure
+    retries, then dead-letters). The inline call in `handleGithubMention` is removed; no
+    webhook `opened` trigger. Same cross-surface-coupling class as #14. Unit tests: recorder
+    fires `onProduced` after the write and not on a converged retry; `runDesignReviewJob`
+    resolves the task→produced-PR and runs the review (the interleaving the review flagged);
+    `handleDocReviewOpened` ignores non-`produced` artifacts. NOTE: #46 predates the fix and
+    won't be reviewed retroactively (no job was enqueued for it) — re-draft or close/reopen to
+    exercise the path.
 
 ---
 

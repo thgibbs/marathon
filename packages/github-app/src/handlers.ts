@@ -908,15 +908,13 @@ export async function handleCodeReviewReady(deps: GithubAppDeps, repo: string, p
 }
 
 /**
- * A PR was just opened (§A.3a): if it's a Marathon-drafted DOC PR — a 'produced'
- * document artifact the gateway's onDocumentPr recorder wrote when the drafting
- * agent called `document.create` — run the automatic design-doc review + capped
- * kickback loop, owned by the drafting agent. This is the SURFACE-AGNOSTIC
- * trigger: a doc drafted from Slack fires the same review as one drafted from a
- * GitHub mention (the drafting handlers no longer trigger it inline), mirroring
- * how `handleCodeReviewReady` fires code review off `ready_for_review`. Code PRs
- * and human PRs have no 'produced' doc artifact and are ignored. Returns true
- * when consumed.
+ * Run the automatic design-doc review + capped kickback loop for a
+ * Marathon-drafted DOC PR (a 'produced' document artifact the gateway's
+ * onDocumentPr recorder wrote when the drafting agent called `document.create`),
+ * owned by the drafting agent. Code PRs and human PRs have no 'produced' doc
+ * artifact and are ignored. Returns true when consumed. Reached via the durable
+ * `runDesignReviewJob` (below); split out so the "is it a reviewable doc PR"
+ * gate is unit-testable in isolation.
  */
 export async function handleDocReviewOpened(deps: GithubAppDeps, repo: string, prNumber: number): Promise<boolean> {
   const artifact = await deps.db.findDocumentArtifactByPr(deps.tenantId, repo, prNumber);
@@ -928,6 +926,25 @@ export async function handleDocReviewOpened(deps: GithubAppDeps, repo: string, p
     ownerAgentId: artifact.owningAgentId ?? undefined,
   });
   return true;
+}
+
+/**
+ * Run one durable design-review job (§A.3a #19). The recorder enqueued this job
+ * (keyed to the doc task) AFTER committing the `produced` DocumentArtifact, so
+ * resolving the task → artifact is race-free — the surface-agnostic, durable
+ * replacement for triggering off the `pull_request.opened` webhook, which could
+ * beat the artifact write and drop the review. A doc drafted from EITHER surface
+ * (the Slack worker or a GitHub mention) enqueues the same job; the GitHub app
+ * leases and runs it here, exactly once per PR (idempotency key). A missing or
+ * non-'produced' artifact is a no-op (the task opened no doc PR). Returns true
+ * when a review ran.
+ */
+export async function runDesignReviewJob(deps: GithubAppDeps, taskId: Id | null | undefined): Promise<boolean> {
+  if (!taskId) return false;
+  const artifact = await deps.db.findDocumentArtifactByTask(deps.tenantId, taskId);
+  const loc = (artifact?.location ?? {}) as { repo?: string; prNumber?: number };
+  if (!artifact || typeof loc.repo !== "string" || typeof loc.prNumber !== "number") return false;
+  return handleDocReviewOpened(deps, loc.repo, loc.prNumber);
 }
 
 export async function dispatchGithubEvent(
@@ -942,6 +959,5 @@ export async function dispatchGithubEvent(
   else if (action.kind === "approval") await handleGithubApproval(deps, action);
   else if (action.kind === "merge") await handleGithubMerge(deps, action.repo, action.number, action.mergeCommitSha);
   else if (action.kind === "ready_for_review") await handleCodeReviewReady(deps, action.repo, action.number);
-  else if (action.kind === "doc_opened") await handleDocReviewOpened(deps, action.repo, action.number);
   else if (action.kind === "push") await handleGithubPush(deps, action.repo, action.after, action.paths);
 }

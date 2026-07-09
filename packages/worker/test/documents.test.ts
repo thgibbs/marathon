@@ -97,4 +97,28 @@ describe("makeDocumentPrRecorder (§29.1a — model-driven doc PRs become approv
     expect(artifacts[0]).toMatchObject({ owningTaskId: "task-1", owningAgentId: undefined });
     expect(targetUpdates).toHaveLength(0);
   });
+
+  // §A.3a #19: the durable, race-free design-review trigger. onProduced fires
+  // ONLY after a NEW produced artifact is committed (so the review job can never
+  // observe a missing artifact), and NOT on a converged retry (no duplicate).
+  it("fires onProduced once, AFTER recording a new produced artifact", async () => {
+    const { db, artifacts } = makeDb(makeTask());
+    const produced: Array<Record<string, unknown>> = [];
+    await makeDocumentPrRecorder(db, {
+      onProduced: (e) => {
+        // The artifact is already persisted at this point — the ordering the
+        // durable trigger depends on (enqueue strictly after the write).
+        expect(artifacts).toHaveLength(1);
+        produced.push(e);
+      },
+    })(EVENT);
+    expect(produced).toEqual([{ tenantId: "tn1", repo: "o/r", prNumber: 7, owningTaskId: "task-1" }]);
+  });
+
+  it("does NOT fire onProduced on a converged retry (no duplicate review)", async () => {
+    const { db } = makeDb(makeTask(), { existingArtifact: true });
+    let calls = 0;
+    await makeDocumentPrRecorder(db, { onProduced: () => void calls++ })(EVENT);
+    expect(calls).toBe(0);
+  });
 });

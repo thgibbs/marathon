@@ -42,20 +42,6 @@ export type GithubAction =
       number: number;
       eventId: string;
     }
-  | {
-      /**
-       * A PR was just opened (§A.3a). For a Marathon-drafted DOC PR this is the
-       * trigger for the automatic design-doc review — surface-agnostic, so a doc
-       * drafted from Slack gets reviewed exactly like one drafted from a GitHub
-       * mention (the drafting handlers no longer trigger the review inline). The
-       * handler gates on doc-artifact ownership; code PRs and human PRs are
-       * ignored there.
-       */
-      kind: "doc_opened";
-      repo: string;
-      number: number;
-      eventId: string;
-    }
   | { kind: "ignore" };
 
 export interface ParseGithubOptions {
@@ -197,20 +183,6 @@ export function classifyGithubEvent(eventType: string, payload: any, opts: Parse
       repo: payload.repository?.full_name,
       number: payload.pull_request?.number,
       eventId: `rfr-${payload.pull_request?.number}-${payload.pull_request?.head?.sha ?? ""}`,
-    };
-  }
-
-  if (eventType === "pull_request" && payload?.action === "opened") {
-    // §A.3a: a PR was just opened — for a Marathon-drafted DOC PR (the gateway
-    // opened a DRAFT PR when the agent called document.create) this triggers the
-    // automatic design-doc review, no matter which surface asked for the draft.
-    // Doc PRs never leave draft before approval, so `opened` — not
-    // `ready_for_review` — is their trigger. Ownership is verified in the handler.
-    return {
-      kind: "doc_opened",
-      repo: payload.repository?.full_name,
-      number: payload.pull_request?.number,
-      eventId: `opened-${payload.pull_request?.number}-${payload.pull_request?.head?.sha ?? ""}`,
     };
   }
 

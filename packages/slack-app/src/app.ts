@@ -24,6 +24,8 @@ import { DeliveryFanout } from "@marathon/surface";
 import { RealSlackClient, SlackDelivery, SocketModeClient } from "@marathon/surface-slack";
 import { InMemorySourceLedger, installSandboxShutdownHandler, reapSandboxContainers, ToolGateway, ToolRegistry, toolPolicyFromSpec } from "@marathon/tools";
 import {
+  DESIGN_REVIEW_JOB_KIND,
+  designReviewJobKey,
   InvocationRouter,
   makeAgentTaskStepRunner,
   makeDocumentPrRecorder,
@@ -141,7 +143,18 @@ export async function startSlackApp(): Promise<void> {
       ...makeGithubReadTools(clientFactory),
       ...makeDocumentTools(clientFactory, {
         docBase: "main",
-        onDocumentPr: makeDocumentPrRecorder(db),
+        // §A.3a #19: a doc PR drafted from Slack enqueues the durable
+        // design-review job once its artifact is committed — the GitHub app's
+        // review poller leases and runs it (this process has no reviewer). Keyed
+        // per PR so it fires exactly once; race-free (enqueued after the write).
+        onDocumentPr: makeDocumentPrRecorder(db, {
+          onProduced: (e) =>
+            void queue.enqueue({
+              taskId: e.owningTaskId,
+              kind: DESIGN_REVIEW_JOB_KIND,
+              idempotencyKey: designReviewJobKey(e.repo, e.prNumber),
+            }),
+        }),
       }),
     ]),
     policy: toolPolicyFromSpec(flagship),
