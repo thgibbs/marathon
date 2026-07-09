@@ -240,21 +240,34 @@ export class Database implements AuditWriter, IdempotencyStore {
   }
 
   /**
-   * The task whose triggering message has this Slack `ts` (§31.7): used to
-   * tell a reaction on the triggering/input message apart from a reaction on
-   * a Marathon-authored progress/result message — only the latter counts as
-   * feedback. `ts` is the message's own timestamp threaded into `source_ref`
-   * by `parseAppMention`/`parseThreadReply` (§31.4), distinct from `thread_ts`.
+   * Record a Slack message `ts` as Marathon-authored output (§31.7 review
+   * follow-up): called from `postProgress`/`deliverResult` so `isSlackOutputMessage`
+   * can later confirm a reaction landed on OUR message, not merely "not the
+   * trigger" — excluding the trigger alone still let a :+1: on an unrelated
+   * channel message, or on a task input that hasn't been persisted yet, fall
+   * through and get recorded as feedback.
    */
-  async findTaskByTriggerTs(tenantId: Id, channel: string, ts: string): Promise<Task | null> {
-    const { rows } = await this.pool.query(
-      `select * from task
-       where tenant_id = $1 and source_type = 'slack'
-         and source_ref->>'channel' = $2 and source_ref->>'ts' = $3
-       limit 1`,
+  async recordSlackOutputMessage(tenantId: Id, channel: string, ts: string): Promise<void> {
+    await this.pool.query(
+      `insert into slack_output_message(tenant_id, channel, ts) values ($1, $2, $3)
+       on conflict (tenant_id, channel, ts) do nothing`,
       [tenantId, channel, ts],
     );
-    return rows[0] ? rowToTask(rows[0]) : null;
+  }
+
+  /**
+   * Was this Slack `ts` posted by Marathon as progress/result output (§31.7)?
+   * `handleReaction` only records feedback when this is true — a positive
+   * allow-list, not an exclusion of the known trigger `ts`, so an unrelated
+   * message or a not-yet-persisted task input can never be misread as
+   * feedback either.
+   */
+  async isSlackOutputMessage(tenantId: Id, channel: string, ts: string): Promise<boolean> {
+    const { rows } = await this.pool.query(
+      `select 1 from slack_output_message where tenant_id = $1 and channel = $2 and ts = $3 limit 1`,
+      [tenantId, channel, ts],
+    );
+    return rows.length > 0;
   }
 
   /**

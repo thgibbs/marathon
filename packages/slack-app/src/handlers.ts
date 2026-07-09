@@ -359,16 +359,21 @@ export function linkGithubCta(): string {
  * otherwise be misread as feedback in two ways — both must be checked, one
  * doesn't subsume the other:
  *   1. bot-authored (the ack reaction itself) — filtered by author (`botUserId`).
- *   2. human-authored, but on the triggering/input message, not a
- *      Marathon-authored progress/result message — filtered by looking up
- *      whether `event.item.ts` is a task's own triggering `ts`.
+ *   2. reacting on anything that isn't a Marathon-authored progress/result
+ *      message — filtered with a positive allow-list (`isSlackOutputMessage`,
+ *      populated as `SlackDelivery` posts each message), not merely "not the
+ *      triggering message": excluding only the trigger still let a :+1: on an
+ *      unrelated channel message, or on a task input whose row hadn't been
+ *      persisted yet, fall through and get recorded as feedback (review
+ *      follow-up on the original §31.7 fix).
  */
 export async function handleReaction(deps: AppDeps, event: SlackReactionEvent): Promise<void> {
   const fb = parseReactionFeedback(event);
   if (!fb) return;
   if (fb.userExternalId === deps.botUserId) return;
   const channel = event.item?.channel;
-  if (channel && fb.itemTs && (await deps.db.findTaskByTriggerTs(deps.tenantId, channel, fb.itemTs))) return;
+  if (!channel || !fb.itemTs) return;
+  if (!(await deps.db.isSlackOutputMessage(deps.tenantId, channel, fb.itemTs))) return;
   const user = await deps.db.findOrCreateUserByIdentity(deps.tenantId, "slack", fb.userExternalId);
   await deps.db.recordFeedback({ tenantId: deps.tenantId, userId: user.id, feedbackType: fb.feedbackType });
 }

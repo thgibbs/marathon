@@ -149,6 +149,35 @@ describe("SlackDelivery", () => {
     expect(client.messages[0]?.text).toContain("done");
   });
 
+  it("reports each posted message's ts via onOutputPosted (§31.7 review follow-up)", async () => {
+    const client = new FakeSlackClient();
+    const posted: Array<{ channel: string; ts: string }> = [];
+    const delivery = new SlackDelivery(client, { onOutputPosted: (channel, ts) => void posted.push({ channel, ts }) });
+
+    await delivery.postProgress({ channel: "C1", thread_ts: "111.1" }, "working on it");
+    await delivery.deliverResult({ channel: "C1", thread_ts: "111.1" }, { summary: "done" });
+
+    expect(posted).toEqual([
+      { channel: "C1", ts: client.messages[0]?.ts },
+      { channel: "C1", ts: client.messages[1]?.ts },
+    ]);
+  });
+
+  it("swallows an onOutputPosted failure without failing the delivery", async () => {
+    const client = new FakeSlackClient();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const delivery = new SlackDelivery(client, {
+      onOutputPosted: () => {
+        throw new Error("db unavailable");
+      },
+    });
+
+    await expect(delivery.postProgress({ channel: "C1", thread_ts: "111.1" }, "hi")).resolves.toBeUndefined();
+    expect(client.messages).toHaveLength(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
   it("loads fenced-ready thread context via fetchReplies (Track 12)", async () => {
     const client = new FakeSlackClient();
     client.threads.set("C1:111.1", [{ user: "U1", text: "why did checkout break?", ts: "111.1" }]);

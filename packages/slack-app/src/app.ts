@@ -215,7 +215,12 @@ export async function startSlackApp(): Promise<void> {
     }),
     { root: join(tmpdir(), "marathon-chat-workspaces") },
   );
-  const delivery = new SlackDelivery(new RealSlackClient(botToken));
+  const delivery = new SlackDelivery(new RealSlackClient(botToken), {
+    // §31.7 review follow-up: persist every progress/result message's ts so
+    // `handleReaction` can confirm a :+1: landed on Marathon-authored output,
+    // not merely "not the trigger".
+    onOutputPosted: (channel, ts) => db.recordSlackOutputMessage(boot.tenantId, channel, ts),
+  });
   const fanout = new DeliveryFanout({ slack: delivery }, db);
 
   // Chat-surface repo grounding (chat-repo.md): a claude-code chat task gets a

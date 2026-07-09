@@ -17,12 +17,25 @@ function ref(r: Record<string, unknown>): { channel: string; threadTs?: string; 
   };
 }
 
+export interface SlackDeliveryOpts {
+  /**
+   * Called after `postProgress`/`deliverResult` posts a message (§31.7 review
+   * follow-up): the caller persists `(channel, ts)` so the reaction handler
+   * can later confirm a :+1: landed on Marathon-authored output. Best-effort —
+   * a hook failure must not fail the delivery it's reporting on.
+   */
+  onOutputPosted?: (channel: string, ts: string) => Promise<void> | void;
+}
+
 /** Slack implementation of the surface delivery side (threaded replies). */
 export class SlackDelivery implements SurfaceAdapter {
   /** §31.6: the missing-scope warning is loud but logged at most once per process. */
   private warnedMissingScope = false;
 
-  constructor(private readonly client: SlackClient) {}
+  constructor(
+    private readonly client: SlackClient,
+    private readonly opts: SlackDeliveryOpts = {},
+  ) {}
 
   /**
    * React :+1: to the triggering message (§31.3) instead of posting text —
@@ -51,12 +64,23 @@ export class SlackDelivery implements SurfaceAdapter {
 
   async postProgress(r: Record<string, unknown>, message: string): Promise<void> {
     const { channel, threadTs } = ref(r);
-    await this.client.postMessage(channel, message, threadTs);
+    const posted = await this.client.postMessage(channel, message, threadTs);
+    await this.recordOutput(channel, posted.ts);
   }
 
   async deliverResult(r: Record<string, unknown>, result: StructuredResult): Promise<void> {
     const { channel, threadTs } = ref(r);
-    await this.client.postMessage(channel, renderResultText(result), threadTs);
+    const posted = await this.client.postMessage(channel, renderResultText(result), threadTs);
+    await this.recordOutput(channel, posted.ts);
+  }
+
+  /** Best-effort (§31.8 pattern): recording the output ts must never fail delivery. */
+  private async recordOutput(channel: string, ts: string): Promise<void> {
+    try {
+      await this.opts.onOutputPosted?.(channel, ts);
+    } catch (e) {
+      console.warn("[slack] failed to record output message for feedback matching:", e);
+    }
   }
 
   /** Thread history for prompt assembly (Track 12, §7.18); untrusted — fence it. */

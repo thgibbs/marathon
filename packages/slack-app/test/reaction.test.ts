@@ -11,13 +11,13 @@ import { handleReaction, type AppDeps } from "../src/handlers";
 const TENANT = "tn1";
 const BOT_USER = "UBOT";
 
-function makeDeps(opts: { triggerTask?: { id: string } | null; botUserId?: string } = {}) {
+function makeDeps(opts: { isOutputMessage?: boolean; botUserId?: string } = {}) {
   const recorded: Array<{ userId: string; feedbackType: string }> = [];
   const deps = {
     tenantId: TENANT,
     botUserId: opts.botUserId ?? BOT_USER,
     db: {
-      findTaskByTriggerTs: async () => opts.triggerTask ?? null,
+      isSlackOutputMessage: async () => opts.isOutputMessage ?? false,
       findOrCreateUserByIdentity: async (_tenantId: string, _surface: string, externalId: string) => ({
         id: `user-${externalId}`,
       }),
@@ -37,27 +37,34 @@ const reactionEvent = (overrides: Partial<SlackReactionEvent> = {}): SlackReacti
 });
 
 describe("handleReaction (§31.7 self-feedback bug fix)", () => {
-  it("does not record feedback for the bot's own ack reaction", async () => {
-    const { deps, recorded } = makeDeps({ triggerTask: null });
+  it("does not record feedback for the bot's own ack reaction, even on a known output message", async () => {
+    const { deps, recorded } = makeDeps({ isOutputMessage: true });
     await handleReaction(deps, reactionEvent({ user: BOT_USER }));
     expect(recorded).toEqual([]);
   });
 
-  it("records feedback for a genuine user reaction on a non-triggering message", async () => {
-    const { deps, recorded } = makeDeps({ triggerTask: null });
+  it("records feedback for a genuine user reaction on a Marathon-authored output message", async () => {
+    const { deps, recorded } = makeDeps({ isOutputMessage: true });
     await handleReaction(deps, reactionEvent({ user: "U1" }));
     expect(recorded).toEqual([{ userId: "user-U1", feedbackType: "thumbs_up" }]);
   });
 
   it("does not record feedback for a genuine user reacting on the triggering/input message", async () => {
-    const { deps, recorded } = makeDeps({ triggerTask: { id: "t1" } });
+    const { deps, recorded } = makeDeps({ isOutputMessage: false });
     await handleReaction(deps, reactionEvent({ user: "U1" }));
     expect(recorded).toEqual([]);
   });
 
-  it("still records feedback for a genuine user reacting on a Marathon progress/result message", async () => {
-    const { deps, recorded } = makeDeps({ triggerTask: null });
-    await handleReaction(deps, reactionEvent({ user: "U1", item: { channel: "C1", ts: "222.2" } }));
-    expect(recorded).toEqual([{ userId: "user-U1", feedbackType: "thumbs_up" }]);
+  /**
+   * Review follow-up: excluding only the known trigger ts still let a :+1: on
+   * an unrelated channel message, or a task input that hasn't been persisted
+   * yet, fall through as feedback. The allow-list check must reject both the
+   * same way it rejects the triggering message — there is no "unknown, so
+   * assume it's output" branch.
+   */
+  it("does not record feedback for a reaction on a message Marathon never posted (unrelated or not-yet-persisted)", async () => {
+    const { deps, recorded } = makeDeps({ isOutputMessage: false });
+    await handleReaction(deps, reactionEvent({ user: "U1", item: { channel: "C1", ts: "999.9" } }));
+    expect(recorded).toEqual([]);
   });
 });

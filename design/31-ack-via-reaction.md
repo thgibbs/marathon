@@ -1,9 +1,13 @@
 # 31. Acknowledge via reaction, not text (Slack + GitHub)
 
-> **Status: proposed (2026-07-09).** Requested directly: replace the `"_on it…_"`
-> acknowledgement message with a :+1: reaction on the triggering message/comment, on both
-> Slack and GitHub. Small, surface-adapter-scoped change — no new user-facing surface, no
-> schema change.
+> **Status: proposed (2026-07-09), revised (2026-07-09) after code review.** Requested
+> directly: replace the `"_on it…_"` acknowledgement message with a :+1: reaction on the
+> triggering message/comment, on both Slack and GitHub. Small, surface-adapter-scoped change
+> — no new user-facing surface. §31.7's original fix (author + "not the trigger" checks) left
+> a gap a reviewer caught in the code PR: excluding only the known trigger `ts` still let a
+> :+1: on an unrelated channel message, or on a task input not yet persisted as a task row,
+> be recorded as feedback. Closing that gap needed one small piece of schema — see the
+> revised §31.7 below.
 
 ## 31.1 Motivation
 
@@ -132,14 +136,43 @@ triggering message, this becomes a live bug in two distinct ways:
 * Independently of who reacted, `handleReaction` must also check *which message* the reaction
   landed on. `recordFeedback` should only fire for reactions on messages Marathon itself
   posted as `postProgress`/`deliverResult` output — never on the triggering/input message,
-  regardless of who reacts to it. Concretely: `handleReaction` skips `recordFeedback` when
-  `event.item.ts` matches the invocation's own triggering-message `ts` (the same `ts`
-  threaded through in §31.4 and used as the ack-reaction target) — that value is already
-  available wherever the task's Slack context is looked up for the incoming event. This is
-  the "not an input message" check, and it's what catches case 2 above; the `botUserId` check
-  from the previous bullet is what catches case 1. Both checks are needed — one doesn't
-  subsume the other, since a human reacting to the triggering message passes the `botUserId`
-  check but should still be excluded.
+  regardless of who reacts to it, and never on a message Marathon never posted at all.
+
+  **Revised after code review (2026-07-09).** The first pass implemented this as an
+  *exclusion*: skip `recordFeedback` when `event.item.ts` matched the invocation's own
+  triggering-message `ts` (looked up via a new `findTaskByTriggerTs` query), on the theory
+  that "not the trigger" was good enough. A reviewer on the code PR pointed out this only
+  proves the reaction *isn't* on a known task input — it doesn't prove the reaction *is* on
+  Marathon-authored output. Two cases fell through as false positives: a :+1: on any unrelated
+  message in a subscribed channel, and a :+1: on a task input that arrives (and gets reacted
+  to) before the task row is committed — a real race, not just theoretical, since
+  `acknowledge()` and the DB insert aren't atomic.
+
+  The fix is a positive allow-list instead of a negative exclusion: only record feedback when
+  the reacted-to message is one Marathon is known to have posted as progress/result output.
+  That needs to persist message identity somewhere durable — the "no schema change" framing
+  in this doc's original scope note undersold what §31.7 actually requires; catching this bug
+  properly is a small, necessary exception to it.
+
+  * New table `slack_output_message(tenant_id, channel, ts)`
+    (`packages/db/migrations/0013_slack_output_message.sql`), with
+    `Database.recordSlackOutputMessage` / `Database.isSlackOutputMessage`
+    (`packages/db/src/index.ts`) as the write/read pair. `findTaskByTriggerTs` is removed —
+    the allow-list subsumes it (a triggering message was never recorded as output, so it
+    fails the new check the same way an unrelated message does).
+  * `SlackDelivery` (`packages/surface-slack/src/delivery.ts`) takes an optional
+    `onOutputPosted(channel, ts)` hook, called after every successful `postProgress`/
+    `deliverResult` post (best-effort — a hook failure logs and never fails the delivery).
+    `startSlackApp` (`packages/slack-app/src/app.ts`) wires it to
+    `db.recordSlackOutputMessage(tenantId, channel, ts)`.
+  * `handleReaction` (`packages/slack-app/src/handlers.ts`) replaces the trigger-ts exclusion
+    with `await deps.db.isSlackOutputMessage(deps.tenantId, channel, fb.itemTs)` — `recordFeedback`
+    only fires when this is `true`.
+
+  Both checks from this section are still independent and both still needed: `botUserId`
+  catches case 1 (bot-authored reaction) regardless of which message it lands on;
+  `isSlackOutputMessage` catches case 2 and the two review-flagged gaps by requiring positive
+  proof of Marathon authorship, regardless of who reacts.
 
 GitHub has no equivalent bug: nothing in `packages/github-app` currently reads reactions as a
 feedback signal, so a bot-added (or human-added) reaction there has no misinterpretation path
@@ -158,9 +191,11 @@ affects every ack rather than being a one-off.
 
 ## 31.9 Scope boundary
 
-Only `acknowledge()` changes. `postProgress` and `deliverResult` keep posting text — the
-request was specifically to replace the "on it…" ack, and substantive updates/results should
-stay visible as messages/comments, not reactions.
+Only `acknowledge()` changes user-visible behavior. `postProgress` and `deliverResult` keep
+posting text — the request was specifically to replace the "on it…" ack, and substantive
+updates/results should stay visible as messages/comments, not reactions. Per the revised
+§31.7, `postProgress`/`deliverResult` on Slack gain a side effect invisible to the user
+(recording the posted `ts` for feedback matching) — content and delivery are unchanged.
 
 ## 31.10 Testing
 
@@ -170,6 +205,13 @@ stay visible as messages/comments, not reactions.
 * Slack scope failure: `SlackDelivery.acknowledge` test asserts that when `FakeSlackClient`
   simulates a `missing_scope` error from `addReaction`, the error is swallowed (task
   proceeds) and a warning is logged.
+* Slack output allow-list (revised §31.7): `SlackDelivery` tests assert `postProgress`/
+  `deliverResult` call `onOutputPosted` with the posted message's channel + `ts`, and that a
+  throwing hook is swallowed (logged, delivery still succeeds). `handleReaction` tests assert
+  `recordFeedback` fires only when `isSlackOutputMessage` resolves `true`, covering: the bot's
+  own reaction (still excluded even on a known output message), a genuine reaction on a known
+  output message (recorded), and a genuine reaction on anything not in the allow-list —
+  including the triggering message and an unrelated/not-yet-persisted message (excluded).
 * GitHub: `classifyGithubEvent` tests already cover `comment_id`; add coverage that
   `handleGithubMention` calls `acknowledge` with `commentId` + the right `commentType` for
   both `issue_comment` and `pull_request_review_comment` sources; `GithubDelivery.acknowledge`
