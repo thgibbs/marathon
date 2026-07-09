@@ -674,6 +674,9 @@ importers:
       '@marathon/model-gateway':
         specifier: workspace:*
         version: link:../model-gateway
+      '@marathon/queue':
+        specifier: workspace:*
+        version: link:../queue
       '@marathon/surface':
         specifier: workspace:*
         version: link:../surface

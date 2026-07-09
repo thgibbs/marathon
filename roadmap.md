@@ -990,23 +990,32 @@ fold into M7–M9 sequencing as capacity allows.
     this right (it fires off the `ready_for_review` webhook via `handleCodeReviewReady`,
     independent of surface). **Landed 2026-07-09:** the trigger is now a **durable queued
     job**, not a webhook. `makeDocumentPrRecorder` gained an `onProduced` hook that fires
-    once, right AFTER it commits a NEW `produced` `DocumentArtifact` (not on converged
-    retries); both live apps wire it to `queue.enqueue({ kind: DESIGN_REVIEW_JOB_KIND,
-    idempotencyKey: design-review:<repo>:<pr> })`. The github-app runs a dedicated poller
-    that leases those jobs and runs `runDesignReviewJob` → `handleDocReviewOpened` →
-    `runReviewCycle(kind: "design_review")`, owned by the drafting agent. This is
-    surface-agnostic (Slack worker or GitHub app enqueues; the github-app reviews),
-    **race-free** (enqueued strictly after the artifact write, closing the P1 the first cut
-    had — `document.create` opens the PR before `onDocumentPr` persists the artifact, so a
-    `pull_request.opened` webhook could beat the write and drop the review), and **durable**
-    (the job survives a crash via the queue's lease/backoff; a transient GitHub/model failure
-    retries, then dead-letters). The inline call in `handleGithubMention` is removed; no
-    webhook `opened` trigger. Same cross-surface-coupling class as #14. Unit tests: recorder
-    fires `onProduced` after the write and not on a converged retry; `runDesignReviewJob`
-    resolves the task→produced-PR and runs the review (the interleaving the review flagged);
-    `handleDocReviewOpened` ignores non-`produced` artifacts. NOTE: #46 predates the fix and
-    won't be reviewed retroactively (no job was enqueued for it) — re-draft or close/reopen to
-    exercise the path.
+    (awaited) AFTER it commits the `produced` `DocumentArtifact`; both live apps wire it to
+    `await queue.enqueue({ kind: DESIGN_REVIEW_JOB_KIND, idempotencyKey:
+    design-review:<repo>:<pr> })`. The github-app runs a dedicated poller whose
+    `processDesignReviewJob` leases a job and runs `runDesignReviewJob` →
+    `handleDocReviewOpened` → `runReviewCycle(kind: "design_review")`, owned by the drafting
+    agent. This is surface-agnostic (Slack worker or GitHub app enqueues; the github-app
+    reviews), **race-free** (enqueued strictly after the artifact write, closing the first P1
+    — `document.create` opens the PR before `onDocumentPr` persists the artifact, so a
+    `pull_request.opened` webhook could beat the write and drop the review), and **durable**.
+    Durability hardening from PR review (round 2): (a) the enqueue is **awaited**, not
+    fire-and-forget, so a failure fails the doc tool call rather than silently dropping the
+    trigger; (b) `onProduced` **re-fires on the converged/existing path** (not just on a new
+    artifact), keyed to the PRODUCER task, so a crash between the artifact commit and the
+    enqueue is recovered when the doc tool call retries — the idempotency key collapses repeats
+    (retry/revise/redelivery) to exactly one review; (c) `processDesignReviewJob`
+    **heartbeats the lease** across the multi-turn kickback loop and, on lease loss in a scaled
+    deployment, **abandons** (never acks/fails under a stale token, never double-runs effects
+    silently) — a rejected ack surfaces as `lease-lost`. Transient failures retry with backoff,
+    then dead-letter. The inline call in `handleGithubMention` is removed; no webhook `opened`
+    trigger. Same cross-surface-coupling class as #14. Unit tests: recorder fires `onProduced`
+    after the write and re-fires (idempotently) on a converged retry with the producer task id;
+    `runDesignReviewJob` resolves the task→produced-PR and runs the review (the interleaving the
+    review flagged); `processDesignReviewJob` acks on success, abandons on lease loss (no ack),
+    retries/dead-letters on error; `handleDocReviewOpened` ignores non-`produced` artifacts.
+    NOTE: #46 predates the fix and won't be reviewed retroactively (no job was enqueued for it)
+    — re-draft or close/reopen to exercise the path.
 
 ---
 

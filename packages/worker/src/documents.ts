@@ -83,12 +83,17 @@ export interface DocumentRecorderDb {
 /** Optional hooks for the doc-PR recorder. */
 export interface DocumentPrRecorderHooks {
   /**
-   * Fired once, right AFTER a NEW `produced` doc-PR artifact is committed (§A.3a
-   * #19) — the race-free point to trigger the automatic design review. NOT
-   * called on a converged retry (the artifact already existed), so a revise or
-   * re-push never spawns a duplicate review. Typically enqueues a
-   * `DESIGN_REVIEW_JOB_KIND` job; a throw here propagates (the doc-PR tool call
-   * fails loudly) rather than silently losing the trigger.
+   * Fired AFTER the `produced` doc-PR artifact is committed (§A.3a #19) — the
+   * race-free point to (re-)ensure the automatic design-review trigger. Fires on
+   * BOTH the create and the converged/existing path so that a crash between the
+   * artifact commit and the enqueue is recovered when the doc tool call is
+   * retried (which then finds the existing artifact): the enqueue MUST be
+   * idempotent (keyed on the PR), so repeats collapse to exactly one review.
+   * MUST be awaited by the implementation and MUST await the enqueue itself — a
+   * throw propagates so the doc tool call fails loudly instead of the trigger
+   * being silently dropped. `owningTaskId` is the artifact's PRODUCER task (so
+   * the job resolves back to the produced artifact even when a later revise
+   * re-ensures it).
    */
   onProduced?: (e: { tenantId: string; repo: string; prNumber: number; owningTaskId: string }) => Promise<void> | void;
 }
@@ -98,8 +103,9 @@ export interface DocumentPrRecorderHooks {
  * a converged retry finds the existing row) and extend the task's delivery
  * targets with the doc PR, seeding them from the task's source so the
  * merge-spawned implementation task inherits BOTH the originating thread and
- * the doc PR (K2). On a NEW produced artifact it also fires `onProduced` — the
- * durable, race-free design-review trigger (the artifact is committed first).
+ * the doc PR (K2). It also (re-)fires `onProduced` — the durable design-review
+ * trigger — after the artifact is committed, on both the new and existing
+ * paths so a lost enqueue is recovered on retry (the hook is idempotent).
  */
 export function makeDocumentPrRecorder(db: DocumentRecorderDb, hooks: DocumentPrRecorderHooks = {}) {
   return async (event: {
@@ -123,17 +129,21 @@ export function makeDocumentPrRecorder(db: DocumentRecorderDb, hooks: DocumentPr
         owningAgentId: task?.agentId ?? undefined,
         title: event.path,
       });
-      // §A.3a #19: the artifact is now durably committed — signal the reviewer.
-      // Enqueued AFTER the write, so the review job can never observe a missing
-      // artifact (the webhook-trigger race this replaces). Surface-agnostic: the
-      // same enqueue runs whether a Slack worker or the GitHub app opened the PR.
-      await hooks.onProduced?.({
-        tenantId: event.tenantId,
-        repo: event.repo,
-        prNumber: event.prNumber,
-        owningTaskId: event.taskId,
-      });
     }
+
+    // §A.3a #19: signal the reviewer AFTER the artifact is durably committed, so
+    // the review job can never observe a missing artifact (the webhook-trigger
+    // race this replaces). Fired on the existing path too — a crash after the
+    // commit but before the enqueue is recovered when the doc tool call retries
+    // and converges here — with the enqueue kept idempotent (keyed on the PR) so
+    // repeats (retry, revise, redelivery) collapse to exactly one review. Uses
+    // the PRODUCER's task id so the job resolves to the produced artifact.
+    await hooks.onProduced?.({
+      tenantId: event.tenantId,
+      repo: event.repo,
+      prNumber: event.prNumber,
+      owningTaskId: existing?.owningTaskId ?? event.taskId,
+    });
 
     if (task) {
       const seed: DeliveryTarget[] =

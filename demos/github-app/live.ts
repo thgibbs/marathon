@@ -22,10 +22,10 @@ import { agentSubscribesTo, EnvSecretStore, isSubprocessHarness, loadAgentSpecs,
 import { githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools, makeReviewReportTool } from "@marathon/connector-github";
 import { WebhookProxyClient } from "@marathon/surface-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
-import { bootstrapGithubApp, handleIdentityRequest, handleWebhookRequest, makeBuildWiring, runDesignReviewJob, type AgentRuntimeEntry, type GithubAppDeps, type IdentityLinkDeps } from "@marathon/github-app";
+import { bootstrapGithubApp, handleIdentityRequest, handleWebhookRequest, makeBuildWiring, processDesignReviewJob, type AgentRuntimeEntry, type GithubAppDeps, type IdentityLinkDeps } from "@marathon/github-app";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY } from "@marathon/model-gateway";
-import { backoffMs, Queue } from "@marathon/queue";
+import { Queue } from "@marathon/queue";
 import { DeliveryFanout } from "@marathon/surface";
 import { InMemorySourceLedger, installSandboxShutdownHandler, reapSandboxContainers, ToolGateway, toolPolicyFromSpec, ToolRegistry } from "@marathon/tools";
 import { BUILD_JOB_KIND, DESIGN_REVIEW_JOB_KIND, designReviewJobKey, InvocationRouter, makeDocumentPrRecorder, Orchestrator, Worker } from "@marathon/worker";
@@ -179,16 +179,20 @@ async function main(): Promise<void> {
         ...makeGithubReadTools(httpGithubClientFactory()),
         ...makeDocumentTools(httpGithubClientFactory(), {
           docBase: defaultBranch,
-          // §A.3a #19: on a NEW produced doc PR, enqueue the durable design-review
-          // job (idempotent per PR) AFTER the artifact is committed — the review
-          // poller below leases it. Race-free replacement for the opened-webhook trigger.
+          // §A.3a #19: (re-)enqueue the durable design-review job (idempotent per
+          // PR) AFTER the artifact is committed — the review poller below leases
+          // it. AWAITED, not fire-and-forget: an enqueue failure propagates and
+          // fails the doc tool call (which retries and re-ensures the job) rather
+          // than silently dropping the review. Race-free replacement for the
+          // opened-webhook trigger.
           onDocumentPr: makeDocumentPrRecorder(db, {
-            onProduced: (e) =>
-              void queue.enqueue({
+            onProduced: async (e) => {
+              await queue.enqueue({
                 taskId: e.owningTaskId,
                 kind: DESIGN_REVIEW_JOB_KIND,
                 idempotencyKey: designReviewJobKey(e.repo, e.prNumber),
-              }),
+              });
+            },
           }),
         }),
         // §A.3a: a reviewer agent's terminal step — post the verdict comment +
@@ -288,20 +292,20 @@ async function main(): Promise<void> {
   // dedicated loop, not the generic task Worker: the review is orchestration
   // (runReviewCycle + the inline kickback loop), not a single task step. Runs
   // unconditionally — with no reviewer configured, runReviewCycle is a no-op and
-  // the job acks. Generous visibility covers the multi-turn kickback loop.
+  // the job acks. `processDesignReviewJob` heartbeats the lease across the
+  // multi-turn kickback loop and abandons (never double-acks) on lease loss.
   const reviewVisibilityMs = 300_000;
   const pollReview = async (): Promise<void> => {
     try {
       for (;;) {
         const job = await queue.dequeue(reviewVisibilityMs, { kinds: [DESIGN_REVIEW_JOB_KIND] });
         if (!job?.leaseToken) break;
-        try {
-          await runDesignReviewJob(deps, job.taskId);
-          await queue.ack(job.id, job.leaseToken);
-        } catch (e) {
-          // Transient GitHub/model failure → durable retry with backoff; a
-          // permanent error dead-letters once attempts reach max_attempts.
-          await queue.fail(job.id, job.leaseToken, String(e), backoffMs(job.attempts));
+        const outcome = await processDesignReviewJob(queue, deps, job, {
+          visibilityMs: reviewVisibilityMs,
+          heartbeatMs: 60_000,
+        });
+        if (outcome === "lease-lost") {
+          console.error(`[github-app] design-review job ${job.id}: lease lost during run — abandoned to its current owner`);
         }
       }
     } catch (e) {
