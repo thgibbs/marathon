@@ -1,0 +1,16 @@
+{
+  "name": "@marathon/demo-k8",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx run.ts"
+  },
+  "dependencies": {
+    "@marathon/agent": "workspace:*",
+    "@marathon/config": "workspace:*",
+    "@marathon/mcp-shim": "workspace:*",
+    "@marathon/model-gateway": "workspace:*",
+    "@marathon/tools": "workspace:*"
+  }
+}

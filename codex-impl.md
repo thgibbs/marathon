@@ -324,6 +324,15 @@ generous by default.
 
 ## Part B — Codex CLI headless harness (K8)
 
+> **Superseded (2026-07-09).** The full K8 integration reference is now
+> **`codex-cli-impl.md`** (the counterpart of `claude-code-impl.md`), written against the K7
+> *as-built* code. It updates this part where the K7 landing moved the ground — chiefly the
+> checkpoint-cadence framing (§B.3's `--max-turns` premise is stale: Claude Code 2.x removed
+> the flag, so whole-invocation turns are the accepted contract for both subprocess
+> harnesses), the broker's TCP+token transport, and the locked-down-egress gate (fail closed
+> until an OpenAI key proxy exists, sharpening §B.5). Where the two disagree, that doc wins;
+> Part B below is kept as the design-review record.
+
 ### B.1 What Codex headless is
 
 **Codex CLI** (`@openai/codex`) is OpenAI's open-source coding-agent CLI. Non-interactive

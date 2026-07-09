@@ -89,13 +89,26 @@ function governed() {
   return { gateway, tools, invocations, audits };
 }
 
+/**
+ * Read the per-turn broker capability token out of the mcp.json the runtime wrote
+ * (§3.1): the shim presents it as the first line before any tool is served.
+ */
+function brokerTokenFromMcpConfig(workspaceDir: string): string | undefined {
+  const cfg = JSON.parse(readFileSync(join(workspaceDir, ".marathon-home", "mcp.json"), "utf8"));
+  const args: string[] = cfg?.mcpServers?.marathon?.args ?? [];
+  const i = args.indexOf("--token");
+  return i >= 0 ? args[i + 1] : undefined;
+}
+
 /** A broker client wrapped as the shim's BrokerLike, so the demo runs the real MCP handler. */
-async function connectShimBroker(socketPath: string) {
+async function connectShimBroker(socketPath: string, token?: string) {
   const conn = connect(socketPath);
   await new Promise<void>((res, rej) => {
     conn.once("connect", res);
     conn.once("error", rej);
   });
+  // Present the per-turn capability token before any tool is served (§3.1).
+  if (token) conn.write(`${JSON.stringify({ auth: token })}\n`);
   const client = new ToolBrokerClient(conn, conn);
   const broker = {
     listTools: () => client.listTools(),
@@ -165,7 +178,7 @@ async function main(): Promise<void> {
 
     if (!resume) {
       // Turn 1: read a file (autonomous) + attempt a delete (proposed_effect).
-      const { conn, broker } = await connectShimBroker(socketPath);
+      const { conn, broker } = await connectShimBroker(socketPath, brokerTokenFromMcpConfig(workspaceDir));
       const read = await mcpCall(broker, "github_read_file");
       refusalSeen = await mcpCall(broker, "doc_delete");
       conn.destroy();

@@ -53,6 +53,7 @@ export const KNOWN_MARATHON_ENV_VARS: readonly string[] = [
   "MARATHON_ALLOW_TRUSTED_DEPLOYMENT",
   "MARATHON_BROKER_HOST",
   "MARATHON_CLAUDE_SUBSCRIPTION_DEV",
+  "MARATHON_CODEX_SUBSCRIPTION_DEV",
   "MARATHON_GIT_TOKEN",
   "MARATHON_INTERNAL_EGRESS_MODE",
   "MARATHON_LINK_BASE_URL",
@@ -148,8 +149,8 @@ export class EnvSecretStore implements SecretStore {
   }
 }
 
-/** Which agent harness runs the in-task loop (design §7.5; claude-code lands with K7). */
-export type AgentHarness = "pi" | "claude-code";
+/** Which agent harness runs the in-task loop (design §7.5; claude-code lands with K7, codex with K8). */
+export type AgentHarness = "pi" | "claude-code" | "codex";
 
 /**
  * One tool grant in an agent spec. For the brokered exec tools
@@ -258,7 +259,7 @@ export interface AgentSpec {
 
 const AGENT_NAME_RE = /^[a-z][a-z0-9-]*$/;
 const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
-const HARNESSES: AgentHarness[] = ["pi", "claude-code"];
+const HARNESSES: AgentHarness[] = ["pi", "claude-code", "codex"];
 const NETWORKS: AgentSandboxConfig["network"][] = ["bridge", "none"];
 
 function parseToolGrant(entry: unknown, source: string, i: number): AgentToolGrant {
@@ -497,17 +498,20 @@ export function agentSubscribesTo(spec: Pick<AgentSpec, "on">, event: KernelEven
 }
 
 /**
- * Fail-closed cross-validation for the Claude Code harness (K7, design §13.1:
- * the harness choice constrains the provider). An agent with `harness:
- * claude-code` MUST route to an Anthropic model — Claude Code speaks only the
- * Anthropic API — so every model ref in its policy must be `anthropic:*`, and a
- * policy must be present (the deployment default is provider-agnostic and could
- * be OpenAI). A no-op for the Pi harness. Throws with a precise reason.
+ * Fail-closed cross-validation for the subprocess harnesses (K7/K8, design
+ * §13.1: the harness choice constrains the provider). A CLI harness speaks only
+ * one provider's API — `claude-code` → Anthropic (K7), `codex` → OpenAI
+ * (codex-cli-impl.md §4.3) — so every model ref in its policy must be that
+ * provider's, and a policy must be present (the deployment default is
+ * provider-agnostic and could be the wrong provider). A no-op for the Pi
+ * harness. Throws with a precise reason.
  *
  * The model-proxy is NOT required here (model-proxy decision, §4.1): direct key
  * injection is the default on `network: bridge`, and the proxy is only required
  * under locked-down egress (`network: none`) — a posture-specific check the
- * runtime enforces (`resolveModelAccessEnv`), not a config-load one.
+ * runtime enforces (`resolveModelAccessEnv`), not a config-load one. For `codex`
+ * the OpenAI proxy component does not exist yet, so `network: none` fails closed
+ * at the BUILD wiring (codex-cli-impl.md §4.1), not here.
  */
 export function validateHarnessConfig(
   spec: AgentSpec,
@@ -521,17 +525,20 @@ export function validateHarnessConfig(
   // `design-review`/`code-review` WITHOUT `draft`/`build` — no longer a
   // misconfiguration, so the old per-spec "can never own" warning is gone.
 
-  if (spec.harness !== "claude-code") return;
+  // The provider each CLI harness pins (§13.1). Pi is provider-agnostic (no entry).
+  const requiredProvider: Record<string, string> = { "claude-code": "anthropic", codex: "openai" };
+  const provider = requiredProvider[spec.harness];
+  if (!provider) return;
+  const providerLabel = provider === "anthropic" ? "Anthropic" : "OpenAI";
   if (!spec.models) {
     throw new Error(
-      `${source}: harness 'claude-code' requires an Anthropic 'models' policy (§13.1) — the deployment default may not be Anthropic`,
+      `${source}: harness '${spec.harness}' requires an ${providerLabel} 'models' policy (§13.1) — the deployment default may not be ${providerLabel}`,
     );
   }
   for (const [role, ref] of Object.entries(spec.models)) {
-    const provider = ref.split(":")[0];
-    if (provider !== "anthropic") {
+    if (ref.split(":")[0] !== provider) {
       throw new Error(
-        `${source}: harness 'claude-code' requires Anthropic models, but models.${role} is "${ref}" (§13.1)`,
+        `${source}: harness '${spec.harness}' requires ${providerLabel} models, but models.${role} is "${ref}" (§13.1)`,
       );
     }
   }
