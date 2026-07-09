@@ -12,6 +12,23 @@ export type ReviewVerdict = "approved" | "changes_requested";
 
 export const REVIEW_VERDICTS: readonly ReviewVerdict[] = ["approved", "changes_requested"];
 
+/**
+ * The default cap on automatic review→revise cycles per PR (§A.3a): after this
+ * many `changes_requested` rounds the loop stops and waits for a human, so a
+ * reviewer and its owning agent can never ping-pong forever.
+ */
+export const MAX_AUTO_REVIEW_ROUNDS = 2;
+
+/**
+ * Should a reported verdict bounce the PR back to its owning agent to revise
+ * (§A.3a)? Only a `changes_requested` kicks back, and only while still under the
+ * cap (`rounds` is the post-record count of reviews for this PR). `approved`
+ * never kicks back and never merges — a human still owns that.
+ */
+export function shouldKickBack(verdict: ReviewVerdict, rounds: number, cap: number = MAX_AUTO_REVIEW_ROUNDS): boolean {
+  return verdict === "changes_requested" && rounds <= cap;
+}
+
 /** Marker line prefixed to the posted comment so humans (and tests) can spot an automated review. */
 export const REVIEW_COMMENT_MARKER = "🔎 Automated review";
 

@@ -1,6 +1,6 @@
 import type { AgentRuntime } from "@marathon/agent";
 import { agentSubscribesTo, type AgentModelPolicy, type KernelEvent } from "@marathon/config";
-import { getRepoAccess, type GithubClient, type GithubDelivery, type PullRequestFile } from "@marathon/connector-github";
+import { getRepoAccess, MAX_AUTO_REVIEW_ROUNDS, shouldKickBack, type GithubClient, type GithubDelivery, type PullRequestFile } from "@marathon/connector-github";
 import {
   emptyCheckpoint,
   implementationTaskKey,
@@ -53,6 +53,13 @@ export interface GithubAppDeps {
    * `runtime`/`on`/`models` defaults below apply (unchanged single-agent behavior).
    */
   agentRegistry?: (agentId: Id | undefined) => AgentRuntimeEntry | undefined;
+  /**
+   * The reviewer agent id subscribed to a review event (§A.3a), or undefined
+   * when no reviewer is configured for it. Drives the automatic review that
+   * fires when a doc/code PR becomes ready-for-review. When unset, the auto
+   * review simply does not run (unchanged single-agent behavior).
+   */
+  reviewerFor?: (event: KernelEvent) => Id | undefined;
   /** Used for repo-permission checks (agent + invoking user) before acting. */
   client: GithubClient;
   /** When set, recall is injected into prompts (design §7.18). */
@@ -198,9 +205,114 @@ export async function handleReviewTask(deps: GithubAppDeps, task: Task): Promise
   });
 
   // The review lands only if review.report ran; its onReviewed hook records the
-  // verdict the Phase 3 kickback loop reads. Nothing else to do here.
+  // verdict the kickback loop reads. Nothing else to do here.
   await deps.db.transitionTask(task.id, "running");
   await deps.db.transitionTask(task.id, "completed");
+}
+
+/**
+ * The automatic review + capped kickback loop (§A.3a). Runs the configured
+ * reviewer on the PR; on a `changes_requested` verdict still under the cap, it
+ * bounces the PR back to its OWNING agent to revise and re-reviews. A design-doc
+ * review revises INLINE (a bounded loop here); a code review enqueues a
+ * `code_revision` BUILD task and returns — that task re-marks the PR ready,
+ * whose `ready_for_review` webhook re-enters this loop (bounded by the same
+ * per-PR round cap). An `approved` verdict, the cap, or no configured reviewer
+ * stops the loop and leaves the PR for the human (an approving review on the
+ * doc; a merge on the code) — a reviewer never merges (§29.1a).
+ */
+export async function runReviewCycle(
+  deps: GithubAppDeps,
+  opts: { repo: string; prNumber: number; kind: ReviewKind; ownerAgentId?: Id },
+): Promise<void> {
+  const { repo, prNumber, kind } = opts;
+  const event = kind === "design_review" ? "design-review" : "code-review";
+  const reviewerId = deps.reviewerFor?.(event);
+  if (!reviewerId) return; // no reviewer configured — nothing to do
+
+  // Each iteration does one review (which bumps the round); shouldKickBack()
+  // returns false once the rounds exceed the cap, so this cannot loop forever.
+  for (let i = 0; i <= MAX_AUTO_REVIEW_ROUNDS; i++) {
+    const { task: reviewTask } = await deps.orchestrator.submit({
+      tenantId: deps.tenantId,
+      agentId: reviewerId,
+      sourceType: "github",
+      sourceRef: { kind, repo, number: prNumber },
+    });
+    await handleReviewTask(deps, reviewTask);
+
+    const round = await deps.db.getReviewRound(deps.tenantId, repo, prNumber, kind);
+    if (round?.lastVerdict !== "changes_requested" || !shouldKickBack("changes_requested", round.rounds)) {
+      return; // approved, nothing recorded, or cap reached — stop.
+    }
+    // Kick back to the owner. Doc revises inline (loop continues); code revises
+    // asynchronously (this returns — the ready_for_review webhook re-triggers).
+    const continueInline = await runOwnerRevision(deps, { repo, prNumber, kind, ownerAgentId: opts.ownerAgentId });
+    if (!continueInline) return;
+  }
+}
+
+/**
+ * The owning agent's revision in response to a `changes_requested` review
+ * (§A.3a kickback). Returns true when the caller should re-review inline (a doc
+ * revised in place), false when the revision is async (a code_revision BUILD
+ * task the webhook loop will follow up on).
+ */
+async function runOwnerRevision(
+  deps: GithubAppDeps,
+  opts: { repo: string; prNumber: number; kind: ReviewKind; ownerAgentId?: Id },
+): Promise<boolean> {
+  const { repo, prNumber, kind, ownerAgentId } = opts;
+  if (kind === "code_review") {
+    // Enqueue a code_revision BUILD task carrying the review as the ask; the
+    // BUILD worker runs it and re-reports the PR (re-marking it ready).
+    await handleCodePrRevision(deps, {
+      surfaceType: "github",
+      sourceRef: { repo, number: prNumber, kind: "pr" },
+      userExternalId: "marathon",
+      agentName: null,
+      text: "A code reviewer requested changes on this PR — address the review comments and re-push.",
+      eventId: `autorev-code-${repo}-${prNumber}`,
+    });
+    return false; // async — the webhook re-triggers the review
+  }
+
+  // Design-doc kickback: the owning agent revises the doc INLINE on its runtime.
+  const artifact = await deps.db.findDocumentArtifactByPr(deps.tenantId, repo, prNumber);
+  const loc = (artifact?.location ?? {}) as { path?: string; branch?: string };
+  if (!loc.path || !loc.branch) return false;
+  const owner = resolveAgent(deps, ownerAgentId);
+  if (!agentSubscribesTo({ on: owner.on }, "draft")) return false; // only the drafter revises
+
+  const { task } = await deps.orchestrator.submit({
+    tenantId: deps.tenantId,
+    agentId: ownerAgentId,
+    sourceType: "github",
+    sourceRef: { kind: "design_revision", repo, number: prNumber },
+  });
+  const current = await deps.client.readFileWithSha(repo, loc.path, loc.branch).catch(() => ({ content: "" }));
+  // The reviewer's changes_requested comment rides in the PR context.
+  const context = await deps.delivery.loadContext?.({ repo, number: prNumber }, { limit: 30 }).catch(() => undefined);
+  const prompt = await buildAgentPrompt({ db: deps.db, memory: deps.memory }, task, {
+    basePersona: REVISE_PERSONA,
+    contract: docReviseContract({ repo, path: loc.path, branch: loc.branch }),
+    documents: [{ path: loc.path, content: current.content }],
+    context,
+  });
+  await owner.runtime.nextTurn({
+    request: {
+      taskId: task.id,
+      instructions: prompt.instructions,
+      input: prompt.input,
+      modelRef: resolveModelRef(owner.models, "design-review"),
+      tenantId: deps.tenantId,
+      agentId: ownerAgentId,
+    },
+    checkpoint: emptyCheckpoint(),
+  });
+  await deps.db.transitionTask(task.id, "running");
+  await deps.db.transitionTask(task.id, "completed");
+  return true; // re-review the revised doc inline
 }
 
 // The doc-task tool contracts (§2b #16) are shared with the Slack doc-draft
@@ -398,6 +510,10 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
   );
   await deps.db.transitionTask(task.id, "running");
   await deps.db.transitionTask(task.id, "waiting_for_approval");
+
+  // §A.3a: the doc PR is now open for review — run the automatic design-doc
+  // review + capped kickback loop (a no-op when no reviewer is configured).
+  await runReviewCycle(deps, { repo, prNumber, kind: "design_review", ownerAgentId: agentId });
 }
 
 /**
@@ -745,6 +861,20 @@ export async function handleGithubPush(deps: GithubAppDeps, repo: string, after:
   return reacted;
 }
 
+/**
+ * A PR flipped to ready-for-review (§A.3a): if it's a Marathon CODE PR
+ * (delivery.report_pr marked it ready on green verification), run the automatic
+ * code review, owned by the code's builder. Non-Marathon PRs and doc-only
+ * readies are ignored. Returns true when consumed.
+ */
+export async function handleCodeReviewReady(deps: GithubAppDeps, repo: string, prNumber: number): Promise<boolean> {
+  const change = await deps.db.findCodeChangeByPr(deps.tenantId, repo, prNumber);
+  if (!change?.prNumber) return false; // not a Marathon code PR
+  const codeTask = await deps.db.getTask(change.taskId);
+  await runReviewCycle(deps, { repo, prNumber, kind: "code_review", ownerAgentId: codeTask?.agentId ?? undefined });
+  return true;
+}
+
 export async function dispatchGithubEvent(
   deps: GithubAppDeps,
   eventType: string,
@@ -756,5 +886,6 @@ export async function dispatchGithubEvent(
   else if (action.kind === "review") await handleGithubReview(deps, action);
   else if (action.kind === "approval") await handleGithubApproval(deps, action);
   else if (action.kind === "merge") await handleGithubMerge(deps, action.repo, action.number, action.mergeCommitSha);
+  else if (action.kind === "ready_for_review") await handleCodeReviewReady(deps, action.repo, action.number);
   else if (action.kind === "push") await handleGithubPush(deps, action.repo, action.after, action.paths);
 }

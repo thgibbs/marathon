@@ -1,7 +1,7 @@
 import { EnvSecretStore } from "@marathon/config";
 import { describe, expect, it } from "vitest";
 import { FixturesGithubClient } from "../src/client";
-import { makeReviewReportTool, REVIEW_COMMENT_MARKER, renderReviewComment } from "../src/review-tools";
+import { makeReviewReportTool, MAX_AUTO_REVIEW_ROUNDS, REVIEW_COMMENT_MARKER, renderReviewComment, shouldKickBack } from "../src/review-tools";
 
 const ctx = { taskId: "t1", tenantId: "tn1", secrets: new EnvSecretStore({}) };
 
@@ -41,6 +41,17 @@ describe("review.report (§A.3a — comment-only reviewer verdict)", () => {
     expect(tool.validate!({ repo: "o/r", number: 1, verdict: "approved", summary: "  " })).toMatch(/summary/);
     expect(tool.validate!({ repo: "o/r", verdict: "approved", summary: "x" })).toMatch(/number/);
     expect(tool.validate!({ repo: "o/r", number: 1, verdict: "approved", summary: "ok" })).toBeNull();
+  });
+
+  it("shouldKickBack: only changes_requested, only under the cap; approved never bounces (§A.3a)", () => {
+    expect(MAX_AUTO_REVIEW_ROUNDS).toBe(2);
+    // changes_requested under/at the cap bounces back to the owner to revise.
+    expect(shouldKickBack("changes_requested", 1)).toBe(true);
+    expect(shouldKickBack("changes_requested", 2)).toBe(true);
+    // ...but the round past the cap stops and waits for a human.
+    expect(shouldKickBack("changes_requested", 3)).toBe(false);
+    // approved never kicks back (and never merges — a human owns that).
+    expect(shouldKickBack("approved", 1)).toBe(false);
   });
 
   it("is best-effort: a recording-hook failure does not fail the already-posted review", async () => {

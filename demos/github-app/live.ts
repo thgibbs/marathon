@@ -147,11 +147,17 @@ async function main(): Promise<void> {
       registry: new ToolRegistry([
         ...makeGithubReadTools(httpGithubClientFactory()),
         ...makeDocumentTools(httpGithubClientFactory(), { docBase: defaultBranch, onDocumentPr: makeDocumentPrRecorder(db) }),
-        // §A.3a: a reviewer agent's terminal step — post the verdict comment.
-        // Only agents granted `review.report` (the reviewer specs) can call it;
-        // the policy gates the rest. The verdict-recording hook that drives the
-        // kickback loop is wired in Phase 3.
-        makeReviewReportTool({ getClient: httpGithubClientFactory() }),
+        // §A.3a: a reviewer agent's terminal step — post the verdict comment +
+        // record the verdict/round for the kickback loop. Only agents granted
+        // `review.report` (the reviewer specs) can call it; the policy gates the rest.
+        makeReviewReportTool({
+          getClient: httpGithubClientFactory(),
+          onReviewed: async ({ taskId, repo, prNumber, verdict }) => {
+            const t = await db.getTask(taskId);
+            const kind = (t?.sourceRef as { kind?: string } | undefined)?.kind === "code_review" ? "code_review" : "design_review";
+            await db.recordReviewVerdict(boot.tenantId, repo, prNumber, kind, verdict);
+          },
+        }),
       ]),
       policy: toolPolicyFromSpec(spec),
       secrets,
@@ -206,6 +212,16 @@ async function main(): Promise<void> {
     // runtime for its owning agent (§A.4). Falls back to the default per resolveAgent.
     runtime: runtimesByAgentId.get(boot.agentIdByName[flagship.name]!)!.runtime,
     agentRegistry: (id) => (id ? runtimesByAgentId.get(id) : undefined),
+    // §A.3a: the DEDICATED reviewer for a review event — a spec that subscribes
+    // to it WITHOUT the paired producer (so Forge, which drafts+reviews its own,
+    // is not picked). Undefined when none is configured → the auto review is a no-op.
+    reviewerFor: (event) => {
+      const producer = event === "design-review" ? "draft" : event === "code-review" ? "build" : undefined;
+      const reviewer = specs.find(
+        (s) => agentSubscribesTo(s, event) && (producer ? !agentSubscribesTo(s, producer) : true) && Boolean(s.repo),
+      );
+      return reviewer ? boot.agentIdByName[reviewer.name] : undefined;
+    },
     tenantId: boot.tenantId,
     agents: boot.agents,
     agentIdByName: boot.agentIdByName,
