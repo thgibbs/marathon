@@ -210,7 +210,7 @@ export function makeAgentTaskStepRunner(db: Database, runtime: AgentRuntime, opt
       const loc = (artifact?.location ?? {}) as { prNumber?: number };
       const footer =
         typeof loc.prNumber === "number"
-          ? `Drafted design doc: PR #${loc.prNumber} — comment to revise, merge to execute.`
+          ? `Drafted design doc: PR #${loc.prNumber} (draft) — comment to revise, submit an approving review to execute.`
           : "No design document was produced by this run — nothing was committed. Mention me again to retry.";
       text = text.trim() ? `${text.trim()}\n\n${footer}` : footer;
     }

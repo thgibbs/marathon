@@ -95,19 +95,19 @@ await execFileAsync("mkdir", ["-p", join(origin, "docs")]);
 await writeFile(join(origin, "docs", "plan.md"), "# Plan: greet by name\n");
 await git(origin, "add", "-A");
 await git(origin, "commit", "--quiet", "-m", "plan: greet by name (merged)");
-const mergeCommitSha = (await git(origin, "rev-parse", "HEAD")).trim();
-const planRef = { repo: REPO, docPath: "docs/plan.md", mergeCommitSha };
+const approvedSha = (await git(origin, "rev-parse", "HEAD")).trim();
+const planRef = { repo: REPO, docPath: "docs/plan.md", approvedSha };
 
 const bare = await mkdtemp(join(tmpdir(), "marathon-k1b-github-"));
 await execFileAsync("git", ["init", "--bare", "--quiet", bare]);
 
 // --- 2. Workspace pinned to the merge commit; credential-free (§29.2). ---
-const ws = await CodeWorkspace.materialize({ source: origin, baseSha: mergeCommitSha });
+const ws = await CodeWorkspace.materialize({ source: origin, baseSha: approvedSha });
 assert((await ws.remotes()).length === 0, "workspace has no remotes (credential-free)");
 assert((await ws.credentialHelpers()).filter(Boolean).length === 0, "credential helpers stripped");
 
 const registry = new CodeTaskRegistry();
-registry.set(TASK, { workspace: ws, planRef, repo: REPO, baseSha: mergeCommitSha });
+registry.set(TASK, { workspace: ws, planRef, repo: REPO, baseSha: approvedSha });
 
 // --- 3. Gateway with the brokered tool surface (Tracks 6-7). ---
 const fixtures = new FixturesGithubClient({});

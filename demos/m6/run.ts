@@ -93,7 +93,7 @@ async function main(): Promise<void> {
     });
 
     // reply on the originating issue, then wait for review/merge
-    await delivery.deliverResult(invocation.sourceRef, { summary: `Drafted design doc: PR #${prNumber} — review & merge to execute.` });
+    await delivery.deliverResult(invocation.sourceRef, { summary: `Drafted design doc: PR #${prNumber} (draft) — review & submit an approving review to execute.` });
     // task is 'queued' after routing; move running -> waiting_for_approval (waiting for the merge)
     await db.transitionTask(task.id, "running");
     await db.transitionTask(task.id, "waiting_for_approval");

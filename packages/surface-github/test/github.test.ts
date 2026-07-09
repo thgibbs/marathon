@@ -47,13 +47,32 @@ describe("classifyGithubEvent", () => {
     }
   });
 
-  it("detects a merged pull_request (approve-by-merge), carrying the base ref (§29.1a)", () => {
+  it("detects a merged pull_request (the SHIP, §29.1a) — no base ref, base is irrelevant now", () => {
     const a = classifyGithubEvent("pull_request", {
       action: "closed",
       repository: { full_name: "o/repo" },
-      pull_request: { number: 7, merged: true, merge_commit_sha: "abc123", base: { ref: "marathon-plans" } },
+      pull_request: { number: 7, merged: true, merge_commit_sha: "abc123", base: { ref: "main" } },
     });
-    expect(a).toMatchObject({ kind: "merge", repo: "o/repo", number: 7, mergeCommitSha: "abc123", baseRef: "marathon-plans" });
+    expect(a).toMatchObject({ kind: "merge", repo: "o/repo", number: 7, mergeCommitSha: "abc123" });
+    // The combined-PR flow dropped baseRef — approval is a review, not a merge target.
+    expect(a).not.toHaveProperty("baseRef");
+  });
+
+  it("classifies an APPROVING review as an approval, pinning the head SHA (§29.1a)", () => {
+    const a = classifyGithubEvent("pull_request_review", {
+      action: "submitted",
+      repository: { full_name: "o/repo", owner: { login: "o" } },
+      pull_request: { number: 9, head: { sha: "head-sha-9" } },
+      review: { id: 42, state: "approved", body: "LGTM", user: { login: "approver", type: "User" } },
+    });
+    expect(a).toMatchObject({
+      kind: "approval",
+      repo: "o/repo",
+      number: 9,
+      headSha: "head-sha-9",
+      author: "approver",
+      eventId: "rev-42",
+    });
   });
 
   it("parses a push into changed paths (for watched docs)", () => {
@@ -95,11 +114,11 @@ describe("classifyGithubEvent", () => {
     });
   });
 
-  it("review classification: commented triggers, approved does not, bots never do (§2b #11)", () => {
+  it("review classification: commented triggers as a review, approved as an approval, bots never do (§2b #11, §29.1a)", () => {
     const base = {
       action: "submitted",
-      repository: { full_name: "o/repo" },
-      pull_request: { number: 9 },
+      repository: { full_name: "o/repo", owner: { login: "o" } },
+      pull_request: { number: 9, head: { sha: "h" } },
     };
     expect(
       classifyGithubEvent("pull_request_review", {
@@ -107,14 +126,21 @@ describe("classifyGithubEvent", () => {
         review: { id: 34, state: "COMMENTED", body: "batch of notes", user: { login: "r", type: "User" } },
       }).kind,
     ).toBe("review");
-    // Approval is the merge signal, never a revision request.
+    // §29.1a: an approving review is the approval signal, not a revision request.
     expect(
       classifyGithubEvent("pull_request_review", {
         ...base,
         review: { id: 35, state: "approved", body: "LGTM", user: { login: "r", type: "User" } },
       }).kind,
+    ).toBe("approval");
+    // Bot authors (CI bots, Marathon-as-app once §2b #15 lands) never trigger —
+    // this covers an approving BOT review too (Marathon's own approval-shaped posts).
+    expect(
+      classifyGithubEvent("pull_request_review", {
+        ...base,
+        review: { id: 38, state: "approved", body: "auto", user: { login: "ci[bot]", type: "Bot" } },
+      }).kind,
     ).toBe("ignore");
-    // Bot authors (CI bots, Marathon-as-app once §2b #15 lands) never trigger.
     expect(
       classifyGithubEvent("pull_request_review", {
         ...base,

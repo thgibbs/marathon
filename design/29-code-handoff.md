@@ -17,72 +17,81 @@ Two principles shape everything below:
 
 ## 29.1 Trigger and task input
 
-Plan documents live on a dedicated **plans branch**, not the default branch (§29.1a —
-decision 2026-07-04). The doc PR targets the plans branch; **merging it there is the
-approval**, and the merge (M6 webhook, filtered on the plans base ref) spawns the
-**implementation task**:
+Plan documents open as **draft PRs against the default branch** (§29.1a — decision
+2026-07-08, supersedes the plans branch). A human's **approving review** on the draft doc PR
+is the approval; the `pull_request_review` webhook (state `approved`, on a Marathon-owned doc
+PR, from an approver with **write access**) spawns the **implementation task**:
 
 ```text
-plan_ref            = { repo, doc_path, merge_commit_sha }   # the plan, at its merged version
-                                                             #   (a plans-branch commit)
-base_sha            = <default-branch head at approval>      # the commit the work builds on
+plan_ref            = { repo, doc_path, approved_sha }       # the plan, at its approved version
+                                                             #   (the doc-PR head at the review)
+base_sha            = approved_sha                           # the work builds ON the doc branch
+branch              = <the doc-PR branch>                    # pushed back onto — same PR
 delivery_targets    = [ originating Slack thread, doc PR ]   # inherited via the task chain (K2)
-idempotency_key     = (repo, doc_path, merge_commit_sha, "implement")
+idempotency_key     = (repo, doc_path, approved_sha, "implement")
 ```
 
-* `plan_ref` is **pinned to the plan's merge commit on the plans branch**: deterministic,
-  auditable, content-addressable forever (git history is the record), and voided by revision —
-  a revised-and-re-merged plan is a **new** version → a new task.
-* `base_sha` is **pinned to the default branch's head, captured once at approval time** and
-  carried on the task. It no longer coincides with the plan's merge commit (they live on
-  different branches); each is recorded separately on the task and the `CodeChange` (§29.8).
-* Because the plan is no longer in the tree at `base_sha`, the workspace **materializes the
-  plan doc** at its `doc_path` during provisioning (§29.2) — the agent still reads it with its
-  own file tools, no side-channel plan delivery, and the doc rides the diff into the code PR
-  (§29.1a).
-* One implementation task per merged plan version: a re-delivered webhook is a no-op.
+* `plan_ref` is **pinned to the doc-PR head SHA at the moment of the approving review**:
+  deterministic, auditable, content-addressable forever (git history is the record), and
+  voided by revision — a plan revised and re-approved has a **new** head SHA → a new task.
+* `base_sha` **is** `approved_sha`: the workspace is the doc branch itself, checked out at
+  the approved tip, so the plan doc is **already in the tree** at its `doc_path` — the agent
+  reads it with its own file tools, no side-channel plan delivery, and the implementation
+  commits land on the same branch (the design PR updates in place).
+* One implementation task per approved plan version: a re-delivered webhook is a no-op; an
+  approving review that arrives after the implementation already landed on the PR (a
+  `CodeChange` exists for it) is ordinary pre-merge code approval and spawns nothing.
+* A merged doc PR is the **ship**, not the approval: the merge webhook only records the
+  merge commit and completes bookkeeping. A doc PR merged without ever being approved is
+  "shipped without a build" — the doc task completes, and NO implementation spawns; approval
+  is always the explicit review, never implied by a merge.
 
-## 29.1a The plans branch — main only carries shipped plans
+## 29.1a The combined PR — one PR ships design + code
 
-**Decision (2026-07-04, supersedes merge-into-main).** Merging plan docs into the default
-branch litters it with documents that may never be implemented or may not match the final
-outcome. Instead:
+**Decision (2026-07-08, supersedes the plans branch / merge-as-approval of 2026-07-04).**
+The plans-branch flow required a dedicated long-lived branch, a two-PR lifecycle (doc PR into
+the plans branch, then a separate code PR into main), and bootstrap provisioning. The
+combined-PR flow collapses that into GitHub's native draft → approve → ready → merge
+lifecycle:
 
-* **Doc PRs target a long-lived plans branch** (default `marathon-plans`; configurable —
-  `plans.branch`). Review UX, CODEOWNERS, and branch protection apply to that branch
-  unchanged; the merge remains the same deliberate, sha-pinned, natively-attributable
-  approval signal (§7.9). Marathon creates the branch at bootstrap when missing.
-* **The plans branch is an approval boundary, so it must sit OUTSIDE the agent push
-  namespace.** Agents push implementation branches under `marathon/*` (§29.5), and the
-  brokered `git.exec` path relies on GitHub branch protection/rulesets for final
-  enforcement — a plans branch *inside* that namespace (e.g. `marathon/plans`) would live in
-  exactly the prefix rulesets leave open to the agent. Hence the default is `marathon-plans`
-  (outside the prefix), wiring refuses a `plans.branch` under `marathon/*`, and the branch
-  must be protected like the default branch: changes land only by merging a reviewed PR,
-  never by direct push.
-* **An implemented plan merges into main WITH its implementation.** The BUILD workspace
-  materializes the approved plan doc at its `doc_path` (part of provisioning, so it is in the
-  diff by construction); the code PR therefore carries **code + plan as one reviewable
-  unit**, and the plan lands on the default branch only when the work does. If review on the
-  code PR forces divergence from the approved plan, the agent amends the doc **on the code
-  branch** — what reaches main is the **as-built** plan, not the as-hoped one.
-* **An abandoned plan stays on the plans branch.** Never implemented, or its code PR closed
-  unmerged — nothing reaches main. The plans branch is the append-only ledger of everything
-  considered; the default branch keeps the invariant: **a plan doc on main means the plan
-  shipped**.
+* **Doc PRs open as DRAFTS against the default branch.** The draft state is GitHub's native
+  "not ready to merge" marker, so an unimplemented plan cannot be merged by muscle memory;
+  review UX, CODEOWNERS, and branch protection apply unchanged.
+* **The approving review is the approval — and the approver's write access is the
+  load-bearing check.** On a public repo GitHub lets ANYONE submit an approving review (it
+  only gates *merging* on write access). Since the review is what triggers a sandboxed build,
+  Marathon verifies the approver holds **write (or admin) permission** on the repo (the
+  collaborator-permission endpoint) before spawning the implementation task; anything less is
+  silently ignored. The approval stays native, deliberate, and sha-pinned (§7.9) — the
+  webhook carries the PR head SHA, which becomes `plan_ref.approved_sha`.
+* **The BUILD agent implements on the SAME branch.** The workspace is the doc branch at the
+  approved tip; the agent commits its work there, pushes back through the brokered `git.exec`
+  (fast-forward — force pushes are unrepresentable through the broker), and marks the PR
+  **ready for review** (`gh pr ready`, an allowlisted `github.exec` family). It never opens a
+  second PR; `delivery.report_pr` reports the same PR.
+* **Merging the combined PR ships design + code atomically.** The default branch keeps the
+  invariant: **a plan doc on main means the plan shipped, with its implementation.** If
+  review forces divergence from the approved plan, the agent amends the doc on the branch —
+  what merges is the **as-built** plan, not the as-hoped one.
+* **An abandoned plan is a closed draft PR.** Never approved, or closed unmerged — nothing
+  reaches main. Closed PRs are the ledger of everything considered.
 
-Alternatives considered and rejected: merge-to-main + cleanup (transient litter, churn
-commits); approve-without-merge via PR review (weaker ritual, review-dismissal state
-machinery, no canonical merged plan); a separate plans repo (cross-repo credentials, fights
-the K6 thirty-minute setup); ADR-style append-only log on main (exactly the litter being
-declined). Recorded in `open-questions.md` (OQ-9).
+Alternatives considered and rejected: the plans branch (decision 2026-07-04 — a second
+long-lived branch to provision, protect, and explain; a two-PR lifecycle where the plan
+reaches main only via a *different* PR than the one that was approved); merge-to-main +
+cleanup (transient litter, churn commits); a separate plans repo (cross-repo credentials,
+fights the K6 thirty-minute setup). The earlier objection to approve-via-review ("weaker
+ritual, no canonical merged plan") is answered by the combined PR itself: the ritual is the
+same native review flow every code change gets, the canonical plan is the doc at
+`approved_sha` (and, once shipped, on main), and the write-access gate keeps the signal as
+strong as a merge. Recorded in `open-questions.md` (OQ-9).
 
 ## 29.2 Workspace lifecycle
 
 1. **Provision** the sandbox (pinned toolchain image digest — K1 prerequisite).
-2. **Materialize** the workspace **host-side**: clone the repo at `base_sha` (detached),
-   **write the approved plan doc at its `doc_path`** (fetched at `plan_ref.merge_commit_sha`
-   from the plans branch, §29.1a — so the plan is in the working tree and thus in the diff),
+2. **Materialize** the workspace **host-side**: clone the repo and check out `base_sha`
+   (detached) — the approved doc-PR head, so the plan doc is **already in the working tree**
+   at its `doc_path` (§29.1a; a defensive fallback re-writes it, a no-op when present) —
    then **strip remotes and credential helpers** before mounting at `/workspace`. The clone
    is a governed read (recorded in the source ledger, §7.8); the sandbox never fetches — its
    only exits are the broker socket and, for Claude Code, the model proxy on the
@@ -124,7 +133,9 @@ One governed tool ends the BUILD stage:
 github.submit_code_changes(
   title,           # PR title
   summary,         # what was done and why (PR body)
-  plan_ref,        # echoed { repo, doc_path, merge_commit_sha } — gateway validates it matches the task
+  plan_ref,        # echoed { repo, doc_path, merge_commit_sha } — the argument keeps its
+                   #   legacy name; it carries plan_ref.approved_sha (§29.1a) and the
+                   #   gateway validates it matches the task
   verification,    # [{ command, exit_code, summary }] as run in-session
   open_questions?, # surfaced in the PR body
   draft?           # may request draft; FORCED true when verification isn't green
@@ -164,7 +175,7 @@ agent can correct course in-session):
   namespace (§7.8); deterministic per task, so retries and revisions converge on one branch.
 * **Commit:** bot-authored, single squashed commit; `Marathon-Task:` trailer links git
   history back to the task timeline (§16.3).
-* **PR body template:** summary → **plan link** (`doc_path` @ `merge_commit_sha`) →
+* **PR body template:** summary → **plan link** (`doc_path` @ `approved_sha`) →
   verification results (commands, pass/fail) → open questions → Marathon task link
   (inspectability) → provenance footer. The PR *is* the review surface; it must carry
   everything a reviewer needs without opening Marathon.

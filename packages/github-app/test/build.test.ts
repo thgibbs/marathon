@@ -16,7 +16,6 @@ function makeSpec(overrides: Partial<AgentSpec> = {}): AgentSpec {
       { tool: "delivery.report_pr" },
     ],
     sandbox: { network: "bridge" },
-    plans: { branch: "marathon-plans" },
     chat: { groundOnRepo: false, groundRef: "pinned", trustedDeployment: false },
     models: { default: "openai:gpt-4o-mini" },
     budget: { limitUsd: 5 },
@@ -127,7 +126,7 @@ describe("isBuildTask / makeLoopStepRunner", () => {
     checkpoint: null,
     sourceRef: {
       kind: "implementation",
-      planRef: { repo: "acme/service", docPath: "docs/plan.md", mergeCommitSha: "abc" },
+      planRef: { repo: "acme/service", docPath: "docs/plan.md", approvedSha: "abc" },
       baseSha: "abc",
     },
   } as unknown as Task;

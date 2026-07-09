@@ -279,11 +279,17 @@ export type NewProposedEffect = {
   idempotencyKey: string;
 };
 
-/** The merged plan an implementation task builds from (design §29.1). */
+/**
+ * The approved plan an implementation task builds from (design §29.1, §29.1a).
+ * `approvedSha` pins the doc-PR head at the moment of the approving review —
+ * the combined-PR flow builds on (and pushes back to) that same branch, so the
+ * plan and its implementation ship in one PR. (Renamed from `mergeCommitSha`:
+ * approval is now an approving review that pins the head, not a merge commit.)
+ */
 export interface PlanRef {
   repo: string;
   docPath: string;
-  mergeCommitSha: string;
+  approvedSha: string;
 }
 
 /** One verify command as run in-session (design §29.3). */

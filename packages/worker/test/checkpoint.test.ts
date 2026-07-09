@@ -35,7 +35,7 @@ describe("checkpoint codec", () => {
       baseSha: "abc123",
       workspaceDiffRef: "diffs/task-1-turn-1.patch",
       verification: [{ command: "pnpm test", exitCode: 0, summary: "193 passed" }],
-      planRef: { repo: "acme/app", docPath: "design/plan.md", mergeCommitSha: "abc123" },
+      planRef: { repo: "acme/app", docPath: "design/plan.md", approvedSha: "abc123" },
       completedEffects: ["task-1:github.submit_code_changes:xyz"],
     };
     expect(parseCheckpoint(cp)).toEqual(cp);

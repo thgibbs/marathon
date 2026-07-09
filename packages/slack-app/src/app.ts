@@ -13,7 +13,7 @@ import {
   warnUnknownMarathonEnv,
 } from "@marathon/config";
 import { assertSubscriptionAckIfNeeded, makeAgentRuntime, resolveSandboxNetwork, withChatWorkspace, workspaceSandboxFromSpec } from "@marathon/agent";
-import { ensureBranch, githubAuthFromEnv, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools, makeUserRepoAccessChecker } from "@marathon/connector-github";
+import { githubAuthFromEnv, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools, makeUserRepoAccessChecker } from "@marathon/connector-github";
 import { CodeWorkspace } from "@marathon/code-handoff";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
@@ -110,13 +110,10 @@ export async function startSlackApp(): Promise<void> {
   const modelRef = resolveModelRef(flagship.models ?? DEFAULT_MODEL_POLICY);
   const memory = new PgVectorMemoryStore(cfg.databaseUrl, new OpenAIEmbedder(secrets));
 
-  // §29.1a: doc PRs branch FROM the plans branch — this app can draft plans
-  // without the GitHub app running, so it must ensure the branch exists too
-  // (operators should branch-protect it like main; see docs/quickstart.md §3).
+  // §29.1a (combined-PR flow): doc PRs are DRAFTS against the default branch —
+  // no dedicated plans branch to provision. The token is still needed below
+  // for the repo-visibility check.
   const ghToken = await secrets.get("secret/github");
-  if (flagship.repo && ghToken) {
-    await ensureBranch(new HttpGithubClient(ghToken), flagship.repo, flagship.plans.branch, "main");
-  }
 
   // Governed tools, exposed to the agent through the Tool Gateway (policy +
   // credential injection + source ledger + audit + redaction). GitHub reads
@@ -130,15 +127,15 @@ export async function startSlackApp(): Promise<void> {
   // the gateway consults for egress decisions.
   const sourceLedger = new InMemorySourceLedger();
   const toolGateway = new ToolGateway({
-    // Doc PRs target the configured plans branch (§29.1a) — authoritative,
-    // so the model cannot retarget them at the default branch. The recorder
-    // persists the DocumentArtifact + doc-PR delivery target the merge
-    // webhook needs — without it, a plan drafted from Slack would merge and
-    // be silently ignored (no artifact → no implementation task).
+    // Doc PRs are DRAFTS against the default branch (§29.1a) — authoritative,
+    // so the model cannot retarget them. The recorder persists the
+    // DocumentArtifact + doc-PR delivery target the approval handler needs —
+    // without it, an approving review on a plan drafted from Slack would find
+    // no artifact (no owning task → no implementation task).
     registry: new ToolRegistry([
       ...makeGithubReadTools(clientFactory),
       ...makeDocumentTools(clientFactory, {
-        docBase: flagship.plans.branch,
+        docBase: "main",
         onDocumentPr: makeDocumentPrRecorder(db),
       }),
     ]),

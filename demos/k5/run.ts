@@ -135,7 +135,7 @@ async function main(): Promise<void> {
       tenantId: boot.tenantId,
       taskId: buildTask.id,
       repo: "acme/service",
-      planRef: { repo: "acme/service", docPath: "docs/plan.md", mergeCommitSha: "abc" },
+      planRef: { repo: "acme/service", docPath: "docs/plan.md", approvedSha: "abc" },
       baseSha: "abc",
       branch: "marathon/impl-1",
     });

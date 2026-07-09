@@ -1,5 +1,5 @@
 import type { AgentRuntime } from "@marathon/agent";
-import { agentSubscribesTo, DEFAULT_PLANS_BRANCH, type AgentModelPolicy, type KernelEvent } from "@marathon/config";
+import { agentSubscribesTo, type AgentModelPolicy, type KernelEvent } from "@marathon/config";
 import { getRepoAccess, type GithubClient, type GithubDelivery } from "@marathon/connector-github";
 import {
   emptyCheckpoint,
@@ -74,12 +74,9 @@ export interface GithubAppDeps {
    */
   on?: KernelEvent[];
   /**
-   * The plans branch (§29.1a): doc PRs target it, and only a doc PR merged
-   * INTO it is an approval. Default `marathon-plans`. Setting it to the
-   * default branch reproduces the pre-§29.1a merge-into-main behavior.
+   * The default branch doc PRs target and the combined PR merges into (§29.1a);
+   * default "main". Only used as a fallback when pinning the approved head SHA.
    */
-  plansBranch?: string;
-  /** The branch implementations build on and code PRs target; default "main". */
   defaultBranch?: string;
 }
 
@@ -220,8 +217,8 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
   }
 
   // Draft a new design-doc PR. Tool-driven (§2b #16): the agent opens the PR
-  // by calling `document.create` itself (the gateway's configured plans-branch
-  // base applies, §29.1a, and its onDocumentPr recorder persists the
+  // by calling `document.create` itself (the gateway opens a DRAFT PR against
+  // the default branch, §29.1a, and its onDocumentPr recorder persists the
   // DocumentArtifact + doc-PR delivery target). The handler suggests the path;
   // it never commits the model's turn text.
   const path = `${deps.docBasePath ?? "docs"}/${docPathSlug(invocation.text)}.md`;
@@ -266,7 +263,7 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
   await deps.delivery.deliverResult(
     { repo, number },
     {
-      summary: withFooter(turn.text, `Drafted design doc: PR #${prNumber} — comment to revise, merge to execute.`),
+      summary: withFooter(turn.text, `Drafted design doc: PR #${prNumber} (draft) — comment to revise, submit an approving review to execute.`),
       costUsd: await deps.db.sumModelCostUsd(task.id),
     },
   );
@@ -322,7 +319,7 @@ export async function handleCodePrRevision(
       planRef: {
         repo: change.planRef.repo,
         docPath: change.planRef.docPath,
-        mergeCommitSha: change.planRef.mergeCommitSha,
+        approvedSha: change.planRef.approvedSha,
       },
       baseSha: tipSha,
     },
@@ -439,47 +436,68 @@ export async function handleGithubReview(
 }
 
 /**
- * A design-doc PR merged INTO THE PLANS BRANCH is the approval (§0.1 stage 4,
- * §29.1a): complete the doc task and spawn a *new* implementation task
- * (§29.1), chained to it — `plan_ref` pinned to the plans-branch merge commit,
- * `base_sha` pinned to the default branch's head at approval (they decouple),
- * delivery targets inherited, idempotent per merged plan version.
+ * An APPROVING review on a Marathon-owned draft doc PR is the approval (§0.1
+ * stage 4, §29.1a — combined-PR flow): pin the doc-PR head SHA and spawn the
+ * implementation task on the SAME branch, chained to the doc task. The BUILD
+ * agent pushes its code onto the doc branch (updating the PR in place) and
+ * marks it ready; the eventual merge ships design + code atomically.
+ *
+ * Authorization is LOAD-BEARING here (§7.17): on a PUBLIC repo GitHub lets
+ * ANYONE submit an approving review (it only gates *merging* on write access),
+ * so the approving review is the approval signal and this write-access check is
+ * the authorization boundary — a read-only or drive-by approver must NOT be
+ * able to trigger a build. Failure is SILENT (like `handleGithubReview`): the
+ * reviewer did not summon the bot. Returns true when the approval was consumed
+ * (including silently), false when the PR is not a Marathon-owned doc PR.
  */
-export async function handleGithubMerge(
+export async function handleGithubApproval(
   deps: GithubAppDeps,
-  repo: string,
-  prNumber: number,
-  mergeCommitSha?: string,
-  baseRef?: string,
+  approval: { repo: string; number: number; headSha?: string; author: string; eventId: string },
 ): Promise<boolean> {
-  const plansBranch = deps.plansBranch ?? DEFAULT_PLANS_BRANCH;
-  // §29.1a: a doc PR merged anywhere else (e.g. the default branch) is NOT an
-  // approval. Real webhooks always carry base.ref; an absent baseRef means a
-  // legacy caller — kept as the pre-§29.1a behavior (approve on artifact).
-  if (baseRef !== undefined && baseRef !== plansBranch) return false;
+  const { repo, number: prNumber } = approval;
 
   const artifact = await deps.db.findDocumentArtifactByPr(deps.tenantId, repo, prNumber);
-  if (!artifact?.owningTaskId) return false;
-  const loc = artifact.location as { path?: string };
-  const docTask = await deps.db.getTask(artifact.owningTaskId);
-  if (!docTask || !loc.path || !mergeCommitSha) return false;
+  const loc = (artifact?.location ?? {}) as { path?: string; branch?: string };
+  // Marathon-owned doc PR only: a produced artifact with a live doc branch and
+  // an owning doc task. Anything else is other people's approval traffic.
+  if (!artifact?.owningTaskId || !loc.path || !loc.branch) return false;
 
-  const planRef: PlanRef = { repo, docPath: loc.path, mergeCommitSha };
-  // §29.1a: the work builds on the DEFAULT branch, pinned once at approval;
-  // the plan itself is pinned separately by plan_ref (plans branch). When the
-  // plans branch IS the default branch (compat mode) or the caller is legacy,
-  // the two coincide at the merge commit — the pre-§29.1a behavior.
-  const defaultBranch = deps.defaultBranch ?? "main";
-  const baseSha =
-    baseRef === undefined || plansBranch === defaultBranch
-      ? mergeCommitSha
-      : (await deps.client.getRef(repo, `heads/${defaultBranch}`)).sha;
+  // The implementation already landed on this PR (a CodeChange points at it):
+  // an approving review now is ordinary pre-merge code approval, not a build
+  // trigger. Consume it silently — no new task.
+  const existingChange = await deps.db.findCodeChangeByPr(deps.tenantId, repo, prNumber);
+  if (existingChange?.prNumber) return true;
+
+  // Authorization boundary (see the doc comment): the approver must have
+  // WRITE-level access to the repo. `getRepoAccess` surfaces the collaborator
+  // permission level (admin|write|read|none, via the collaborator-permission
+  // endpoint), so read visibility is NOT enough to trigger a build. Silent on
+  // failure — an unauthorized drive-by approval gets no reply.
+  const access = await getRepoAccess(deps.client, repo, approval.author);
+  if (!access.agentOk) return true;
+  if (access.userPermission !== "write" && access.userPermission !== "admin") return true;
+
+  // Absorb while an implementation is already queued/running for this PR (the
+  // GitHub mirror of Slack's "chatter while running", like the revision path):
+  // even a re-approval at a NEW head SHA becomes a fresh task only after the
+  // in-flight build finishes. Same-SHA webhook redelivery converges via the
+  // idempotency key below regardless.
+  if (await deps.db.findActiveImplementationTask(deps.tenantId, repo, prNumber)) return true;
+
+  const docTask = await deps.db.getTask(artifact.owningTaskId);
+  if (!docTask) return false;
+
+  // Pin the approved head SHA: prefer the webhook's, fall back to the branch
+  // ref (the doc branch, which is what the PR head tracks).
+  const approvedSha =
+    approval.headSha ?? (await deps.client.getRef(repo, `heads/${loc.branch}`)).sha;
+
+  const planRef: PlanRef = { repo, docPath: loc.path, approvedSha };
   const docPrTarget: DeliveryTarget = { surfaceType: "github", ref: { repo, number: prNumber, kind: "pr" } };
   const deliveryTargets = mergeDeliveryTargets(docTask.deliveryTargets, docPrTarget);
 
-  // Track 10: the artifact keeps the full plan pointer — path/branch/PR were
-  // recorded at draft time; the merge commit completes it.
-  await deps.db.mergeDocumentArtifactLocation(artifact.id, { mergeCommitSha });
+  // Record the approved SHA on the artifact alongside its path/branch/PR.
+  await deps.db.mergeDocumentArtifactLocation(artifact.id, { approvedSha });
 
   const { task: implTask, deduped } = await deps.orchestrator.submit({
     tenantId: deps.tenantId,
@@ -488,23 +506,26 @@ export async function handleGithubMerge(
     invokingUserId: docTask.invokingUserId ?? undefined,
     sourceTaskId: docTask.id,
     sourceType: "github",
-    // plan_ref + base_sha ride in the task input (§29.1): the BUILD stage pins
-    // its workspace to the plan's merge commit and validates the handoff against it.
+    // plan_ref + base_sha ride in the task input (§29.1a): the BUILD stage pins
+    // its workspace to the approved doc-branch tip (plan already in the tree)
+    // and pushes back onto the same branch.
     sourceRef: {
       kind: "implementation",
       repo,
       docPrNumber: prNumber,
-      planRef: { repo, docPath: planRef.docPath, mergeCommitSha },
-      baseSha,
+      branch: loc.branch,
+      planRef: { repo, docPath: planRef.docPath, approvedSha },
+      baseSha: approvedSha,
     },
     deliveryTargets,
-    // Track 10: the brief carries the merged plan, pinned base, suggested
-    // branch, delivery targets, and the delivery.report_pr contract.
-    inputText: renderImplementationBrief({ planRef, deliveryTargets, docPrNumber: prNumber }),
-    idempotencyKey: implementationTaskKey(repo, loc.path, mergeCommitSha),
+    inputText: renderImplementationBrief({ planRef, deliveryTargets, docPrNumber: prNumber, branch: loc.branch }),
+    // One implementation per approved plan version (the pinned head SHA):
+    // webhook redelivery converges; a re-approval after new commits is a new
+    // SHA and a new task.
+    idempotencyKey: implementationTaskKey(repo, loc.path, approvedSha),
   });
 
-  // The doc task's job ends at the merge; the chain continues in implTask.
+  // The doc task's job ends at approval; the chain continues in implTask.
   if (docTask.status === "waiting_for_approval") {
     await deps.db.transitionTask(docTask.id, "running");
     await deps.db.transitionTask(docTask.id, "completed");
@@ -514,9 +535,46 @@ export async function handleGithubMerge(
     await fanoutOf(deps).postProgress(
       implTask.id,
       deliveryTargets,
-      `Plan merged (\`${planRef.docPath}\` @ \`${mergeCommitSha.slice(0, 7)}\`) — implementation task queued.`,
+      `Plan approved by @${approval.author} (\`${planRef.docPath}\` @ \`${approvedSha.slice(0, 7)}\`) — ` +
+        `implementation queued; this PR will update in place.`,
       "implementation_queued",
     );
+  }
+  return true;
+}
+
+/**
+ * A merged doc PR is the SHIP, not the approval (§0.1 stage 5, §29.1a —
+ * combined-PR flow): design + code merge together, and approval already
+ * happened via the approving review. This handler only does cheap, idempotent
+ * bookkeeping — record the merge commit on the artifact and complete any
+ * still-open doc task in the chain. It NEVER spawns implementation.
+ *
+ * A doc PR merged while still `waiting_for_approval` (someone merged an
+ * unapproved/unimplemented draft) is treated as "shipped without a build":
+ * complete the doc task, but do NOT spawn implementation — approval must be
+ * explicit (an approving review), never implied by a merge.
+ */
+export async function handleGithubMerge(
+  deps: GithubAppDeps,
+  repo: string,
+  prNumber: number,
+  mergeCommitSha?: string,
+): Promise<boolean> {
+  const artifact = await deps.db.findDocumentArtifactByPr(deps.tenantId, repo, prNumber);
+  if (!artifact?.owningTaskId) return false;
+  const docTask = await deps.db.getTask(artifact.owningTaskId);
+  if (!docTask) return false;
+
+  if (mergeCommitSha) {
+    await deps.db.mergeDocumentArtifactLocation(artifact.id, { mergeCommitSha });
+  }
+
+  // Complete a still-open doc task: the chain ends at the merge (implementation,
+  // if any, ran on its own task via the approving review).
+  if (docTask.status === "waiting_for_approval") {
+    await deps.db.transitionTask(docTask.id, "running");
+    await deps.db.transitionTask(docTask.id, "completed");
   }
   return true;
 }
@@ -564,6 +622,7 @@ export async function dispatchGithubEvent(
   const action = classifyGithubEvent(eventType, payload, { knownAgents: deps.agents.map((a) => a.name) });
   if (action.kind === "mention") await handleGithubMention(deps, action.invocation);
   else if (action.kind === "review") await handleGithubReview(deps, action);
-  else if (action.kind === "merge") await handleGithubMerge(deps, action.repo, action.number, action.mergeCommitSha, action.baseRef);
+  else if (action.kind === "approval") await handleGithubApproval(deps, action);
+  else if (action.kind === "merge") await handleGithubMerge(deps, action.repo, action.number, action.mergeCommitSha);
   else if (action.kind === "push") await handleGithubPush(deps, action.repo, action.after, action.paths);
 }

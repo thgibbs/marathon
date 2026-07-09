@@ -209,7 +209,7 @@ async function main(): Promise<void> {
       inputText: "implement the plan",
     });
     const branch = "marathon/impl-rate-limits";
-    const planRef = { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: "plan-sha-1" };
+    const planRef = { repo: REPO, docPath: "docs/plan.md", approvedSha: "plan-sha-1" };
     await db.createCodeChange({ tenantId: ghBoot.tenantId, taskId: implTask.id, repo: REPO, planRef, baseSha: "plan-sha-1", branch });
     await db.recordCodeChangeReport(implTask.id, {
       prNumber: 55,

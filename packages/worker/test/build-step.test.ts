@@ -45,7 +45,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     sourceType: "github",
     sourceRef: {
       kind: "implementation",
-      planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: baseSha },
+      planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha: baseSha },
       baseSha,
     },
     deliveryTargets: null,
@@ -135,7 +135,7 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
     const revisionTask = makeTask({
       sourceRef: {
         kind: "code_revision",
-        planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: baseSha },
+        planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha: baseSha },
         baseSha,
       },
     });
@@ -230,7 +230,7 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
       source: origin,
       modelRef: "fake:scripted",
     });
-    await run({ taskId: task.id, checkpoint: { ...emptyCheckpoint(), turnIndex: 0, baseSha, planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: baseSha } } });
+    await run({ taskId: task.id, checkpoint: { ...emptyCheckpoint(), turnIndex: 0, baseSha, planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha: baseSha } } });
     expect(input).toContain("restored to your last checkpoint (turn 0)");
     expect(input).toContain("Implement the approved plan.");
   });
@@ -356,7 +356,7 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
     const cpBinding = resolveBuildBinding(task, {
       ...emptyCheckpoint(),
       baseSha: "other-sha",
-      planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: "other-sha" },
+      planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha: "other-sha" },
     });
     expect(cpBinding?.baseSha).toBe("other-sha");
 
@@ -368,7 +368,7 @@ describe("makeBuildStepRunner (BUILD-stage workspace lifecycle + per-turn checkp
     expect(
       jobKindForSourceRef({
         kind: "code_revision",
-        planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: "sha" },
+        planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha: "sha" },
         baseSha: "tip",
       }),
     ).toBe(BUILD_JOB_KIND);

@@ -31,7 +31,7 @@ export function docBranchForTask(taskId: string, path: string): string {
  */
 async function upsertDocPr(
   client: GithubClient,
-  args: { repo: string; path: string; branch: string; base: string; title: string; body: string; commitMessage: string; prBody: string; fileSha?: string },
+  args: { repo: string; path: string; branch: string; base: string; title: string; body: string; commitMessage: string; prBody: string; fileSha?: string; draft?: boolean },
 ): Promise<{ number: number; url: string; converged: boolean }> {
   const { repo, path, branch, base } = args;
   // Retry convergence first: the deterministic branch already has an open PR →
@@ -66,7 +66,10 @@ async function upsertDocPr(
     await client.updateRef(repo, branch, sha, true);
   }
   await client.putFile(repo, path, args.body, branch, args.commitMessage, args.fileSha);
-  const pr = await client.createPullRequest(repo, args.title, branch, base, args.prBody);
+  // §29.1a (combined-PR flow): doc PRs open as DRAFTs against the default
+  // branch. The approving review (not the merge) is the approval; the BUILD
+  // agent then pushes its code onto this same branch and marks the PR ready.
+  const pr = await client.createPullRequest(repo, args.title, branch, base, args.prBody, { draft: args.draft ?? false });
   return { number: pr.number, url: pr.url, converged: false };
 }
 
@@ -85,10 +88,12 @@ export interface DocumentPrEvent {
 
 export interface DocumentToolsOptions {
   /**
-   * The configured base branch for document PRs — the plans branch (§29.1a).
-   * When set it is AUTHORITATIVE (enforcement by construction, §7.8): a
-   * model-supplied `base` cannot retarget doc PRs at another branch. When
-   * unset, `input.base` is honored (default "main") — the pre-§29.1a behavior.
+   * The configured base branch for document PRs — the default branch (§29.1a,
+   * combined-PR flow: doc PRs are drafts against the default branch, approved
+   * by an approving review and shipped by merge). When set it is AUTHORITATIVE
+   * (enforcement by construction, §7.8): a model-supplied `base` cannot
+   * retarget doc PRs at another branch. When unset, `input.base` is honored
+   * (default "main").
    */
   docBase?: string;
   /**
@@ -105,9 +110,11 @@ export interface DocumentToolsOptions {
 /**
  * Document tools backed by GitHub markdown (design.md §7.17, §14.6). Producing
  * or revising a document = working a PR, so create/update/revise are
- * **native review** (§7.8): the call runs, and the human's merge is the
- * approval. Updating re-validates the file's git SHA (stale-SHA rejection).
- * Doc PRs target the plans branch (§29.1a) when one is configured.
+ * **native review** (§7.8). In the combined-PR flow (§29.1a) `document.create`
+ * (and `document.update` when it opens a PR) opens a DRAFT PR against the
+ * default branch; the human's APPROVING REVIEW is the approval (it spawns the
+ * implementation), and the eventual merge ships design + code together.
+ * Updating re-validates the file's git SHA (stale-SHA rejection).
  */
 export function makeDocumentTools(getClient: GithubClientFactory, opts: DocumentToolsOptions = {}): Tool[] {
   const docBase = (input: Record<string, unknown>): string =>
@@ -165,7 +172,10 @@ export function makeDocumentTools(getClient: GithubClientFactory, opts: Document
         title,
         body,
         commitMessage: `docs: add ${path}`,
-        prBody: "Drafted by Marathon — review and merge to execute.",
+        prBody: "Drafted by Marathon — review and submit an approving review to execute.",
+        // §29.1a: a design-doc PR opens as a draft; the approving review starts
+        // the build, which marks it ready for review before merge.
+        draft: true,
       });
       await opts.onDocumentPr?.({
         taskId: ctx.taskId,
@@ -211,8 +221,12 @@ export function makeDocumentTools(getClient: GithubClientFactory, opts: Document
         title: `Update ${path}`,
         body: String(input.content),
         commitMessage: `docs: update ${path}`,
-        prBody: "Updated by Marathon.",
+        prBody: "Updated by Marathon — review and submit an approving review to execute.",
         fileSha: String(input.sha),
+        // §29.1a: if this update opens a NEW doc PR, it too is a draft awaiting
+        // an approving review (a converged retry leaves the existing PR's state
+        // untouched).
+        draft: true,
       });
       await opts.onDocumentPr?.({
         taskId: ctx.taskId,

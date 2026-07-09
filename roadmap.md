@@ -110,8 +110,9 @@ approval, the document-driven workflow, basic feedback). M7–M9 round it out.
 >
 > **⚠ Kernel focus (2026-07-02 — supersedes the ordering above).** Marathon has no customers
 > yet; the priority is the **core kernel loop** (design **§0** / `design/00-core-kernel.md`):
-> Slack ask → design-doc PR → iterate via comments/questions → merge-as-approval → sandboxed
-> code implementation → code PR, delivered back to the thread and the doc. **Build the kernel
+> Slack ask → draft design-doc PR → iterate via comments/questions → approving review =
+> approval (§29.1a) → sandboxed code implementation on the SAME PR → ready for review,
+> delivered back to the thread and the PR. **Build the kernel
 > milestones K1–K7 (§2c below; gaps identified in design §0.3) before anything else** —
 > chiefly K1 (code-writing path end-to-end: clone → sandboxed edit/test → governed branch
 > push → PR), K2 (loop task chain + `delivery_targets`), and K4 (durable resume, §2b #4). **Deferred
@@ -966,9 +967,10 @@ fold into M7–M9 sequencing as capacity allows.
 
 ## 2c. Kernel milestones (K1–K7)
 
-> The build order for the **core kernel loop** (design §0): Slack ask → design-doc PR →
-> iterate → merge-as-approval → sandboxed code implementation → code PR, delivered back to
-> the thread and the doc. These are **the only critical path** until the §0.6 bar is met
+> The build order for the **core kernel loop** (design §0): Slack ask → draft design-doc PR →
+> iterate → approving review = approval (§29.1a) → sandboxed code implementation on the SAME
+> PR → ready for review, delivered back to the thread and the PR. These are **the only
+> critical path** until the §0.6 bar is met
 > (**Marathon codes Marathon**); M10, M11, §2b #9/#10, and the M9 remainder queue behind it.
 > Same definition of done as the M-series: unit tests + an automated demo in CI, plus a live
 > smoke where a real service matters. K1–K4 are hand-built (they *are* the loop's machinery);
@@ -992,17 +994,16 @@ Human prerequisites:
   `FakeSandbox` with the image path covered by the live smoke).
 
 Build (per design §29):
-- **Trigger + input (§29.1/§29.1a):** the doc PR merges into the **plans branch** (the
-  approval; the default branch is untouched) → implementation task with `plan_ref`
-  **pinned to that merge commit**, `base_sha` **pinned to the default-branch head at
-  approval** (the two are decoupled — different branches), and the
-  `(repo, doc_path, merge_commit_sha, "implement")` idempotency key.
-  *(2026-07-04 decision, §29.1a / Track 18.)*
-- **Workspace lifecycle (§29.2):** host-side clone at `base_sha`, **the approved plan doc
-  materialized at its doc path** (fetched at `plan_ref.merge_commit_sha`, so it is in the
-  tree — no side-channel plan delivery — and rides the diff into the code PR),
-  **remotes + credential helpers stripped** before mounting; teardown always destroys
-  everything.
+- **Trigger + input (§29.1/§29.1a):** an **approving review** on the draft doc PR (from a
+  write-access approver) is the approval (the default branch is untouched) → implementation
+  task with `plan_ref` **pinned to the doc-PR head SHA at the review** (`approved_sha`,
+  which is also `base_sha` — the work builds on the doc branch itself), and the
+  `(repo, doc_path, approved_sha, "implement")` idempotency key.
+  *(2026-07-08 decision, §29.1a — supersedes the 2026-07-04 plans-branch trigger.)*
+- **Workspace lifecycle (§29.2):** host-side clone checked out at `base_sha` (=
+  `plan_ref.approved_sha`, the doc-PR head — so **the approved plan doc is already in the
+  tree** at its doc path; no side-channel plan delivery), **remotes + credential helpers
+  stripped** before mounting; teardown always destroys everything.
 - **`github.submit_code_changes` (§29.4):** the single governed handoff tool — the model
   passes title/summary/plan-ref/verification only; **the gateway reads the diff from the
   workspace** (`git diff base_sha..worktree`, host-side), then: size caps, protected-path

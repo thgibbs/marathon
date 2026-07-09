@@ -45,6 +45,8 @@ describe("github.exec (Track 6 broker)", () => {
       expect(invalid(["repo", "view", "acme/service"])).toBeNull();
       expect(invalid(["pr", "create", "--repo", "acme/service", "--title", "t", "--body", "b"])).toBeNull();
       expect(invalid(["pr", "edit", "2", "--repo", "acme/service", "--title", "t"])).toBeNull();
+      // §29.1a: the BUILD agent marks the draft doc PR ready for review.
+      expect(invalid(["pr", "ready", "2", "--repo", "acme/service"])).toBeNull();
     });
 
     it("tolerates a leading 'gh'", () => {

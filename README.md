@@ -4,24 +4,25 @@ Open-source platform for **durable AI agents that work where teams already work*
 Slack and GitHub-backed markdown documents. One loop is the product (design §0.1):
 
 ```text
-Slack ask -> design-doc PR -> iterate on review -> merge-as-approval ->
-sandboxed code work -> verified code PR -> links back to Slack and the doc PR
+Slack ask -> draft design-doc PR -> iterate on review -> approving review = approval ->
+sandboxed code work on the SAME PR -> verified, ready for review -> merge ships design + code
 ```
 
-You `@marathon` an ask in Slack. The agent drafts a **design document as a markdown
-PR** against a dedicated **plans branch**; you review and iterate in the PR; **merging
-it is the approval** — and main stays untouched. Marathon then implements the merged
-plan in a **credential-free sandbox** (normal git, internet for installs, the repo's
-own verification), pushes through a **credentialed broker**, and opens a code PR
-**carrying code + plan together** — a plan doc reaches main only when its work merges
-(§29.1a: abandoned plans just stay on the plans branch), and the links land back in the
-thread and the doc PR. Tasks are durable: a clarifying question parks the task until
-you reply; a killed worker resumes mid-BUILD without repeating work.
+You `@marathon` an ask in Slack. The agent drafts a **design document as a draft
+markdown PR** against the default branch; you review and iterate in the PR; **an
+approving review is the approval** — and main stays untouched. Marathon then implements
+the approved plan in a **credential-free sandbox** (normal git, internet for installs,
+the repo's own verification), pushes through a **credentialed broker** onto the **same
+branch**, and marks the PR **ready for review** — one combined PR **carrying code +
+plan together**, so a plan doc reaches main only when its work merges (§29.1a:
+abandoned plans are just closed draft PRs), and the links land back in the thread and
+the PR. Tasks are durable: a clarifying question parks the task until you reply; a
+killed worker resumes mid-BUILD without repeating work.
 
 > **Status:** the kernel loop is functionally complete (roadmap K1–K5, migration
 > tracks 1–18): durable spine, both surfaces, brokered `gh`/`git` delivery, per-turn
 > checkpoint/resume, durable clarifying questions, YAML agent config, spec-driven
-> models + hard per-task budgets, `@agent status` + cost footers, the plans-branch
+> models + hard per-task budgets, `@agent status` + cost footers, the combined-PR
 > approval flow, and the `make demo-kernel` regression umbrella. Remaining: the K6
 > timed stranger test and the K7 Claude Code harness (non-blocking); the "first blood"
 > ratchet — a change to Marathon merged through its own loop — is the live bar (§0.6).
@@ -69,14 +70,12 @@ name: forge
 harness: pi                   # claude-code lands with K7
 repo: your-org/your-repo      # scopes every GitHub grant by construction
 tools:
-  - document.create           # design-doc PRs (a human merging = the approval)
+  - document.create           # draft design-doc PRs (an approving review = the approval)
   - tool: github.exec         # brokered gh — allowlisted command families
-    families: ["pr view", "pr diff", "pr create", "pr edit"]
+    families: ["pr view", "pr diff", "pr create", "pr edit", "pr ready"]
   - tool: git.exec            # brokered network git on the BUILD workspace
     families: ["push", "fetch"]
   - delivery.report_pr        # the narrow final step
-plans: { branch: marathon-plans } # where doc PRs merge (the approval) — outside marathon/*,
-                              # branch-protected; plans reach main only WITH their code PR
 sandbox: { network: bridge }  # internet for installs; NEVER any credentials
                               # ("none" from YAML, env, or code wins — strictness composes)
 models: { default: openai:gpt-4o-mini }   # roles route models, e.g. build: openai:gpt-4o

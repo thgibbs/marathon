@@ -9,7 +9,7 @@ import { makeDeliveryReportTool, parsePrUrl } from "../src/report-tools";
 
 const REPO = "acme/service";
 const TASK = "task-1";
-const PLAN = { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: "abc123" };
+const PLAN = { repo: REPO, docPath: "docs/plan.md", approvedSha: "abc123" };
 const secrets: SecretStore = { get: async () => "tok" };
 const ctx: ToolContext = { taskId: TASK, tenantId: "tenant-1", secrets };
 
@@ -28,7 +28,7 @@ function setup(opts: { targets?: DeliveryTarget[]; bind?: boolean; getCostUsd?: 
   const registry = new CodeTaskRegistry();
   if (opts.bind !== false) {
     // The tool never touches the workspace — a stub satisfies the binding.
-    registry.set(TASK, { workspace: {} as never as CodeWorkspace, planRef: PLAN, repo: REPO, baseSha: PLAN.mergeCommitSha });
+    registry.set(TASK, { workspace: {} as never as CodeWorkspace, planRef: PLAN, repo: REPO, baseSha: PLAN.approvedSha });
   }
   const slack = new RecordingAdapter();
   const github = new RecordingAdapter();
@@ -101,7 +101,7 @@ describe("delivery.report_pr (Track 7)", () => {
       prUrl: pr.url,
       branch: "marathon/task-1-greet", // from GitHub, not the model
       state: "submitted_ready",
-      baseSha: PLAN.mergeCommitSha,
+      baseSha: PLAN.approvedSha,
     });
     expect(change?.verification).toEqual([{ command: "pnpm test", exitCode: 0, summary: "ok" }]);
     expect(slack.results).toHaveLength(1);
@@ -180,7 +180,7 @@ describe("delivery.report_pr (Track 7)", () => {
     const client = new FixturesGithubClient({});
     const store = new InMemoryCodeChangeStore();
     const registry = new CodeTaskRegistry();
-    registry.set(TASK, { workspace: {} as never as CodeWorkspace, planRef: PLAN, repo: REPO, baseSha: PLAN.mergeCommitSha });
+    registry.set(TASK, { workspace: {} as never as CodeWorkspace, planRef: PLAN, repo: REPO, baseSha: PLAN.approvedSha });
     const tool = makeDeliveryReportTool({ getClient: () => client, registry, store });
     const pr = await client.createPullRequest(REPO, "T", "b", "main");
     const res = await tool.execute({ pr_url: pr.url, summary: "s", verification: green }, ctx);

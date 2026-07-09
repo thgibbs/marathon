@@ -87,12 +87,13 @@ describe("ensureAgentFromSpec (Track 12: YAML instructions → AgentVersion)", (
       name: "forge",
       instructions: "You are Forge.",
       repo: "acme/service",
-      plans: { branch: "design-plans" },
     });
     const { db, versions } = makeDb();
     const res = await ensureAgentFromSpec(db, "tn1", withRepo);
     expect(res.version.instructions).toContain('Pass exactly "acme/service"');
-    expect(res.version.instructions).toContain("plans branch (design-plans)");
+    // §29.1a: the persona teaches the combined-PR flow (draft PR + approving review).
+    expect(res.version.instructions).toContain("DRAFT pull requests against the default branch");
+    expect(res.version.instructions).toContain("approving review is the approval");
     // Idempotency holds over the COMPOSED instructions.
     const again = await ensureAgentFromSpec(db, "tn1", withRepo);
     expect(again.published).toBe(false);

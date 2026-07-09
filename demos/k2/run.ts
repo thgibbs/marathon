@@ -41,7 +41,7 @@ class RecordingAdapter implements SurfaceAdapter {
 
 const REPO = "acme/service";
 const TASK = "task-impl-1";
-const PLAN = { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: "abc123" };
+const PLAN = { repo: REPO, docPath: "docs/plan.md", approvedSha: "abc123" };
 
 async function main(): Promise<void> {
   const slack = new RecordingAdapter();
@@ -88,7 +88,7 @@ async function main(): Promise<void> {
   // and carries the cost footer (Track 16, §13.3).
   const client = new FixturesGithubClient({});
   const registry = new CodeTaskRegistry();
-  registry.set(TASK, { workspace: {} as never as CodeWorkspace, planRef: PLAN, repo: REPO, baseSha: PLAN.mergeCommitSha });
+  registry.set(TASK, { workspace: {} as never as CodeWorkspace, planRef: PLAN, repo: REPO, baseSha: PLAN.approvedSha });
   const reportFanout = new DeliveryFanout({ slack, github }, new InMemoryIdempotencyStore());
   const report = makeDeliveryReportTool({
     getClient: () => client,

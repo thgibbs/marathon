@@ -73,6 +73,10 @@ export const DEFAULT_GH_FAMILIES: GhCommandFamily[] = [
   { prefix: ["api"], kind: "read", repo: apiRepo, check: apiReadOnlyCheck },
   { prefix: ["pr", "create"], kind: "write", repo: repoFlag },
   { prefix: ["pr", "edit"], kind: "write", repo: repoFlag },
+  // §29.1a (combined-PR flow): the BUILD agent marks the draft doc PR ready
+  // for review after pushing its implementation onto the same branch. Merging
+  // stays absent — merge is the human's native approval (Track 9, §7.9).
+  { prefix: ["pr", "ready"], kind: "write", repo: repoFlag },
 ];
 
 /**

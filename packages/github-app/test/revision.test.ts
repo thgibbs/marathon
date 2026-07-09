@@ -18,7 +18,7 @@ function makeChange(overrides: Partial<CodeChange> = {}): CodeChange {
     tenantId: "tn1",
     taskId: "impl-task",
     repo: REPO,
-    planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: "cafe1234" },
+    planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha: "cafe1234" },
     baseSha: "cafe1234",
     branch: BRANCH,
     treeHash: null,
@@ -128,7 +128,7 @@ describe("handleCodePrRevision (Track 10, §29.6)", () => {
       prNumber: CODE_PR,
       branch: BRANCH,
       baseSha: TIP, // the branch tip, NOT the original merge commit
-      planRef: { repo: REPO, docPath: "docs/plan.md", mergeCommitSha: "cafe1234" },
+      planRef: { repo: REPO, docPath: "docs/plan.md", approvedSha: "cafe1234" },
     });
     expect(input.idempotencyKey).toBe(revisionTaskKey(REPO, CODE_PR, "ic-42"));
     // targets: inherited from the implementation task, plus the code PR itself

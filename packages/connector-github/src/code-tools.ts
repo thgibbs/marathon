@@ -93,12 +93,12 @@ export function makeGithubCodeTools(opts: GithubCodeToolsOptions): Tool[] {
       if (
         planRef.repo !== taskCtx.planRef.repo ||
         planRef.docPath !== taskCtx.planRef.docPath ||
-        planRef.mergeCommitSha !== taskCtx.planRef.mergeCommitSha
+        planRef.approvedSha !== taskCtx.planRef.approvedSha
       ) {
         throw new CodeHandoffError(
           "PLAN_REF_MISMATCH",
           `submitted plan_ref does not match this task's plan ` +
-            `(expected ${taskCtx.planRef.docPath} @ ${taskCtx.planRef.mergeCommitSha})`,
+            `(expected ${taskCtx.planRef.docPath} @ ${taskCtx.planRef.approvedSha})`,
         );
       }
 
@@ -163,7 +163,7 @@ export function makeGithubCodeTools(opts: GithubCodeToolsOptions): Tool[] {
       // 4-5. commit host-side (bot-authored, Marathon-Task trailer) and push the
       // task branch with the tenant App credentials — never in the sandbox.
       const client = await opts.getClient(ctx);
-      const message = `${title}\n\nPlan: ${planRef.docPath} @ ${planRef.mergeCommitSha}\n\nMarathon-Task: ${ctx.taskId}`;
+      const message = `${title}\n\nPlan: ${planRef.docPath} @ ${planRef.approvedSha}\n\nMarathon-Task: ${ctx.taskId}`;
       const commitSha = await commitWorkspace(client, repo, taskCtx.baseSha, changedFiles, ws, message);
       try {
         await client.createBranch(repo, branch, commitSha);
@@ -248,8 +248,10 @@ async function commitWorkspace(
 }
 
 function inputPlanRef(input: ToolInput): PlanRef {
+  // The demoted strict-mode handoff tool keeps its `merge_commit_sha` argument
+  // name for schema stability; internally it is the plan's `approvedSha`.
   const p = input.plan_ref as { repo: string; doc_path: string; merge_commit_sha: string };
-  return { repo: p.repo, docPath: p.doc_path, mergeCommitSha: p.merge_commit_sha };
+  return { repo: p.repo, docPath: p.doc_path, approvedSha: p.merge_commit_sha };
 }
 
 function inputVerification(input: ToolInput): VerificationResult[] {
