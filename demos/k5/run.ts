@@ -67,6 +67,7 @@ async function main(): Promise<void> {
       agents: boot.agents,
       agentIdByName: boot.agentIdByName,
       defaultAgent: boot.defaultAgent,
+      botUserId: "UBOT",
     });
 
     // 1. finished task -> the final message carries the silent cost footer.

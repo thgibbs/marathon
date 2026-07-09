@@ -169,8 +169,11 @@ general worker never take each other's work.
 2. **Socket Mode**: enable it; create an app-level token with
    `connections:write` → `SLACK_APP_TOKEN` (xapp-).
 3. **OAuth scopes** (Bot Token): `app_mentions:read`, `chat:write`,
-   `channels:history`, `reactions:read`. Install to workspace →
-   `SLACK_BOT_TOKEN` (xoxb-), and copy the signing secret →
+   `channels:history`, `reactions:read`, `reactions:write` (§31: needed to
+   acknowledge via a :+1: reaction instead of posting "_on it…_" — an
+   existing install upgrading to this change must re-authorize the app to
+   pick up the added scope, or acks silently stop appearing). Install to
+   workspace → `SLACK_BOT_TOKEN` (xoxb-), and copy the signing secret →
    `SLACK_SIGNING_SECRET`.
 4. Subscribe to bot events: `app_mention`, `message.channels`,
    `reaction_added`.

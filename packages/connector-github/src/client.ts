@@ -24,6 +24,10 @@ export interface GithubClient {
   // writes
   createIssue(repo: string, title: string, body?: string): Promise<{ number: number; url: string }>;
   commentIssue(repo: string, issueNumber: number, body: string): Promise<{ id: number }>;
+  /** React to an issue/PR-conversation comment (§31.5: acknowledge via reaction). */
+  addIssueCommentReaction(repo: string, commentId: number, reaction: string): Promise<void>;
+  /** React to a PR review (diff-inline) comment — a distinct endpoint (§31.4/§31.5). */
+  addReviewCommentReaction(repo: string, commentId: number, reaction: string): Promise<void>;
   /** Comments on an issue/PR, oldest first (context loading, Track 12). */
   listIssueComments(
     repo: string,
@@ -192,6 +196,20 @@ export class HttpGithubClient implements GithubClient {
 
   async closeIssue(repo: string, issueNumber: number): Promise<void> {
     await this.api(`/repos/${repo}/issues/${issueNumber}`, { method: "PATCH", body: { state: "closed" } });
+  }
+
+  async addIssueCommentReaction(repo: string, commentId: number, reaction: string): Promise<void> {
+    await this.api(`/repos/${repo}/issues/comments/${commentId}/reactions`, {
+      method: "POST",
+      body: { content: reaction },
+    });
+  }
+
+  async addReviewCommentReaction(repo: string, commentId: number, reaction: string): Promise<void> {
+    await this.api(`/repos/${repo}/pulls/comments/${commentId}/reactions`, {
+      method: "POST",
+      body: { content: reaction },
+    });
   }
 
   async listIssueComments(
@@ -481,6 +499,24 @@ export class FixturesGithubClient implements GithubClient {
 
   /** Comments recorded by commentIssue, plus any seeded via this array. */
   public readonly issueComments: Array<{ key: string; id: number; author: string; body: string }> = [];
+
+  /** Reactions recorded by addIssueCommentReaction/addReviewCommentReaction (§31.10). */
+  public readonly reactions: Array<{
+    repo: string;
+    commentId: number;
+    commentType: "issue" | "review";
+    reaction: string;
+  }> = [];
+
+  async addIssueCommentReaction(repo: string, commentId: number, reaction: string): Promise<void> {
+    this.writes.push({ op: "addIssueCommentReaction", args: { repo, commentId, reaction } });
+    this.reactions.push({ repo, commentId, commentType: "issue", reaction });
+  }
+
+  async addReviewCommentReaction(repo: string, commentId: number, reaction: string): Promise<void> {
+    this.writes.push({ op: "addReviewCommentReaction", args: { repo, commentId, reaction } });
+    this.reactions.push({ repo, commentId, commentType: "review", reaction });
+  }
 
   async listIssueComments(
     repo: string,

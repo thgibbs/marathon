@@ -240,6 +240,24 @@ export class Database implements AuditWriter, IdempotencyStore {
   }
 
   /**
+   * The task whose triggering message has this Slack `ts` (§31.7): used to
+   * tell a reaction on the triggering/input message apart from a reaction on
+   * a Marathon-authored progress/result message — only the latter counts as
+   * feedback. `ts` is the message's own timestamp threaded into `source_ref`
+   * by `parseAppMention`/`parseThreadReply` (§31.4), distinct from `thread_ts`.
+   */
+  async findTaskByTriggerTs(tenantId: Id, channel: string, ts: string): Promise<Task | null> {
+    const { rows } = await this.pool.query(
+      `select * from task
+       where tenant_id = $1 and source_type = 'slack'
+         and source_ref->>'channel' = $2 and source_ref->>'ts' = $3
+       limit 1`,
+      [tenantId, channel, ts],
+    );
+    return rows[0] ? rowToTask(rows[0]) : null;
+  }
+
+  /**
    * An unfinished code-revision task anchored to a PR (§2b #11): while one is
    * queued/running/retrying, further review-submission triggers for the same
    * PR are absorbed — the GitHub mirror of Slack's "chatter while running".

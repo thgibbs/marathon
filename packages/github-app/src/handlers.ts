@@ -123,7 +123,15 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
     return;
   }
 
-  await deps.delivery.acknowledge({ repo, number });
+  // §31.4: thread the triggering comment's identity through so acknowledge()
+  // can react on it (kind distinguishes issue-vs-PR conversation; commentType
+  // distinguishes which reaction endpoint to use — the two are independent).
+  await deps.delivery.acknowledge({
+    repo,
+    number,
+    commentId: invocation.sourceRef.comment_id,
+    commentType: invocation.sourceRef.commentType,
+  });
 
   // Track 10 (§29.6): a mention on a Marathon-created CODE PR is review
   // feedback — spawn a durable revision task instead of a doc flow.

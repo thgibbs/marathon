@@ -84,6 +84,7 @@ async function main(): Promise<void> {
       agents: boot.agents,
       agentIdByName: boot.agentIdByName,
       defaultAgent: boot.defaultAgent,
+      botUserId: "UBOT",
     });
 
     // 1. ask -> clarifying question -> durable wait -> thread reply resumes.

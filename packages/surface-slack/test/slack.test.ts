@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FakeSlackClient } from "../src/client";
 import { SlackDelivery } from "../src/delivery";
 import { isThreadReply, parseAppMention, parseReactionFeedback, parseThreadReply } from "../src/parse";
@@ -35,7 +35,7 @@ describe("parseAppMention", () => {
     );
     expect(inv.agentName).toBe("bruce");
     expect(inv.text).toBe("why did checkout error?");
-    expect(inv.sourceRef).toMatchObject({ channel: "C1", thread_ts: "111.1", event_id: "Ev1" });
+    expect(inv.sourceRef).toMatchObject({ channel: "C1", thread_ts: "111.1", ts: "111.1", event_id: "Ev1" });
     expect(inv.userExternalId).toBe("U1");
   });
 
@@ -43,6 +43,13 @@ describe("parseAppMention", () => {
     const inv = parseAppMention({ ...base, text: "<@U0BOT> summarize this thread" }, { knownAgents: ["bruce"] });
     expect(inv.agentName).toBeNull();
     expect(inv.text).toBe("summarize this thread");
+  });
+
+  it("carries the message's own ts distinct from thread_ts for an in-thread mention (§31.4)", () => {
+    const inv = parseAppMention({ ...base, text: "<@U0BOT> what's up", thread_ts: "100.0" });
+    expect(inv.sourceRef.ts).toBe("111.1");
+    expect(inv.sourceRef.thread_ts).toBe("100.0");
+    expect(inv.sourceRef.ts).not.toBe(inv.sourceRef.thread_ts);
   });
 });
 
@@ -77,9 +84,57 @@ describe("thread replies (Track 12)", () => {
 
   it("parseThreadReply anchors the invocation to its thread", () => {
     const inv = parseThreadReply(reply, { eventId: "Ev9" });
-    expect(inv.sourceRef).toMatchObject({ channel: "C1", thread_ts: "111.1", event_id: "Ev9" });
+    expect(inv.sourceRef).toMatchObject({ channel: "C1", thread_ts: "111.1", ts: "111.2", event_id: "Ev9" });
     expect(inv.text).toBe("staging please");
     expect(inv.agentName).toBeNull();
+    // The reply's own ts is distinct from the thread anchor (§31.4).
+    expect(inv.sourceRef.ts).not.toBe(inv.sourceRef.thread_ts);
+  });
+});
+
+describe("SlackDelivery.acknowledge (§31: ack via reaction, not text)", () => {
+  it("reacts on the message's own ts, not the thread anchor", async () => {
+    const client = new FakeSlackClient();
+    const delivery = new SlackDelivery(client);
+
+    await delivery.acknowledge({ channel: "C1", thread_ts: "100.0", ts: "111.2" });
+
+    expect(client.reactions).toEqual([{ channel: "C1", ts: "111.2", reaction: "+1" }]);
+  });
+
+  it("falls back to thread_ts when ts is absent", async () => {
+    const client = new FakeSlackClient();
+    const delivery = new SlackDelivery(client);
+
+    await delivery.acknowledge({ channel: "C1", thread_ts: "100.0" });
+
+    expect(client.reactions).toEqual([{ channel: "C1", ts: "100.0", reaction: "+1" }]);
+  });
+
+  it("swallows a missing_scope error and logs a warning (§31.6/§31.8)", async () => {
+    const client = new FakeSlackClient();
+    client.reactionError = "missing_scope";
+    const delivery = new SlackDelivery(client);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(delivery.acknowledge({ channel: "C1", ts: "111.2" })).resolves.toBeUndefined();
+
+    expect(client.reactions).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain("reactions:write");
+    warn.mockRestore();
+  });
+
+  it("swallows any other reaction failure without logging the scope warning", async () => {
+    const client = new FakeSlackClient();
+    client.reactionError = "channel_not_found";
+    const delivery = new SlackDelivery(client);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(delivery.acknowledge({ channel: "C1", ts: "111.2" })).resolves.toBeUndefined();
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 

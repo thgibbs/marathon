@@ -40,6 +40,12 @@ export interface AppDeps {
   agentIdByName: Record<string, string>;
   defaultAgent?: string;
   /**
+   * This bot's own Slack user id (from `auth.test`, §31.7): `handleReaction`
+   * short-circuits on it so the bot's own :+1: ack reaction (§31.3) is never
+   * recorded as feedback.
+   */
+  botUserId: string;
+  /**
    * Identity linking (§7.20 / §2b #10): lets `/marathon link github` mint the
    * single-use signed URL. `signingKey` is the deployment master secret
    * (`MARATHON_SECRET_KEY` — the GitHub app verifies with the same key);
@@ -348,9 +354,21 @@ export function linkGithubCta(): string {
   return "Run `/marathon link github` to connect your GitHub account so I can act with your access.";
 }
 
+/**
+ * §31.7: acknowledge() now adds a :+1: to the triggering message, which would
+ * otherwise be misread as feedback in two ways — both must be checked, one
+ * doesn't subsume the other:
+ *   1. bot-authored (the ack reaction itself) — filtered by author (`botUserId`).
+ *   2. human-authored, but on the triggering/input message, not a
+ *      Marathon-authored progress/result message — filtered by looking up
+ *      whether `event.item.ts` is a task's own triggering `ts`.
+ */
 export async function handleReaction(deps: AppDeps, event: SlackReactionEvent): Promise<void> {
   const fb = parseReactionFeedback(event);
   if (!fb) return;
+  if (fb.userExternalId === deps.botUserId) return;
+  const channel = event.item?.channel;
+  if (channel && fb.itemTs && (await deps.db.findTaskByTriggerTs(deps.tenantId, channel, fb.itemTs))) return;
   const user = await deps.db.findOrCreateUserByIdentity(deps.tenantId, "slack", fb.userExternalId);
   await deps.db.recordFeedback({ tenantId: deps.tenantId, userId: user.id, feedbackType: fb.feedbackType });
 }

@@ -66,6 +66,7 @@ interface StubOptions {
 function makeDeps(opts: StubOptions = {}) {
   const transitions: Array<[string, string]> = [];
   const delivered: Array<{ ref: Record<string, unknown>; summary: string }> = [];
+  const acknowledged: Array<Record<string, unknown>> = [];
   const turnContexts: AgentTurnContext[] = [];
   const gatewayRun = vi.fn(); // the handler must NEVER reach for a gateway
   const countCalls: string[][] = [];
@@ -88,7 +89,7 @@ function makeDeps(opts: StubOptions = {}) {
       readFileWithSha: async () => ({ content: "# old doc", sha: "sha-1" }),
     },
     delivery: {
-      acknowledge: async () => {},
+      acknowledge: async (ref: Record<string, unknown>) => void acknowledged.push(ref),
       postProgress: async () => {},
       deliverResult: async (ref: Record<string, unknown>, result: { summary: string }) =>
         void delivered.push({ ref, summary: result.summary }),
@@ -105,7 +106,7 @@ function makeDeps(opts: StubOptions = {}) {
     agents: [{ name: "quill" }],
     agentIdByName: { quill: "a1" },
   } as never as GithubAppDeps;
-  return { deps, transitions, delivered, turnContexts, gatewayRun, countCalls };
+  return { deps, transitions, delivered, acknowledged, turnContexts, gatewayRun, countCalls };
 }
 
 describe("draft flow (§2b #16 — tool-driven)", () => {
@@ -158,6 +159,28 @@ describe("draft flow (§2b #16 — tool-driven)", () => {
     // The old flow committed exactly this text; now it is only the reply.
     expect(gatewayRun).not.toHaveBeenCalled();
     expect(delivered[0]!.summary).toContain("nothing was committed");
+  });
+});
+
+describe("acknowledge threads the triggering comment's identity (§31.4)", () => {
+  it("passes commentId + commentType 'issue' for an issue_comment mention", async () => {
+    const { deps, acknowledged } = makeDeps({
+      artifactByTask: { location: { repo: REPO, prNumber: 7, path: "docs/plan.md", branch: "marathon/doc-x" } },
+    });
+    await handleGithubMention(deps, invocation({ sourceRef: { repo: REPO, number: 20, kind: "issue", comment_id: 99, commentType: "issue" } }));
+    expect(acknowledged[0]).toMatchObject({ repo: REPO, number: 20, commentId: 99, commentType: "issue" });
+  });
+
+  it("passes commentId + commentType 'review' for a pull_request_review_comment mention", async () => {
+    const { deps, acknowledged } = makeDeps({
+      artifactByPr: { location: { repo: REPO, prNumber: 5, path: "docs/plan.md", branch: "marathon/doc-b" } },
+      okInvocations: 1,
+    });
+    await handleGithubMention(
+      deps,
+      invocation({ sourceRef: { repo: REPO, number: 5, kind: "pr", comment_id: 5, commentType: "review" } }),
+    );
+    expect(acknowledged[0]).toMatchObject({ repo: REPO, number: 5, commentId: 5, commentType: "review" });
   });
 });
 
