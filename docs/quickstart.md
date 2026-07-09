@@ -141,10 +141,18 @@ Setup:
    The **approval** (§29.1a) is an **approving review on the draft doc PR** —
    Marathon only acts on it when the approver has **write access** to the repo,
    so drive-by approvals on public repos cannot trigger builds.
-3. For the document surface webhooks: create a GitHub App, subscribe to
+3. For the document surface webhooks: create a GitHub App. Grant it these
+   **repository permissions**: **Contents: Read and write** (branches, commits,
+   doc files), **Pull requests: Read and write** (open/edit/merge PRs),
+   **Issues: Read and write** (comments, labels, reactions), and **Metadata:
+   Read**. Contents write is what lets Marathon create the `marathon/*` branch —
+   without it every `document.create` fails with `403: Resource not accessible
+   by integration (creating a git ref)`. Subscribe to
    `issue_comment`, `pull_request_review_comment`, `pull_request_review`, and
    `pull_request`, set a
-   webhook secret → `GITHUB_WEBHOOK_SECRET`, and install it on the repo. For
+   webhook secret → `GITHUB_WEBHOOK_SECRET`, and install it on the repo. If you
+   upgrade an existing App's permissions from read to write, the installation
+   owner must **approve** the new scopes before tokens pick them up. For
    the webhook URL, create a channel at [smee.io/new](https://smee.io/new) and
    use it — no tunnel needed, and the URL is set once (the channel is stable
    across restarts).
