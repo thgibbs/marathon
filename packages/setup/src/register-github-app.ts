@@ -6,6 +6,7 @@
  * Secrets are written to disk only; nothing is printed or sent elsewhere.
  */
 import { createServer, type Server } from "node:http";
+import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { upsertEnvValues } from "./env-file.js";
@@ -27,6 +28,14 @@ export interface RegistrationConfig {
   org?: string;
   /** Local port for the registration page + callback. */
   port: number;
+  /**
+   * Per-run secret segment of the callback path (default: 16 random bytes).
+   * Binds GitHub's redirect to THIS registration attempt: without it the
+   * predictable /callback path would let any local or cross-origin request
+   * redeem an unrelated manifest code and overwrite .env/.keys while the
+   * helper is waiting. Injectable for tests only.
+   */
+  callbackToken?: string;
   homepageUrl?: string;
   envPath: string;
   envTemplatePath: string;
@@ -96,13 +105,18 @@ export function startRegistrationServer(
     rejectDone = reject;
   });
 
+  const callbackToken = cfg.callbackToken ?? randomBytes(16).toString("hex");
+  const callbackPath = `/callback/${callbackToken}`;
   const manifest = buildGithubAppManifest({
     name: cfg.name,
     webhookUrl: cfg.webhookUrl,
-    redirectUrl: `http://localhost:${cfg.port}/callback`,
+    redirectUrl: `http://localhost:${cfg.port}${callbackPath}`,
     homepageUrl: cfg.homepageUrl,
   });
   const page = registrationPageHtml(manifest, manifestPostUrl(cfg.org));
+  // Accept only the first callback: once a code is being redeemed, later
+  // requests must not be able to overwrite the persisted credentials.
+  let redeemed = false;
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -111,12 +125,17 @@ export function startRegistrationServer(
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page);
         return;
       }
-      if (url.pathname === "/callback") {
+      if (url.pathname === callbackPath) {
+        if (redeemed) {
+          res.writeHead(409, { "content-type": "text/plain" }).end("already redeemed");
+          return;
+        }
         const code = url.searchParams.get("code");
         if (!code) {
           res.writeHead(400, { "content-type": "text/plain" }).end("missing ?code");
           return;
         }
+        redeemed = true;
         const creds = await convertManifestCode(code, fetchFn);
         const { pemPath, envKeys } = await persistCredentials(creds, cfg);
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(SUCCESS_HTML);

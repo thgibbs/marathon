@@ -91,6 +91,7 @@ describe("startRegistrationServer", () => {
         webhookUrl: "https://smee.io/chan",
         smeeChannel: "https://smee.io/chan",
         port: 8895,
+        callbackToken: "test-token",
         envPath: paths.envPath,
         envTemplatePath: paths.templatePath,
         keysDir: paths.keysDir,
@@ -116,7 +117,7 @@ describe("startRegistrationServer", () => {
     const fetchFn = (() =>
       Promise.resolve(new Response(CONVERSION_BODY, { status: 201 }))) as typeof fetch;
     const { base, done, paths } = await boot(fetchFn);
-    const res = await fetch(`${base}/callback?code=onetime`);
+    const res = await fetch(`${base}/callback/test-token?code=onetime`);
     expect(res.status).toBe(200);
     const result = (await done) as { installUrl: string; pemPath: string };
     expect(result.installUrl).toBe("https://github.com/apps/marathon-test/installations/new");
@@ -127,8 +128,37 @@ describe("startRegistrationServer", () => {
 
   it("rejects a callback without a code", async () => {
     const { base } = await boot(fetch);
-    const res = await fetch(`${base}/callback`);
+    const res = await fetch(`${base}/callback/test-token`);
     expect(res.status).toBe(400);
+  });
+
+  it("404s a callback with the wrong run token — no code redemption is attempted", async () => {
+    let converted = false;
+    const fetchFn = (() => {
+      converted = true;
+      return Promise.resolve(new Response(CONVERSION_BODY, { status: 201 }));
+    }) as typeof fetch;
+    const { base } = await boot(fetchFn);
+    const bare = await fetch(`${base}/callback?code=forged`);
+    const wrong = await fetch(`${base}/callback/other-token?code=forged`);
+    expect(bare.status).toBe(404);
+    expect(wrong.status).toBe(404);
+    expect(converted).toBe(false);
+  });
+
+  it("accepts only the first callback — a second one answers 409 without re-persisting", async () => {
+    let conversions = 0;
+    const fetchFn = (() => {
+      conversions += 1;
+      return Promise.resolve(new Response(CONVERSION_BODY, { status: 201 }));
+    }) as typeof fetch;
+    const { base, done } = await boot(fetchFn);
+    const first = await fetch(`${base}/callback/test-token?code=onetime`);
+    expect(first.status).toBe(200);
+    await done;
+    const second = await fetch(`${base}/callback/test-token?code=another`);
+    expect(second.status).toBe(409);
+    expect(conversions).toBe(1);
   });
 
   it("404s unknown paths", async () => {
@@ -144,7 +174,7 @@ describe("startRegistrationServer", () => {
     // Attach the rejection handler BEFORE triggering the callback — done
     // rejects while the fetch below is still in flight.
     const rejection = expect(done).rejects.toThrow(/HTTP 404/);
-    const res = await fetch(`${base}/callback?code=stale`);
+    const res = await fetch(`${base}/callback/test-token?code=stale`);
     expect(res.status).toBe(500);
     await rejection;
   });
