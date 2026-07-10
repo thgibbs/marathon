@@ -4,6 +4,7 @@ import { getRepoAccess, MAX_AUTO_REVIEW_ROUNDS, shouldKickBack, type GithubClien
 import {
   emptyCheckpoint,
   implementationTaskKey,
+  InvalidTransitionError,
   mergeDeliveryTargets,
   revisionTaskKey,
   type DeliveryTarget,
@@ -168,8 +169,7 @@ export async function handleReviewTask(deps: GithubAppDeps, task: Task): Promise
   const agent = resolveAgent(deps, task.agentId ?? undefined);
   // The reviewer must subscribe to this review event, else the task is a no-op.
   if (!agentSubscribesTo({ on: agent.on }, event)) {
-    await deps.db.transitionTask(task.id, "running");
-    await deps.db.transitionTask(task.id, "completed");
+    await safeCompleteTask(deps.db, task.id);
     return;
   }
 
@@ -198,8 +198,7 @@ export async function handleReviewTask(deps: GithubAppDeps, task: Task): Promise
         `⚠️ Automated review could not run — I couldn't read this PR's contents (${String(e).slice(0, 140)}). Leaving it for a human reviewer.`,
       )
       .catch(() => {});
-    await deps.db.transitionTask(task.id, "running");
-    await deps.db.transitionTask(task.id, "completed");
+    await safeCompleteTask(deps.db, task.id);
     return; // no verdict recorded — the loop reads no new round and stops.
   }
 
@@ -222,8 +221,7 @@ export async function handleReviewTask(deps: GithubAppDeps, task: Task): Promise
 
   // The review lands only if review.report ran; its onReviewed hook records the
   // verdict the kickback loop reads. Nothing else to do here.
-  await deps.db.transitionTask(task.id, "running");
-  await deps.db.transitionTask(task.id, "completed");
+  await safeCompleteTask(deps.db, task.id);
 }
 
 /**
@@ -258,6 +256,13 @@ export async function runReviewCycle(
       agentId: reviewerId,
       sourceType: "github",
       sourceRef: { kind, repo, number: prNumber },
+      // The review is driven inline by handleReviewTask below; no worker should
+      // lease this task from the queue. No idempotencyKey ⇒ no job row is
+      // inserted, so submit provides no queue-level crash recovery here — that
+      // is fine because this whole cycle runs UNDER its own durable job (the
+      // DESIGN_REVIEW_JOB_KIND job, or a redelivered ready_for_review webhook
+      // for code reviews), whose lease-expiry retry re-runs the cycle on crash.
+      inline: true,
     });
     await handleReviewTask(deps, reviewTask);
 
@@ -320,6 +325,12 @@ async function runOwnerRevision(
     agentId: ownerAgentId,
     sourceType: "github",
     sourceRef: { kind: "design_revision", repo, number: prNumber },
+    // The owner revision is driven inline (nextTurn called below); no worker
+    // should lease this task from the queue. No idempotencyKey ⇒ no job row,
+    // so no queue-level crash recovery from submit — this runs under the
+    // caller's durable DESIGN_REVIEW_JOB_KIND job (see runReviewCycle), whose
+    // retry re-runs the whole kickback cycle on a crash.
+    inline: true,
   });
   const current = await deps.client.readFileWithSha(repo, loc.path, loc.branch).catch(() => ({ content: "" }));
   // The reviewer's changes_requested comment rides in the PR context.
@@ -341,8 +352,7 @@ async function runOwnerRevision(
     },
     checkpoint: emptyCheckpoint(),
   });
-  await deps.db.transitionTask(task.id, "running");
-  await deps.db.transitionTask(task.id, "completed");
+  await safeCompleteTask(deps.db, task.id);
   return true; // re-review the revised doc inline
 }
 
@@ -367,6 +377,31 @@ function withFooter(reply: string | undefined, footer: string): string {
 
 function fanoutOf(deps: GithubAppDeps): DeliveryFanout {
   return deps.fanout ?? new DeliveryFanout({ github: deps.delivery }, deps.db);
+}
+
+/**
+ * Complete an inline-driven task with the queued→running→completed bookkeeping
+ * pair, tolerating a racing consumer that already completed it.
+ *
+ * Inline tasks are submitted with `inline: true` so no queue Worker leases
+ * them while the inline caller holds the pre-leased job — but if an inline run
+ * outlives its lease window, a worker legitimately reclaims the job and can
+ * complete the task first (the designed crash-recovery path; also possible for
+ * tasks created before the inline flag was deployed). If the task was already
+ * completed by that racing consumer, the post-turn side effects (PR comment,
+ * etc.) have already landed — throwing here would cause the queue job to retry
+ * the entire turn and duplicate those effects. We therefore tolerate
+ * InvalidTransitionError on these bookkeeping transitions only. Any other DB
+ * error still propagates.
+ */
+async function safeCompleteTask(db: Database, taskId: Id): Promise<void> {
+  try {
+    await db.transitionTask(taskId, "running");
+    await db.transitionTask(taskId, "completed");
+  } catch (err) {
+    if (err instanceof InvalidTransitionError) return;
+    throw err;
+  }
 }
 
 /** Mention on a PR/issue: revise the existing draft doc, or draft a new design-doc PR. */
@@ -399,12 +434,24 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
   // feedback — spawn a durable revision task instead of a doc flow.
   if (invocation.sourceRef.kind === "pr" && (await handleCodePrRevision(deps, invocation))) return;
 
-  const { task, agentName } = await deps.router.route(invocation, {
+  const { task, agentName, deduped, completeInline } = await deps.router.route(invocation, {
     tenantId: deps.tenantId,
     agents: deps.agents,
     agentIdByName: deps.agentIdByName,
     defaultAgent: deps.defaultAgent,
+    // The mention is driven inline (nextTurn called further down in this
+    // handler); no worker should lease this task while the inline run holds
+    // the pre-leased job. Every success path below must call completeInline
+    // to ack it; a thrown error deliberately does NOT ack — the expiring
+    // lease is the crash-recovery path (a worker retries the task).
+    inline: true,
   });
+  // A repeated surface event (webhook redelivery) resolves to the EXISTING
+  // task — the original delivery already ran (or is running) the turn and
+  // posted its effects. Re-running here would duplicate the PR comment/doc
+  // write, so stop before the inline flow. No ack either: the original
+  // submitter owns the inline job's lease.
+  if (deduped) return;
   const agentId = deps.agentIdByName[agentName];
   // Multi-agent dispatch (§A.4): the routed agent's own runtime + subscription
   // + model policy govern this task (falls back to the single-agent defaults).
@@ -430,8 +477,8 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
         { repo, number },
         { summary: "This agent isn't configured to respond to design-doc review comments (on: excludes design-review)." },
       );
-      await deps.db.transitionTask(task.id, "running");
-      await deps.db.transitionTask(task.id, "completed");
+      await safeCompleteTask(deps.db, task.id);
+      await completeInline?.();
       return;
     }
     const current = await deps.client.readFileWithSha(repo, loc.path, loc.branch).catch(() => ({ content: "", sha: "" }));
@@ -471,8 +518,8 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
         costUsd: await deps.db.sumModelCostUsd(task.id),
       },
     );
-    await deps.db.transitionTask(task.id, "running");
-    await deps.db.transitionTask(task.id, "completed");
+    await safeCompleteTask(deps.db, task.id);
+    await completeInline?.();
     return;
   }
 
@@ -483,8 +530,8 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
       { repo, number },
       { summary: "This agent isn't configured to draft design docs (on: excludes draft)." },
     );
-    await deps.db.transitionTask(task.id, "running");
-    await deps.db.transitionTask(task.id, "completed");
+    await safeCompleteTask(deps.db, task.id);
+    await completeInline?.();
     return;
   }
 
@@ -526,8 +573,8 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
         costUsd: await deps.db.sumModelCostUsd(task.id),
       },
     );
-    await deps.db.transitionTask(task.id, "running");
-    await deps.db.transitionTask(task.id, "completed");
+    await safeCompleteTask(deps.db, task.id);
+    await completeInline?.();
     return;
   }
   const prNumber = artifactLoc.prNumber;
@@ -541,6 +588,12 @@ export async function handleGithubMention(deps: GithubAppDeps, invocation: Norma
   );
   await deps.db.transitionTask(task.id, "running");
   await deps.db.transitionTask(task.id, "waiting_for_approval");
+  // The inline EXECUTION is finished even though the task isn't terminal —
+  // its lifecycle continues via approval/merge webhooks, not the queue, so
+  // the inline job must be acked here too (a leftover lease would expire and
+  // hand the parked task to a worker, which is exactly the dual-consumption
+  // this flag prevents).
+  await completeInline?.();
 
   // §A.3a: the automatic design-doc review is NOT triggered here. Opening the
   // doc PR fires a `pull_request.opened` webhook that `handleDocReviewOpened`

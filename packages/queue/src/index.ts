@@ -21,11 +21,36 @@ export interface Job {
   lastError: string | null;
 }
 
+/** Lease window for inline inserts when the caller gives none: long enough
+ * that a normal inline turn always finishes inside it, short enough that a
+ * crashed inline caller's work is reclaimed without unreasonable delay. */
+export const DEFAULT_INLINE_VISIBILITY_MS = 15 * 60_000;
+
 export interface EnqueueInput {
   taskId?: string;
   kind?: string;
   idempotencyKey?: string;
   maxAttempts?: number;
+  /**
+   * When true, the job is inserted PRE-LEASED (status 'leased', with a fresh
+   * lease token and a visibility window) instead of 'ready'. Use for
+   * inline-driven tasks whose caller executes the work directly:
+   *
+   *  - While the lease is live, no worker can dequeue the job — the inline
+   *    caller has exclusive ownership, so the task is never dual-executed.
+   *  - The row doubles as an idempotency ledger entry: a re-submit with the
+   *    same key finds it and returns deduped=true.
+   *  - The caller MUST ack (job id + the returned Job's leaseToken) once the
+   *    inline work finishes. If the process crashes first, the lease expires
+   *    and dequeue's normal expired-lease reclaim path hands the job to a
+   *    worker — the work is retried, never silently lost as terminal.
+   */
+  inline?: boolean;
+  /**
+   * Lease duration for an inline insert; defaults to
+   * DEFAULT_INLINE_VISIBILITY_MS. Ignored unless `inline` is set.
+   */
+  inlineVisibilityMs?: number;
 }
 
 export interface EnqueueResult {
@@ -54,6 +79,30 @@ export class Queue {
 
   /** Insert a job; a duplicate idempotency key is a no-op (returns deduped). */
   async enqueue(input: EnqueueInput): Promise<EnqueueResult> {
+    if (input.inline) {
+      // Inline tasks insert PRE-LEASED: the inline caller owns the lease, so
+      // no worker can dequeue the job while it runs, but a crash lets the
+      // lease expire and dequeue's expired-lease reclaim path recovers the
+      // work (a 'done'-at-insert row would lose it permanently — the webhook
+      // delivery is already claimed, so there would be no redelivery either).
+      // The caller acks with the returned leaseToken when the inline work
+      // finishes.
+      const visibilityMs = input.inlineVisibilityMs ?? DEFAULT_INLINE_VISIBILITY_MS;
+      const { rows } = await this.pool.query(
+        `insert into job(task_id, kind, idempotency_key, max_attempts, status, lease_token, leased_until)
+         values ($1, $2, $3, $4, 'leased', gen_random_uuid(), now() + ($5::int * interval '1 millisecond'))
+         on conflict (idempotency_key) do nothing
+         returning *`,
+        [input.taskId ?? null, input.kind ?? DEFAULT_JOB_KIND, input.idempotencyKey ?? null, input.maxAttempts ?? 5, visibilityMs],
+      );
+      if (rows[0]) return { job: rowToJob(rows[0]), deduped: false };
+      if (input.idempotencyKey) {
+        const existing = await this.findByIdempotencyKey(input.idempotencyKey);
+        return { job: existing, deduped: true };
+      }
+      return { job: null, deduped: true };
+    }
+
     const { rows } = await this.pool.query(
       `insert into job(task_id, kind, idempotency_key, max_attempts)
        values ($1, $2, $3, $4)

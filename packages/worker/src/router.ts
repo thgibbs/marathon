@@ -9,12 +9,27 @@ export interface RouteOptions {
   /** Maps agent name -> agent id for the tenant. */
   agentIdByName: Record<string, Id>;
   defaultAgent?: string;
+  /**
+   * When true, the submitted task will not be leasable by a queue Worker
+   * while the inline run is in flight (the job row is pre-leased). Pass this
+   * from call sites that drive the task inline immediately after routing, and
+   * call the returned `completeInline` handle when the inline work finishes.
+   * See Orchestrator.submit's `inline` option for the full contract.
+   */
+  inline?: boolean;
 }
 
 export interface RouteResult {
   task: Task;
   agentName: string;
   deduped: boolean;
+  /**
+   * Present on a fresh inline submit (inline: true, non-deduped, with a
+   * surface event id): the caller MUST call it once the inline work finishes
+   * (success paths only — on a thrown error do NOT call it; the expiring
+   * lease is the crash-recovery path). Undefined on dedup or non-inline.
+   */
+  completeInline?: () => Promise<void>;
 }
 
 /**
@@ -43,7 +58,7 @@ export class InvocationRouter {
       ? surfaceEventKey(invocation.surfaceType, invocation.eventId)
       : undefined;
 
-    const { task, deduped } = await this.orchestrator.submit({
+    const { task, deduped, completeInline } = await this.orchestrator.submit({
       tenantId: opts.tenantId,
       agentId,
       invokingUserId: user.id,
@@ -51,8 +66,9 @@ export class InvocationRouter {
       sourceRef: invocation.sourceRef,
       inputText: invocation.text,
       idempotencyKey,
+      inline: opts.inline,
     });
 
-    return { task, agentName: agent.name, deduped };
+    return { task, agentName: agent.name, deduped, completeInline };
   }
 }
