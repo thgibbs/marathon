@@ -13,17 +13,25 @@ It complements — but does not replace — the prose walkthrough in
 - Ask for secrets one group at a time (§1), not all 14 items at once — skip a
   group entirely if the human says they don't need that surface yet (e.g. no
   Slack app, no GitHub App).
-- Never invent a secret value. The one exception is `MARATHON_SECRET_KEY`: if
-  the human doesn't supply one, generate a random 32+ byte value yourself
+- Never invent a secret value. The one exception is `MARATHON_SECRET_KEY` (and,
+  for a PAT-based GitHub install, `GITHUB_WEBHOOK_SECRET` — see §1.8): if the
+  human doesn't supply one, generate a random 32+ byte value yourself
   (e.g. `openssl rand -hex 32`) rather than asking them to hand-pick one.
 - Never print a collected secret value back into chat, logs, or a PR/commit.
   `.env` is git-ignored — verify that before writing to it.
-- Only write the fields the human actually provided; leave the rest blank in
-  `.env` rather than guessing.
+- Only write the *credential/secret* fields the human actually provided
+  (Groups A–C); leave every other secret key blank in `.env` rather than
+  guessing. Group D (§1.12–14) is different: those keys already ship
+  pre-filled with sane defaults in `.env.example`, so leave them exactly as
+  the template wrote them unless the human explicitly asks for a non-default
+  value — don't blank them out, and don't assume the app will silently
+  default an unset Group D key at runtime; the default is whatever value is
+  already sitting in `.env.example`/`agents/forge.yaml`.
 - Don't start long-running processes yourself (`make slack-app`, `make
-  github-app` block forever). Run verification commands that exit
-  (`pnpm install`, `make demo-slack-app`, `make sandbox-image`, …), then hand
-  the long-running commands to the human as printed instructions (§5).
+  github-app`, and the dev `smee-client` forwarder from §1.10 all block
+  forever). Run verification commands that exit (`pnpm install`, `make
+  demo-slack-app`, `make sandbox-image`, …), then hand the long-running
+  commands to the human as printed instructions (§5).
 - If a command fails, report the exit code and output verbatim — don't paper
   over a failure.
 
@@ -52,32 +60,62 @@ It complements — but does not replace — the prose walkthrough in
    `connections:write`.
 
 ### Group C — GitHub document surface (only if running `make github-app`)
-8. GitHub credential, either:
-   - a fine-grained PAT with Contents + Pull requests read/write on the target
-     repo → `GITHUB_TOKEN` (quickstart path), or
-   - a GitHub App → `GITHUB_APP_ID` and its private key as either
-     `GITHUB_APP_PRIVATE_KEY_PATH` (path to the downloaded `.pem`) or
-     `GITHUB_APP_PRIVATE_KEY` (PEM contents inline), plus
-     `GITHUB_WEBHOOK_SECRET`. Repository permissions: Contents (R/W), Pull
-     requests (R/W), Issues (R/W), Metadata (R). Subscribe to
-     `issue_comment`, `pull_request_review_comment`, `pull_request_review`,
-     `pull_request`.
+8. GitHub credential **and** webhook — pick one path; both need a webhook
+   because the running app is driven entirely by inbound GitHub events, there
+   is no polling fallback:
+   - **PAT path (quickstart)** — a fine-grained PAT with Contents + Pull
+     requests read/write on the target repo → `GITHUB_TOKEN`. A PAT has no
+     webhook of its own, so you must create one by hand: on the target repo,
+     go to Settings → Webhooks → Add webhook, content type
+     `application/json`, subscribed to the same events listed below, pointed
+     at the URL from §1.10. Generate the shared secret yourself the same way
+     as `MARATHON_SECRET_KEY` (`openssl rand -hex 32`), paste it into that
+     webhook's "Secret" field on GitHub, and set the identical value as
+     `GITHUB_WEBHOOK_SECRET` in `.env`.
+   - **GitHub App path** — register a GitHub App: `GITHUB_APP_ID` and its
+     private key as either `GITHUB_APP_PRIVATE_KEY_PATH` (path to the
+     downloaded `.pem`) or `GITHUB_APP_PRIVATE_KEY` (PEM contents inline).
+     Repository permissions: Contents (R/W), Pull requests (R/W), Issues
+     (R/W), Metadata (R). Subscribe to `issue_comment`,
+     `pull_request_review_comment`, `pull_request_review`, `pull_request`.
+     The App's own webhook config screen (not a separate repo webhook) is
+     where you set the webhook URL from §1.10 and its secret — copy that same
+     secret into `GITHUB_WEBHOOK_SECRET` in `.env`.
+
+   Either path, `GITHUB_WEBHOOK_SECRET` is required in `.env` — the running
+   app verifies every inbound webhook payload's signature against it.
 9. `GITHUB_OWNER` — the repo owner for this tenant.
-10. Webhook delivery target: a [smee.io](https://smee.io/new) channel URL for
-    dev → `MARATHON_WEBHOOK_PROXY`, or a public tunnel URL pointed at
-    `/webhooks/github` for production (leave `MARATHON_WEBHOOK_PROXY` unset in
-    that case).
+10. Webhook delivery target — pick one, and register it as the webhook URL on
+    whichever side owns the webhook (the repo webhook you created by hand for
+    the PAT path, or the GitHub App's webhook config for the App path):
+    - **Dev**: create a channel at [smee.io/new](https://smee.io/new) →
+      `MARATHON_WEBHOOK_PROXY`. The smee channel only relays events — it does
+      not deliver them to your machine by itself. You (or the human) must run
+      a forwarding client that pulls from the channel and posts to your local
+      `/webhooks/github` endpoint, and keep it running for the whole session:
+      ```bash
+      npx smee-client --url <MARATHON_WEBHOOK_PROXY> --path /webhooks/github --port <local port, default 3000>
+      ```
+      Start it in its own terminal after `make github-app` is up; it does not
+      persist across sessions and Marathon does not start it for you; stop it
+      with Ctrl-C when you're done testing.
+    - **Production**: a public tunnel/load-balancer URL that already points
+      at `/webhooks/github` on this host — leave `MARATHON_WEBHOOK_PROXY`
+      unset in that case.
 11. `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` and
     `MARATHON_LINK_BASE_URL` — only if enabling `/marathon link github`
     identity linking; otherwise skip.
 
-### Group D — environment tuning (optional; use defaults unless asked)
+### Group D — environment tuning (optional; already defaulted in the shipped template — ask only if the human wants something different)
 12. `MARATHON_DB_PORT` — only if local port 5432 is already taken.
-13. `MARATHON_TRUST_PROFILE` (`solo` | `team` | `org` | `hosted`) — defaults
-    to `solo`; ask only if the human already knows they want something else.
-14. `MARATHON_SANDBOX_NETWORK` (`bridge` | `none`) — defaults to `bridge`
-    (internet-enabled BUILD sandbox); set `none` only for the strict,
-    no-egress posture.
+13. `MARATHON_TRUST_PROFILE` (`solo` | `team` | `org` | `hosted`) — ships as
+    `solo` in `.env.example`; that's the default a clean install gets with no
+    action from you. Only touch this key if the human already knows they want
+    something else.
+14. `MARATHON_SANDBOX_NETWORK` (`bridge` | `none`) — ships as `bridge` in
+    `.env.example` (internet-enabled BUILD sandbox); that's the default a
+    clean install gets with no action from you. Only set `none` if the human
+    asks for the strict, no-egress posture.
 
 ## 2. Fill out `.env`
 
@@ -87,8 +125,12 @@ It complements — but does not replace — the prose walkthrough in
    ```
 2. Confirm `.env` is git-ignored (`git check-ignore .env`) before writing
    any secret into it.
-3. Edit `.env`, setting exactly the keys the human provided from §1. Leave
-   every other key blank — do not delete keys, just don't fill them in.
+3. Edit `.env`, setting exactly the credential/secret keys the human provided
+   from Groups A–C. Leave every other *secret* key blank — do not delete
+   keys, just don't fill them in. Group D keys (`MARATHON_TRUST_PROFILE`,
+   `MARATHON_SANDBOX_NETWORK`) already arrive pre-filled with their defaults
+   from `.env.example` in step 1 — leave those values exactly as-is unless
+   the human explicitly asked for a non-default value (§1.13–14).
 4. If `MARATHON_DB_PORT` was customized, also update `DATABASE_URL` in
    `.env` to match:
    ```
@@ -179,8 +221,19 @@ run these yourself, they're long-lived:
   ```bash
   make github-app
   ```
-  Point the GitHub App's webhook URL (or the smee channel from §1.10) at this
-  host, then mention/comment on a PR in the target repo to trigger the loop.
+  Webhook delivery has to be live before events will arrive — with
+  `make github-app` running:
+  - **Dev**: in a separate terminal, start the smee forwarder from §1.10 and
+    keep it running for the session:
+    ```bash
+    npx smee-client --url <MARATHON_WEBHOOK_PROXY> --path /webhooks/github --port <local port>
+    ```
+  - **Production**: confirm the tunnel/load-balancer from §1.10 is live and
+    still pointed at `/webhooks/github`.
+  The webhook URL itself was already registered in §1.8 — on the repo
+  webhook you created by hand (PAT path) or on the GitHub App's webhook
+  config screen (App path). Once delivery is live, mention/comment on a PR in
+  the target repo to trigger the loop.
 
 - To stop the local database:
   ```bash
