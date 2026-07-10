@@ -48,6 +48,8 @@ diagram is in [`diagram.md`](../diagram.md); the harness integration references 
   selection (§7.19)**, **identity linking (§7.20)**.
 - [[08-non-functional-requirements]] — reliability, security, scalability, latency,
   observability, portability, extensibility, compliance.
+- [[33-stage-specific-agent-instructions]] — optional, versioned instruction blocks for the
+  current draft, design-review, build, or code-review stage.
 
 ## Architecture & data
 
