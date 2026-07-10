@@ -265,17 +265,32 @@ export class Orchestrator {
     idempotencyKey?: string;
     /**
      * When true, the caller drives this task INLINE (immediately after submit)
-     * and no worker should ever lease it. If an idempotencyKey is provided, a
-     * 'done'-status job row is still inserted as an idempotency ledger entry so
-     * that webhook re-deliveries deduplicate correctly — the row is visible to
-     * findByIdempotencyKey but never returned by dequeue. When no idempotencyKey
-     * is provided, the insert is skipped entirely (nothing to deduplicate).
+     * and no worker should lease it while the inline run is in flight.
+     *
+     * With an idempotencyKey: a PRE-LEASED job row is inserted (status
+     * 'leased', lease owned by the inline caller). It serves double duty: the
+     * idempotency ledger entry (webhook re-deliveries deduplicate against it)
+     * and the crash-recovery hook. The caller MUST invoke the returned
+     * `completeInline` handle when the inline work finishes (success paths
+     * only — on a thrown error, do NOT ack). If the process crashes mid-run,
+     * the lease expires and a queue Worker reclaims the job and retries the
+     * task — the work is never stranded behind a terminal job row.
+     *
+     * Without an idempotencyKey: NO job row is inserted at all, so submit
+     * provides no queue-level crash recovery for the inline run. Such callers
+     * MUST already be running under their own durable job whose lease-expiry
+     * retry re-runs the whole flow on a crash (e.g. runReviewCycle /
+     * runOwnerRevision run under the DESIGN_REVIEW_JOB_KIND job or a
+     * redelivered ready_for_review webhook).
      *
      * Defaults to false. Do NOT set this for tasks the queue Worker should run.
      */
     inline?: boolean;
-  }): Promise<{ task: Task; deduped: boolean }> {
-    // If this invocation was already submitted, reuse its task.
+    /** Lease window for the inline job row (see Queue.enqueue); default 15m. */
+    inlineVisibilityMs?: number;
+  }): Promise<{ task: Task; deduped: boolean; completeInline?: () => Promise<void> }> {
+    // If this invocation was already submitted, reuse its task. No
+    // completeInline handle here: the original submitter owns the ack.
     if (input.idempotencyKey) {
       const existing = await this.queue.findByIdempotencyKey(input.idempotencyKey);
       if (existing?.taskId) {
@@ -296,26 +311,38 @@ export class Orchestrator {
       inputText: input.inputText,
     });
 
-    // Inline tasks without an idempotency key have no job to enqueue: the
-    // caller drives them immediately, and without a key there is no dedup row
-    // needed. Inline tasks WITH a key still insert a 'done'-status ledger row.
+    // Inline tasks without an idempotency key have no job to insert: the
+    // caller drives them immediately and carries its own durable-job recovery
+    // (see the `inline` jsdoc). Inline tasks WITH a key insert a pre-leased
+    // job that is both the dedup ledger entry and the crash-recovery hook.
+    let completeInline: (() => Promise<void>) | undefined;
     if (!input.inline || input.idempotencyKey) {
-      const { deduped } = await this.queue.enqueue({
+      const { job, deduped } = await this.queue.enqueue({
         taskId: task.id,
         // Partition by kind (Track 15): BUILD-stage tasks reach the BUILD worker.
         kind: jobKindForSourceRef(input.sourceRef),
         idempotencyKey: input.idempotencyKey,
         inline: input.inline,
+        inlineVisibilityMs: input.inlineVisibilityMs,
       });
       // deduped can only be true here if the findByIdempotencyKey above raced
       // and found nothing (concurrent submit); the task row was already
-      // created, so just return it.
+      // created, so just return it. The concurrent submitter owns the ack.
       if (deduped) {
         return { task, deduped: true };
+      }
+      if (input.inline && job?.leaseToken) {
+        const { id: jobId, leaseToken } = job;
+        // Marks the inline job done once the inline work finished. An ack that
+        // returns false (lease already reclaimed by a worker after expiry) is
+        // the tolerated race — ignored, consistent with safeCompleteTask.
+        completeInline = async () => {
+          await this.queue.ack(jobId, leaseToken);
+        };
       }
     }
 
     await this.db.transitionTask(task.id, "queued");
-    return { task, deduped: false };
+    return { task, deduped: false, completeInline };
   }
 }
