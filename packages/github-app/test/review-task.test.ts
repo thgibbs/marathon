@@ -184,11 +184,12 @@ describe("runReviewCycle — auto review + capped kickback loop (§A.3a, design-
     expect(h.revisions).toBe(1);
   });
 
-  it("persistent changes_requested is capped at MAX_AUTO_REVIEW_ROUNDS revisions (never ping-pongs forever)", async () => {
+  it("persistent changes_requested is capped at MAX_AUTO_REVIEW_ROUNDS rounds and ends on a revision (never ping-pongs forever)", async () => {
     const h = makeCycleDeps(["changes_requested", "changes_requested", "changes_requested", "changes_requested"]);
     await runReviewCycle(h.deps, { repo: "o/r", prNumber: 5, kind: "design_review", ownerAgentId: "owner-id" });
-    // cap = 2 revisions: review1→revise→review2→revise→review3 (over cap) → stop.
-    expect(h.reviews).toBe(3);
+    // cap = 2 rounds, each a review + inline revision: review1→revise→review2→revise
+    // → stop. The cycle ends on a revision (a human reviews the final revised doc).
+    expect(h.reviews).toBe(2);
     expect(h.revisions).toBe(2);
   });
 
