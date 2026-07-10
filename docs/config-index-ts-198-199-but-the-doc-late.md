@@ -88,19 +88,32 @@ Add the workspace dependency in `packages/config/package.json`:
 }
 ```
 
-### 3. Replace the definition in config with a re-export
+### 3. Replace the definition in config with a local import + re-export
 
-In `packages/config/src/index.ts`, delete the `KERNEL_EVENTS` / `KernelEvent`
-declarations and re-export from core in the same spot, preserving the public API:
+`export { X } from "..."` is a **pure re-export**: it does not bind `X` into
+the local module scope. `packages/config/src/index.ts` has other declarations
+in the same file — `AgentSpec.on: KernelEvent[]`, `parseAgentSpec`'s `'on'`
+validation, and `agentSubscribesTo` — that reference `KERNEL_EVENTS` and
+`KernelEvent` as local names, not as `@marathon/config`-qualified names. A bare
+re-export would leave those references unresolved and the file would not
+compile.
+
+So config must **import the symbols locally, then re-export the same
+bindings**, in place of the deleted declarations:
 
 ```ts
-export { KERNEL_EVENTS, type KernelEvent } from "@marathon/core";
+import { KERNEL_EVENTS, type KernelEvent } from "@marathon/core";
+export { KERNEL_EVENTS, type KernelEvent };
 ```
 
-Everything else in config that uses these symbols continues to work unchanged,
-because they resolve to the same values via the re-export — including
-`AgentSpec.on: KernelEvent[]`, `parseAgentSpec`'s `'on'` validation, and
-`agentSubscribesTo`, all in the same file.
+This is the exact resulting pattern: the `import` brings `KERNEL_EVENTS` and
+`KernelEvent` into scope for every other declaration later in
+`packages/config/src/index.ts` (`AgentSpec.on: KernelEvent[]`,
+`parseAgentSpec`'s `'on'` validation, `agentSubscribesTo`, etc.) to keep
+referencing them unqualified, exactly as before. The subsequent `export`
+re-exports those same imported bindings, so `@marathon/config`'s public API
+(`import { KERNEL_EVENTS, KernelEvent } from "@marathon/config"`) is
+unchanged for existing consumers.
 
 ### 4. (Enables the follow-on doc) `AgentVersion` can now key on `KernelEvent`
 
@@ -129,8 +142,14 @@ doc only removes the dependency-layering blocker so that PR's step 2 compiles.
   canonical event list invites drift; the whole point of `KERNEL_EVENTS` as a
   single `as const` is that `on:` validation and routing agree.
 - **Drop the config export, update all importers.** Rejected as unnecessary
-  churn for this change; the re-export is a one-liner and keeps the diff small.
-  Consolidating imports on `@marathon/core` can happen later if desired.
+  churn for this change; the local import + re-export is a two-line change and
+  keeps the diff small. Consolidating imports on `@marathon/core` can happen
+  later if desired.
+- **Bare `export { ... } from "@marathon/core"` re-export.** Rejected: it does
+  not bind the names into `config/src/index.ts`'s local scope, so the file's
+  own internal references to `KERNEL_EVENTS` / `KernelEvent` would fail to
+  compile (flagged in review). The import-then-export pattern in step 3 fixes
+  this.
 
 ## Non-goals
 
@@ -143,12 +162,29 @@ doc only removes the dependency-layering blocker so that PR's step 2 compiles.
 
 Per `.marathon/config.yml`:
 
-- `pnpm typecheck` — proves core compiles standalone with the new symbols and
-  that config's re-export type-checks; catches any accidental core→config cycle.
+- `pnpm typecheck` — proves core compiles standalone with the new symbols, that
+  `packages/config/src/index.ts` still compiles with the imported bindings in
+  scope (`AgentSpec.on: KernelEvent[]`, `parseAgentSpec`, `agentSubscribesTo`),
+  and that config's re-export type-checks; catches any accidental
+  core→config cycle.
 - `pnpm test` — the existing config suite
   (`packages/config/test/agent-spec.test.ts` et al.) exercises `KERNEL_EVENTS`
   through the config export and must stay green, demonstrating the re-export is
   transparent.
+- **New: direct-from-core import check.** Since relocating these symbols makes
+  `@marathon/core`'s export of `KERNEL_EVENTS` / `KernelEvent` a public API in
+  its own right (not just an implementation detail behind config's re-export),
+  verification must also exercise `import { KERNEL_EVENTS, type KernelEvent }
+  from "@marathon/core"` directly — i.e. resolved through core's published
+  entry point (`packages/core/package.json`'s `main`/`exports` field pointing
+  at `packages/core/src/index.ts`'s barrel, the same barrel config now imports
+  through), not only via the internal `./kernel-events` path. Add this as
+  either a small type-only assertion file under `packages/core/test/` (e.g.
+  asserting `KERNEL_EVENTS` is assignable from a direct `@marathon/core`
+  import) or a case in an existing core test file, so `pnpm typecheck` /
+  `pnpm test` fail if the barrel re-export (`export * from "./kernel-events"`
+  in `packages/core/src/index.ts`) is ever dropped or the package's
+  `main`/`exports` field stops pointing at it.
 
 ## Open questions
 
