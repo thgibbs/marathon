@@ -27,6 +27,10 @@ It complements — but does not replace — the prose walkthrough in
   value — don't blank them out, and don't assume the app will silently
   default an unset Group D key at runtime; the default is whatever value is
   already sitting in `.env.example`/`agents/forge.yaml`.
+- `MARATHON_TENANT` (§1.4) and `GITHUB_OWNER` (§1.9, if Group C applies) are
+  required *config* values, not secrets — always write them into `.env`
+  (§2.3) regardless of which credential groups the human opts into. Don't
+  lump them in with the "leave blank if not provided" guidance above.
 - Don't start long-running processes yourself (`make slack-app`, `make
   github-app`, and the dev `smee-client` forwarder from §1.10 all block
   forever). Run verification commands that exit (`pnpm install`, `make
@@ -52,11 +56,28 @@ It complements — but does not replace — the prose walkthrough in
    PR drafted from Slack is the same artifact the GitHub app later revises.
 
 ### Group B — Slack surface (only if running `make slack-app`)
-5. `SLACK_BOT_TOKEN` (xoxb-) — Bot Token OAuth scopes needed:
-   `app_mentions:read`, `chat:write`, `channels:history`, `reactions:read`,
-   `reactions:write`.
-6. `SLACK_SIGNING_SECRET`.
-7. `SLACK_APP_TOKEN` (xapp-) — Socket Mode app-level token with
+
+These three values don't exist until a Slack app has been created,
+configured, and installed to the workspace — that has to happen *before*
+you can collect them, not after `make slack-app` (§5 only runs the
+already-configured app; it doesn't create one). Walk the human through this
+first:
+
+- Create the app at [api.slack.com/apps](https://api.slack.com/apps) →
+  "Create New App" → "From scratch" → pick the workspace.
+- Settings → Socket Mode → enable it; this generates the app-level token
+  needed for item 7 below (scope `connections:write`).
+- OAuth & Permissions → add the Bot Token Scopes listed in item 5 below.
+- Still on OAuth & Permissions, install the app to the workspace — this
+  produces the Bot User OAuth Token needed for item 5.
+- Basic Information → App Credentials → the Signing Secret needed for
+  item 6.
+
+5. `SLACK_BOT_TOKEN` (xoxb-) — the Bot User OAuth Token from installing the
+   app above. Bot Token OAuth scopes needed: `app_mentions:read`,
+   `chat:write`, `channels:history`, `reactions:read`, `reactions:write`.
+6. `SLACK_SIGNING_SECRET` — from Basic Information → App Credentials.
+7. `SLACK_APP_TOKEN` (xapp-) — the Socket Mode app-level token, scope
    `connections:write`.
 
 ### Group C — GitHub document surface (only if running `make github-app`)
@@ -80,7 +101,12 @@ It complements — but does not replace — the prose walkthrough in
      `pull_request_review_comment`, `pull_request_review`, `pull_request`.
      The App's own webhook config screen (not a separate repo webhook) is
      where you set the webhook URL from §1.10 and its secret — copy that same
-     secret into `GITHUB_WEBHOOK_SECRET` in `.env`.
+     secret into `GITHUB_WEBHOOK_SECRET` in `.env`. Registering the App does
+     not by itself grant it access to anything — on the App's settings page,
+     click "Install App", choose the account that owns the target repo, and
+     select that repo (or "All repositories" if you must) to authorize it.
+     Skipping this step leaves the App with valid credentials but no access
+     to the repo, and every API call will 404/403.
 
    Either path, `GITHUB_WEBHOOK_SECRET` is required in `.env` — the running
    app verifies every inbound webhook payload's signature against it.
@@ -125,9 +151,13 @@ It complements — but does not replace — the prose walkthrough in
    ```
 2. Confirm `.env` is git-ignored (`git check-ignore .env`) before writing
    any secret into it.
-3. Edit `.env`, setting exactly the credential/secret keys the human provided
-   from Groups A–C. Leave every other *secret* key blank — do not delete
-   keys, just don't fill them in. Group D keys (`MARATHON_TRUST_PROFILE`,
+3. Edit `.env`, writing in:
+   - `MARATHON_TENANT` (§1.4) — required for every install.
+   - `GITHUB_OWNER` (§1.9) — required if Group C was collected.
+   - the credential/secret keys the human actually provided from Groups
+     A–C.
+   Leave every other *secret* key blank — do not delete keys, just don't
+   fill them in. Group D keys (`MARATHON_TRUST_PROFILE`,
    `MARATHON_SANDBOX_NETWORK`) already arrive pre-filled with their defaults
    from `.env.example` in step 1 — leave those values exactly as-is unless
    the human explicitly asked for a non-default value (§1.13–14).
@@ -213,9 +243,10 @@ run these yourself, they're long-lived:
   ```bash
   make slack-app
   ```
-  Then: create the Slack app at api.slack.com/apps, enable Socket Mode,
-  install it to the workspace, invite the bot to a channel, and
-  `@marathon <ask>` in that channel.
+  The Slack app itself was already created, configured, and installed to
+  the workspace while collecting Group B (§1.5–7). Once `make slack-app` is
+  running: invite the bot to a channel and `@marathon <ask>` in that
+  channel.
 
 - If Group C (GitHub) was configured:
   ```bash
