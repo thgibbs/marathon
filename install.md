@@ -19,9 +19,13 @@ Confirm before proceeding (stop and tell the user what's missing, don't guess):
 Ask for the following. State the minimum path up front so the user isn't
 blocked on things they can defer:
 
-> **Minimum to get one agent loop running:** a target GitHub repo, one model
-> provider API key, and one GitHub credential. Everything else below (Slack,
-> GitHub App webhooks, trust-profile knobs) can be deferred.
+> **Minimum to prove the loop offline:** a target GitHub repo, one model
+> provider API key, and one GitHub credential. This is enough to run
+> `make demo-kernel` and prove the K1-K5 loop with fakes/fixtures — it does
+> **not** queue or run a live agent task yet (see §3). To get an actual
+> live agent loop running, you additionally need either the Slack surface or
+> the GitHub App / webhook surface configured (both listed below); ask the
+> user which one they want first, and everything else can still be deferred.
 
 - **Target repo** — the ONE GitHub repo (`owner/name`) Marathon will operate
   against. Required — every GitHub/document tool grant is scoped to it by
@@ -77,17 +81,20 @@ revise-from-comment, i.e. `make github-app`) running now:
    Marathon clone) before the first BUILD task runs — it holds the `verify:`
    commands Marathon uses to check its own work, and BUILD reads it from the
    target repo's default branch, not from anything committed here. Marathon
-   does not generate or commit this file for you; the user (or you, acting on
-   their behalf, using the GitHub credential collected in step 1) must add
-   it:
+   does not generate or commit this file for you.
    - Check whether the target repo already has `.marathon/config.yml` on its
      default branch. If so, skip the rest of this step.
-   - If not, clone (or open) the target repo separately from this Marathon
-     checkout, add `.marathon/config.yml` with `verify:` commands that match
-     what that repo actually runs (e.g. `pnpm test`, `pnpm typecheck`), and
-     commit it directly to the default branch (or open and merge a small PR)
-     using the collected GitHub credential — before queuing any BUILD task
-     against that repo.
+   - If not, work out the `verify:` commands with the user (e.g. `pnpm test`,
+     `pnpm typecheck`) — don't guess at what the target repo actually runs.
+   - Ask the user, explicitly, how they want the file added: you opening a
+     PR for them to review and merge, or you committing it straight to the
+     default branch using the GitHub credential collected in step 1.
+     **Default to the PR path** — it works regardless of branch-protection
+     rules and leaves a review trail; only commit directly to the default
+     branch if the user explicitly asks for that instead.
+   - Do not add or commit `.marathon/config.yml` — and do not queue any
+     BUILD task against the repo — until the user has confirmed both the
+     `verify:` commands and the mutation path (PR vs. direct commit).
 6. Never print `.env` contents back to the user or commit them — `.env` is
    gitignored; secrets live only there or in the secret store.
 
@@ -119,11 +126,13 @@ make sandbox-image
 Then, depending on which credentials were collected in step 1:
 
 - Model key + GitHub credential only → the loop is proven by the demos above;
-  nothing live to run yet.
+  nothing live to run yet. This is the offline-only minimum from §1 — there
+  is no live entry point until you add Slack or GitHub App/webhook
+  credentials, below.
 - + Slack credentials → `make slack-app`, then in the target workspace invite
-  the bot to a channel and `@marathon <ask>`.
+  the bot to a channel and `@marathon <ask>` — this is the live entry point.
 - + GitHub App + webhook delivery → `make github-app` (webhook receiver + the
-  BUILD worker together).
+  BUILD worker together) — this is the other live entry point.
 
 ## 4. Report back to the user
 
