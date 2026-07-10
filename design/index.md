@@ -48,8 +48,6 @@ diagram is in [`diagram.md`](../diagram.md); the harness integration references 
   selection (§7.19)**, **identity linking (§7.20)**.
 - [[08-non-functional-requirements]] — reliability, security, scalability, latency,
   observability, portability, extensibility, compliance.
-- [[33-stage-specific-agent-instructions]] — optional, versioned instruction blocks for the
-  current draft, design-review, build, or code-review stage.
 
 ## Architecture & data
 
@@ -72,6 +70,8 @@ diagram is in [`diagram.md`](../diagram.md); the harness integration references 
 - [[30-trust-profiles]] — one security model from solo dev to company: the invariant floor,
   the profile ladder (`solo`/`team`/`org`/`hosted`), ratchet semantics, and the
   trigger-sequenced plan.
+- [[34-stage-specific-agent-instructions]] — optional, versioned instruction blocks for the
+  current draft, design-review, build, or code-review stage.
 
 ## Experience & operations
 
