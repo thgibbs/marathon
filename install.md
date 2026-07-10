@@ -34,7 +34,6 @@ blocked on things they can defer:
     read/write on the target repo → `GITHUB_TOKEN` (quickstart path), or
   - a GitHub App → `GITHUB_APP_ID`, and either `GITHUB_APP_PRIVATE_KEY_PATH`
     (path to the downloaded `.pem`) or `GITHUB_APP_PRIVATE_KEY` (inline PEM).
-- **GitHub owner** — `GITHUB_OWNER`, the account/org that owns the target repo.
 - **Deployment tenant name** — `MARATHON_TENANT`, one name binding the Slack
   and GitHub surfaces to the same deployment. Ask for something short and
   stable (e.g. their org name); skip only for an isolated demo/test run.
@@ -51,9 +50,13 @@ Ask only if the user wants the Slack surface running now:
 - **Slack app credentials** — `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`,
   `SLACK_APP_TOKEN` (see §4 of `docs/quickstart.md` for how they create these).
 
-Ask only if the user wants the GitHub webhook surface (draft-doc-PR-from-mention,
-revise-from-comment) running now:
+Ask only if the user wants the GitHub App / webhook surface (draft-doc-PR-from-mention,
+revise-from-comment, i.e. `make github-app`) running now:
 
+- **GitHub owner** — `GITHUB_OWNER`, the account/org that owns the target
+  repo. Scoped to the GitHub document/webhook app in `.env.example`; the
+  PAT-only quickstart path does not need it, since the owner is already
+  embedded in the target repo's `owner/name`.
 - **Webhook secret** — `GITHUB_WEBHOOK_SECRET`.
 - **Webhook delivery** — a smee.io channel URL → `MARATHON_WEBHOOK_PROXY`, or a
   public tunnel URL if they'd rather point the GitHub App at that directly.
@@ -70,10 +73,21 @@ revise-from-comment) running now:
 4. If the user picked a non-default model provider, edit `models.default`
    (and optionally `models.build`) in the same YAML to `provider:model`,
    matching the key filled into `.env`.
-5. If the target repo doesn't already have `.marathon/config.yml`, add one
-   there with its `verify:` commands (e.g. `pnpm test`, `pnpm typecheck`, or
-   whatever that repo actually runs) — this is what Marathon runs to check its
-   own work.
+5. `.marathon/config.yml` must exist **in the target repo** (not in this
+   Marathon clone) before the first BUILD task runs — it holds the `verify:`
+   commands Marathon uses to check its own work, and BUILD reads it from the
+   target repo's default branch, not from anything committed here. Marathon
+   does not generate or commit this file for you; the user (or you, acting on
+   their behalf, using the GitHub credential collected in step 1) must add
+   it:
+   - Check whether the target repo already has `.marathon/config.yml` on its
+     default branch. If so, skip the rest of this step.
+   - If not, clone (or open) the target repo separately from this Marathon
+     checkout, add `.marathon/config.yml` with `verify:` commands that match
+     what that repo actually runs (e.g. `pnpm test`, `pnpm typecheck`), and
+     commit it directly to the default branch (or open and merge a small PR)
+     using the collected GitHub credential — before queuing any BUILD task
+     against that repo.
 6. Never print `.env` contents back to the user or commit them — `.env` is
    gitignored; secrets live only there or in the secret store.
 
@@ -81,9 +95,17 @@ revise-from-comment) running now:
 
 ```bash
 pnpm install
-make hooks                 # gitleaks pre-commit secret scan, once
+make hooks                 # points git's core.hooksPath at the repo's pre-commit hook, once
 make demo-kernel           # proves the K1-K5 loop offline with fakes/fixtures
 ```
+
+`make hooks` only wires up the hooks path — the pre-commit hook itself runs a
+gitleaks secret scan *if gitleaks is installed*, and succeeds as a silent
+no-op if it isn't. Install gitleaks separately
+(https://github.com/gitleaks/gitleaks#installing) if you want scanning to
+actually happen, then confirm it's wired up with a throwaway commit (or
+`make secret-scan`, if the target repo defines that target) — otherwise treat
+the hook as best-effort until gitleaks is present.
 
 If port 5432 was taken: `make demo-kernel MARATHON_DB_PORT=<port>` and mirror
 that port in `DATABASE_URL` in `.env`.
