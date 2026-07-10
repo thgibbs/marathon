@@ -244,9 +244,12 @@ export async function runReviewCycle(
   const reviewerId = deps.reviewerFor?.(event);
   if (!reviewerId) return; // no reviewer configured — nothing to do
 
-  // Each iteration does one review (which bumps the round); shouldKickBack()
-  // returns false once the rounds exceed the cap, so this cannot loop forever.
-  for (let i = 0; i <= MAX_AUTO_REVIEW_ROUNDS; i++) {
+  // The design-doc kickback runs at most MAX_AUTO_REVIEW_ROUNDS full rounds,
+  // each a review followed by an inline owner revision — so the cycle ENDS on a
+  // revision (a human then reviews the final revised doc), never a trailing
+  // unrevised review. A code review returns after its first pass (its revision
+  // is async); shouldKickBack below still bounds its cross-invocation re-reviews.
+  for (let i = 0; i < MAX_AUTO_REVIEW_ROUNDS; i++) {
     // Snapshot the round BEFORE this pass so we only act on a verdict THIS pass
     // recorded — a review that failed closed or never called review.report bumps
     // nothing, and a stale earlier verdict must not re-trigger a kickback.
