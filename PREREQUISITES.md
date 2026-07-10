@@ -45,7 +45,9 @@ the build can't do for itself). Consolidated from the per-milestone "Human prere
 
 - [ ] **Sandbox repo** seeded with sample files / PRs / issues for tests + demos.
 - [ ] **GitHub App (or fine-grained token)** — start with **read** scopes (M3); add **write**
-      (issues, PRs) at M5; install on the sandbox repo.
+      (issues, PRs) at M5; install on the sandbox repo. Registering the App is one click:
+      `make register-github-app` stamps a private per-deployment App from a manifest and
+      writes the credentials into `.env` + `.keys/` (see `docs/quickstart.md` §3).
 - [ ] **Webhooks** (M6): set webhook URL + secret; subscribe to `issue_comment` and
       `pull_request_review_comment`; install on the sandbox repo.
 - [ ] **Public endpoint / tunnel** (e.g. ngrok) for Slack + GitHub event delivery in live dev
@@ -57,9 +59,10 @@ the build can't do for itself). Consolidated from the per-milestone "Human prere
 
 ## D. Slack (the first surface) — M4 → M5
 
-- [ ] **Create the Slack app** (single `@marathon` bot) at api.slack.com/apps: scopes, event
-      subscriptions, slash commands, **interactivity + request URL** (for approval buttons,
-      M5). Install to a **test workspace you administer**.
+- [ ] **Create the Slack app** (single `@marathon` bot) at api.slack.com/apps — use
+      **"From a manifest"** with `slack-app-manifest.yaml` (repo root) to get the scopes,
+      event subscriptions, Socket Mode, and the `/marathon` slash command pre-configured.
+      Install to a **test workspace you administer**.
 - [ ] Capture the **signing secret** + **bot token** → secret store (env `SLACK_SIGNING_SECRET`,
       `SLACK_BOT_TOKEN`).
 

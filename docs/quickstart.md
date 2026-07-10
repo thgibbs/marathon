@@ -141,7 +141,14 @@ Setup:
    The **approval** (§29.1a) is an **approving review on the draft doc PR** —
    Marathon only acts on it when the approver has **write access** to the repo,
    so drive-by approvals on public repos cannot trigger builds.
-3. For the document surface webhooks: create a GitHub App. Grant it these
+3. For the document surface webhooks: create a GitHub App. The one-click path
+   is `make register-github-app` — it serves a local page that registers a
+   private App under your account from a manifest (exactly the permissions and
+   events below, nothing more), creates a dev smee channel for the webhook, and
+   writes the credentials into `.env` and the private key into `.keys/`. Each
+   deployment registers its **own** App this way: a shared App's private key
+   could mint tokens for every installation, and its single webhook URL would
+   deliver everyone's events to one place. Prefer the manual path? Grant it these
    **repository permissions**: **Contents: Read and write** (branches, commits,
    doc files), **Pull requests: Read and write** (open/edit/merge PRs),
    **Issues: Read and write** (comments, labels, reactions), and **Metadata:
@@ -173,7 +180,14 @@ general worker never take each other's work.
 
 ## 4. Slack app
 
-1. Create a Slack app (from scratch) at api.slack.com/apps in your workspace.
+1. Create a Slack app at api.slack.com/apps in your workspace — pick **"From a
+   manifest"** and paste [`slack-app-manifest.yaml`](../slack-app-manifest.yaml)
+   (repo root); it pre-configures Socket Mode, the bot scopes, the event
+   subscriptions, and the `/marathon` slash command, so steps 2–4 below reduce
+   to generating/copying the three tokens. (Every deployment creates its own
+   app: Socket Mode tokens are app-global and Slack splits event delivery
+   across connected instances, so a shared app loses events.) The manual
+   "from scratch" path follows the same steps 2–4 by hand.
 2. **Socket Mode**: enable it; create an app-level token with
    `connections:write` → `SLACK_APP_TOKEN` (xapp-).
 3. **OAuth scopes** (Bot Token): `app_mentions:read`, `chat:write`,
