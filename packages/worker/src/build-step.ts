@@ -326,6 +326,30 @@ export function resolveBuildBinding(
 export const BUILD_JOB_KIND = "build";
 
 /**
+ * The durable job kind for the automatic CODE review (§A.3a). `delivery.report_pr`
+ * enqueues one AFTER recording a GREEN (ready-for-review) code delivery — the
+ * code-side analogue of the design-review job (§A.3a #19). It is a race-free,
+ * crash-surviving trigger that does NOT depend on the `pull_request.ready_for_review`
+ * webhook, which GitHub never fires when the implementation lands on an ALREADY-ready
+ * PR (a doc PR implemented in place: report_pr sees draft===false===green and skips
+ * the draft flip, so no webhook is emitted and the old webhook-only trigger silently
+ * dropped the review). The GitHub app's review poller leases and runs it.
+ */
+export const CODE_REVIEW_JOB_KIND = "code_review";
+
+/**
+ * Idempotency key for a code PR's review job, scoped to the REPORTING TASK. Each
+ * kickback revision is a distinct task (handleCodePrRevision submits a new
+ * code_revision task), so each round's green re-report enqueues its OWN review;
+ * a `report_pr` retry or a BUILD-job redelivery of the SAME task collapses to one
+ * job. Task ids are globally unique, so the key never collides across PRs/rounds
+ * (repo + PR are carried for readability/debuggability only).
+ */
+export function codeReviewJobKey(repo: string, prNumber: number, taskId: string): string {
+  return `code-review:${repo}:${prNumber}:${taskId}`;
+}
+
+/**
  * The queue kind for a task, derived from its source ref: BUILD-stage tasks
  * (implementation/code-revision — anything carrying a plan binding) partition
  * to the BUILD worker; everything else keeps the queue default. Derived at

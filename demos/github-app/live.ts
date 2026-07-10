@@ -22,13 +22,13 @@ import { agentSubscribesTo, EnvSecretStore, isSubprocessHarness, loadAgentSpecs,
 import { githubAuthFromEnv, GithubDelivery, governedToolDefsFor, HttpGithubClient, httpGithubClientFactory, makeDocumentTools, makeGithubReadTools, makeReviewReportTool } from "@marathon/connector-github";
 import { WebhookProxyClient } from "@marathon/surface-github";
 import { Database, dbToolRecorder, migrate } from "@marathon/db";
-import { bootstrapGithubApp, handleIdentityRequest, handleWebhookRequest, makeBuildWiring, processDesignReviewJob, type AgentRuntimeEntry, type GithubAppDeps, type IdentityLinkDeps } from "@marathon/github-app";
+import { bootstrapGithubApp, handleIdentityRequest, handleWebhookRequest, makeBuildWiring, processReviewJob, type AgentRuntimeEntry, type GithubAppDeps, type IdentityLinkDeps } from "@marathon/github-app";
 import { OpenAIEmbedder, PgVectorMemoryStore } from "@marathon/memory";
 import { DEFAULT_MODEL_POLICY } from "@marathon/model-gateway";
 import { Queue } from "@marathon/queue";
 import { DeliveryFanout } from "@marathon/surface";
 import { InMemorySourceLedger, installSandboxShutdownHandler, reapSandboxContainers, ToolGateway, toolPolicyFromSpec, ToolRegistry } from "@marathon/tools";
-import { BUILD_JOB_KIND, DESIGN_REVIEW_JOB_KIND, designReviewJobKey, InvocationRouter, makeDocumentPrRecorder, Orchestrator, Worker } from "@marathon/worker";
+import { BUILD_JOB_KIND, CODE_REVIEW_JOB_KIND, codeReviewJobKey, DESIGN_REVIEW_JOB_KIND, designReviewJobKey, InvocationRouter, makeDocumentPrRecorder, Orchestrator, Worker } from "@marathon/worker";
 
 async function main(): Promise<void> {
   // §2b #13: a misspelled MARATHON_* variable fails silently otherwise.
@@ -285,31 +285,32 @@ async function main(): Promise<void> {
     defaultBranch,
   };
 
-  // §A.3a #19: the durable design-review poller. The drafting surface enqueues a
-  // DESIGN_REVIEW_JOB_KIND job once the doc-PR artifact is committed (race-free);
-  // this leases and runs the review, so a doc drafted from EITHER surface (this
-  // app or a Slack worker) is reviewed exactly once, surviving a crash. A
-  // dedicated loop, not the generic task Worker: the review is orchestration
-  // (runReviewCycle + the inline kickback loop), not a single task step. Runs
-  // unconditionally — with no reviewer configured, runReviewCycle is a no-op and
-  // the job acks. `processDesignReviewJob` heartbeats the lease across the
-  // multi-turn kickback loop and abandons (never double-acks) on lease loss.
+  // §A.3a: the durable review poller — both review kinds. A DESIGN_REVIEW_JOB_KIND
+  // job is enqueued once a doc-PR artifact is committed (#19); a CODE_REVIEW_JOB_KIND
+  // job once delivery.report_pr records a green code delivery. Both are race-free
+  // (enqueued after the durable write) and webhook-independent, so a review runs
+  // exactly once and survives a crash. A dedicated loop, not the generic task
+  // Worker: the review is orchestration (runReviewCycle + the inline kickback loop),
+  // not a single task step. Runs unconditionally — with no reviewer configured,
+  // runReviewCycle is a no-op and the job acks. `processReviewJob` dispatches on
+  // job.kind, heartbeats the lease across the multi-turn kickback loop, and
+  // abandons (never double-acks) on lease loss.
   const reviewVisibilityMs = 300_000;
   const pollReview = async (): Promise<void> => {
     try {
       for (;;) {
-        const job = await queue.dequeue(reviewVisibilityMs, { kinds: [DESIGN_REVIEW_JOB_KIND] });
+        const job = await queue.dequeue(reviewVisibilityMs, { kinds: [DESIGN_REVIEW_JOB_KIND, CODE_REVIEW_JOB_KIND] });
         if (!job?.leaseToken) break;
-        const outcome = await processDesignReviewJob(queue, deps, job, {
+        const outcome = await processReviewJob(queue, deps, job, {
           visibilityMs: reviewVisibilityMs,
           heartbeatMs: 60_000,
         });
         if (outcome === "lease-lost") {
-          console.error(`[github-app] design-review job ${job.id}: lease lost during run — abandoned to its current owner`);
+          console.error(`[github-app] review job ${job.id} (${job.kind}): lease lost during run — abandoned to its current owner`);
         }
       }
     } catch (e) {
-      console.error("[github-app] design-review poller error:", e);
+      console.error("[github-app] review poller error:", e);
     }
     setTimeout(() => void pollReview(), 2_000);
   };
@@ -331,6 +332,22 @@ async function main(): Promise<void> {
       secrets,
       getClient: httpGithubClientFactory(),
       fanout,
+      // §A.3a: the durable code-review trigger. A GREEN report_pr enqueues a
+      // CODE_REVIEW_JOB_KIND job that the review poller below leases and runs —
+      // webhook-independent, so it fires even for a doc PR implemented in place
+      // (no ready_for_review transition). AWAITED, not fire-and-forget: an enqueue
+      // failure propagates and fails the report_pr tool call (whose BUILD-job
+      // redelivery re-reports and re-ensures the job) rather than dropping review.
+      // Keyed on the reporting task, so each kickback revision (a new task)
+      // re-reviews while a retry/redelivery of the same task dedupes to one job.
+      onCodeDelivered: async ({ taskId, repo, prNumber, ready }) => {
+        if (!ready) return; // a draft (red/missing verification) report is not reviewable
+        await queue.enqueue({
+          taskId,
+          kind: CODE_REVIEW_JOB_KIND,
+          idempotencyKey: codeReviewJobKey(repo, prNumber, taskId),
+        });
+      },
       source: async (task) => {
         const repo = flagship.repo!;
         void task;

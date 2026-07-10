@@ -1,11 +1,15 @@
+import { CODE_REVIEW_JOB_KIND } from "@marathon/worker";
 import { backoffMs, type FailOutcome, type Job } from "@marathon/queue";
-import { runDesignReviewJob, type GithubAppDeps } from "./handlers";
+import { runCodeReviewJob, runDesignReviewJob, type GithubAppDeps } from "./handlers";
 
 /**
- * The durable design-review consumer (§A.3a #19). A doc PR's producing surface
- * enqueues a `DESIGN_REVIEW_JOB_KIND` job after committing the artifact; this
- * runs one such (already-leased) job: heartbeat the lease for as long as the
- * review + kickback loop runs, then ack on success / fail-with-backoff on error.
+ * The durable review consumer (§A.3a). A PR's producing surface enqueues a
+ * review job after committing its artifact — a `DESIGN_REVIEW_JOB_KIND` job when
+ * a doc PR's DocumentArtifact is written (#19), a `CODE_REVIEW_JOB_KIND` job when
+ * `delivery.report_pr` records a green code delivery. This runs one such
+ * (already-leased) job, dispatched by `job.kind`: heartbeat the lease for as long
+ * as the review + kickback loop runs, then ack on success / fail-with-backoff on
+ * error.
  *
  * The lease is HEARTBEAT-renewed because one run spans several model turns plus
  * the capped revision loop — well past a single visibility window. If a renewal
@@ -40,15 +44,17 @@ export interface ProcessReviewJobOptions {
 }
 
 /**
- * Process one already-leased design-review job to a terminal outcome. Returns
- * `"lease-lost"` if the lease was reclaimed mid-run (the job is left for its new
- * owner), `"completed"` on a successful ack, or `"retry"`/`"dead"` from the
- * backoff/dead-letter path on a thrown error.
+ * Process one already-leased review job to a terminal outcome, dispatched by
+ * `job.kind` (a `CODE_REVIEW_JOB_KIND` job runs the code review; anything else —
+ * the design-review job — runs the design review). Returns `"lease-lost"` if the
+ * lease was reclaimed mid-run (the job is left for its new owner), `"completed"`
+ * on a successful ack, or `"retry"`/`"dead"` from the backoff/dead-letter path on
+ * a thrown error.
  */
-export async function processDesignReviewJob(
+export async function processReviewJob(
   queue: ReviewJobQueue,
   deps: GithubAppDeps,
-  job: Pick<Job, "id" | "leaseToken" | "taskId" | "attempts">,
+  job: Pick<Job, "id" | "kind" | "leaseToken" | "taskId" | "attempts">,
   opts: ProcessReviewJobOptions = {},
 ): Promise<ReviewJobOutcome> {
   const token = job.leaseToken;
@@ -76,7 +82,8 @@ export async function processDesignReviewJob(
   const stop = monitor(markLost);
 
   try {
-    await runDesignReviewJob(deps, job.taskId);
+    const runJob = job.kind === CODE_REVIEW_JOB_KIND ? runCodeReviewJob : runDesignReviewJob;
+    await runJob(deps, job.taskId);
   } catch (e) {
     stop();
     // Reclaimed mid-run: leave the job for whoever holds the lease now.

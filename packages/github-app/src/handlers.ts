@@ -947,10 +947,13 @@ export async function handleGithubPush(deps: GithubAppDeps, repo: string, after:
 }
 
 /**
- * A PR flipped to ready-for-review (§A.3a): if it's a Marathon CODE PR
- * (delivery.report_pr marked it ready on green verification), run the automatic
- * code review, owned by the code's builder. Non-Marathon PRs and doc-only
- * readies are ignored. Returns true when consumed.
+ * Run the automatic code review for a Marathon CODE PR that `delivery.report_pr`
+ * marked ready on green verification (§A.3a), owned by the code's builder. Reached
+ * via the durable `runCodeReviewJob` (report_pr enqueues it on a green report) —
+ * NOT the `ready_for_review` webhook, which missed the review when the code landed
+ * on an already-ready PR. Non-Marathon PRs (no CodeChange) are ignored. Split out
+ * so the "is it a reviewable code PR" gate is unit-testable in isolation. Returns
+ * true when consumed.
  */
 export async function handleCodeReviewReady(deps: GithubAppDeps, repo: string, prNumber: number): Promise<boolean> {
   const change = await deps.db.findCodeChangeByPr(deps.tenantId, repo, prNumber);
@@ -1000,6 +1003,23 @@ export async function runDesignReviewJob(deps: GithubAppDeps, taskId: Id | null 
   return handleDocReviewOpened(deps, loc.repo, loc.prNumber);
 }
 
+/**
+ * Run one durable CODE-review job (§A.3a). `delivery.report_pr` enqueued this
+ * (keyed to the reporting task) AFTER committing the GREEN `CodeChange`, so
+ * resolving task → code change → PR is race-free — the durable, webhook-independent
+ * trigger that replaces the `pull_request.ready_for_review` webhook. That webhook
+ * never fired when an implementation landed on an already-ready PR (a doc PR
+ * implemented in place), silently dropping the review; the job fires off the
+ * report itself instead. A missing code change or unreported PR (the task opened
+ * none) is a no-op. Returns true when a review ran. Mirrors runDesignReviewJob.
+ */
+export async function runCodeReviewJob(deps: GithubAppDeps, taskId: Id | null | undefined): Promise<boolean> {
+  if (!taskId) return false;
+  const change = await deps.db.getCodeChangeByTask(taskId);
+  if (!change?.prNumber) return false;
+  return handleCodeReviewReady(deps, change.repo, change.prNumber);
+}
+
 export async function dispatchGithubEvent(
   deps: GithubAppDeps,
   eventType: string,
@@ -1011,6 +1031,11 @@ export async function dispatchGithubEvent(
   else if (action.kind === "review") await handleGithubReview(deps, action);
   else if (action.kind === "approval") await handleGithubApproval(deps, action);
   else if (action.kind === "merge") await handleGithubMerge(deps, action.repo, action.number, action.mergeCommitSha);
-  else if (action.kind === "ready_for_review") await handleCodeReviewReady(deps, action.repo, action.number);
+  // NB: `ready_for_review` is intentionally NOT a code-review trigger. The
+  // automatic code review runs off the durable CODE_REVIEW_JOB_KIND job that
+  // `delivery.report_pr` enqueues on a green report (see runCodeReviewJob) —
+  // the webhook silently missed the review when an implementation landed on an
+  // already-ready PR (a doc PR implemented in place), so report_pr owns the
+  // trigger, mirroring how the design-review job replaced its opened-webhook.
   else if (action.kind === "push") await handleGithubPush(deps, action.repo, action.after, action.paths);
 }

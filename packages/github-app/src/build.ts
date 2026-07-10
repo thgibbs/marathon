@@ -114,6 +114,21 @@ export interface BuildWiringOptions {
    * `MARATHON_CODEX_AUTH_JSON`.
    */
   codexAuthJsonPath?: string;
+  /**
+   * The durable code-review trigger (§A.3a): fired AFTER `delivery.report_pr`
+   * records a code delivery. `ready` is true when verification was green (the PR
+   * is ready-for-review), false when it was converted to draft. The live wiring
+   * enqueues a `CODE_REVIEW_JOB_KIND` job on a green report so the automatic code
+   * review runs even when GitHub emits no `ready_for_review` webhook (an in-place
+   * doc→code PR was already ready). Optional so demos/tests keep the bare behavior.
+   */
+  onCodeDelivered?: (info: {
+    taskId: string;
+    repo: string;
+    prNumber: number;
+    prUrl: string;
+    ready: boolean;
+  }) => Promise<void> | void;
   defaultBranch?: string;
   diffDir?: string;
   /**
@@ -178,6 +193,9 @@ export function makeBuildWiring(opts: BuildWiringOptions): BuildWiring {
         getDeliveryTargets: async (taskId) => (await db.getTask(taskId))?.deliveryTargets ?? [],
         // Silent cost footer on the delivery report (Track 16, §13.3).
         getCostUsd: (taskId) => db.sumModelCostUsd(taskId),
+        // §A.3a: the durable code-review trigger — the live wiring enqueues a
+        // CODE_REVIEW_JOB_KIND job on a green report (no-op when unwired).
+        onReported: opts.onCodeDelivered,
       }),
     );
   }
