@@ -31,12 +31,14 @@ features:
 oauth_config:
   scopes:
     bot:
-      # The five scopes the live app uses (docs/quickstart.md §4): mentions
-      # start tasks, chat:write answers in threads, channels:history sees
-      # thread replies (task continuity), reactions ack via :+1: (§31).
+      # The scopes the live app uses (docs/quickstart.md §4): mentions start
+      # tasks, chat:write answers in threads, channels:history sees thread
+      # replies (task continuity), reactions ack via :+1: (§31), and commands
+      # authorizes the /marathon slash command declared above.
       - app_mentions:read
       - chat:write
       - channels:history
+      - commands
       - reactions:read
       - reactions:write
 settings:
