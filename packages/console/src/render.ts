@@ -43,6 +43,7 @@ export function renderCommandsListPage(commands: RecentCommand[], tenantId: stri
   <td>${safe(c.inputSummary)}</td>
   <td>${safe(c.outputSummary)}</td>
   <td><a href="${taskHref(c.taskId, tenantId)}">${safe(c.taskId)}</a> (${safe(c.taskStatus)})</td>
+  <td>${safe(c.agentName ?? "no agent")}</td>
 </tr>`,
     )
     .join("\n");
@@ -50,7 +51,7 @@ export function renderCommandsListPage(commands: RecentCommand[], tenantId: stri
     "Recent commands",
     `<h1>Recent commands</h1>
 <table border="1" cellpadding="4" cellspacing="0">
-<thead><tr><th>Tool</th><th>Time</th><th>Status</th><th>Error</th><th>Input</th><th>Output</th><th>Task</th></tr></thead>
+<thead><tr><th>Tool</th><th>Time</th><th>Status</th><th>Error</th><th>Input</th><th>Output</th><th>Task</th><th>Agent</th></tr></thead>
 <tbody>
 ${rows}
 </tbody>

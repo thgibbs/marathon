@@ -12,10 +12,16 @@ export interface RecentCommand {
   outputSummary: string | null;
   taskId: string;
   taskStatus: string;
+  agentName: string | null;
 }
 
 function at(v: unknown): Date {
   return v instanceof Date ? v : new Date(String(v));
+}
+
+/** Treats a blank or whitespace-only string as absent. */
+function nonBlank(v: string | null): string | null {
+  return v != null && v.trim() !== "" ? v : null;
 }
 
 /** The most recent `tool_invocation` rows for a tenant, newest first (bounded window, no pagination — v1). */
@@ -31,6 +37,7 @@ export async function listRecentCommands(db: Database, tenantId: Id, limit = 100
     outputSummary: (r.output_summary as string | null) ?? null,
     taskId: String(r.task_id),
     taskStatus: String(r.task_status),
+    agentName: nonBlank(r.agent_display_name as string | null) ?? nonBlank(r.agent_name as string | null),
   }));
 }
 

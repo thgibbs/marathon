@@ -35,6 +35,73 @@ describe("handleConsoleRequest", () => {
     expect(res.body).toContain("Recent commands");
   });
 
+  it("renders the agent display name in the Agent column when present", async () => {
+    const db = baseDb({
+      listRecentToolInvocations: async () => [
+        {
+          id: "ti-1",
+          tool_id: "github.read_file",
+          created_at: new Date("2026-01-01T00:00:00Z"),
+          status: "ok",
+          error: null,
+          input_summary: null,
+          output_summary: null,
+          task_id: "task-1",
+          task_status: "completed",
+          agent_name: "forge",
+          agent_display_name: "Forge",
+        },
+      ],
+    });
+    const res = await handleConsoleRequest(db, {}, "/commands?tenantId=tenant-1");
+    expect(res.body).toContain("<th>Agent</th>");
+    expect(res.body).toContain(">Forge<");
+  });
+
+  it("falls back to the agent name when display name is null", async () => {
+    const db = baseDb({
+      listRecentToolInvocations: async () => [
+        {
+          id: "ti-1",
+          tool_id: "github.read_file",
+          created_at: new Date("2026-01-01T00:00:00Z"),
+          status: "ok",
+          error: null,
+          input_summary: null,
+          output_summary: null,
+          task_id: "task-1",
+          task_status: "completed",
+          agent_name: "forge",
+          agent_display_name: null,
+        },
+      ],
+    });
+    const res = await handleConsoleRequest(db, {}, "/commands?tenantId=tenant-1");
+    expect(res.body).toContain(">forge<");
+  });
+
+  it('renders "no agent" when the row carries no agent at all', async () => {
+    const db = baseDb({
+      listRecentToolInvocations: async () => [
+        {
+          id: "ti-1",
+          tool_id: "github.read_file",
+          created_at: new Date("2026-01-01T00:00:00Z"),
+          status: "ok",
+          error: null,
+          input_summary: null,
+          output_summary: null,
+          task_id: "task-1",
+          task_status: "completed",
+          agent_name: null,
+          agent_display_name: null,
+        },
+      ],
+    });
+    const res = await handleConsoleRequest(db, {}, "/commands?tenantId=tenant-1");
+    expect(res.body).toContain("no agent");
+  });
+
   it("renders a task's detail page when the task belongs to the requesting tenant", async () => {
     const task = makeTask({ id: "task-1", tenantId: "tenant-1" });
     const db = baseDb({ getTask: async (id) => (id === "task-1" ? task : null) });

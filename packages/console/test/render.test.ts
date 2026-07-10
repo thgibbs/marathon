@@ -18,6 +18,7 @@ function makeCommand(overrides: Partial<RecentCommand> = {}): RecentCommand {
     outputSummary: "120 lines",
     taskId: "task-1",
     taskStatus: "completed",
+    agentName: "Forge",
     ...overrides,
   };
 }
@@ -37,6 +38,17 @@ describe("renderCommandsListPage", () => {
   it("links the owning task to its detail page, carrying the active tenant", () => {
     const html = renderCommandsListPage([makeCommand({ taskId: "task-42" })], "tenant-1");
     expect(html).toContain('href="/tasks/task-42?tenantId=tenant-1"');
+  });
+
+  it("renders an Agent column with the executing agent's name", () => {
+    const html = renderCommandsListPage([makeCommand({ agentName: "Forge" })], "tenant-1");
+    expect(html).toContain("<th>Agent</th>");
+    expect(html).toContain(">Forge<");
+  });
+
+  it('renders "no agent" when the row carries no agent', () => {
+    const html = renderCommandsListPage([makeCommand({ agentName: null })], "tenant-1");
+    expect(html).toContain("no agent");
   });
 });
 

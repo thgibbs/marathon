@@ -20,6 +20,8 @@ describe("listRecentCommands", () => {
             output_summary: "120 lines",
             task_id: "task-1",
             task_status: "completed",
+            agent_name: "forge",
+            agent_display_name: "Forge",
           },
         ];
       },
@@ -38,8 +40,78 @@ describe("listRecentCommands", () => {
         outputSummary: "120 lines",
         taskId: "task-1",
         taskStatus: "completed",
+        agentName: "Forge",
       },
     ]);
+  });
+
+  it("falls back to agent name when display name is null", async () => {
+    const db = {
+      listRecentToolInvocations: async () => [
+        {
+          id: "ti-1",
+          tool_id: "github.read_file",
+          created_at: new Date("2026-01-01T00:00:00Z"),
+          status: "ok",
+          error: null,
+          input_summary: null,
+          output_summary: null,
+          task_id: "task-1",
+          task_status: "completed",
+          agent_name: "forge",
+          agent_display_name: null,
+        },
+      ],
+    } as unknown as Database;
+
+    const commands = await listRecentCommands(db, "tenant-1", 50);
+    expect(commands[0]!.agentName).toBe("forge");
+  });
+
+  it("falls back to agent name when display name is blank", async () => {
+    const db = {
+      listRecentToolInvocations: async () => [
+        {
+          id: "ti-1",
+          tool_id: "github.read_file",
+          created_at: new Date("2026-01-01T00:00:00Z"),
+          status: "ok",
+          error: null,
+          input_summary: null,
+          output_summary: null,
+          task_id: "task-1",
+          task_status: "completed",
+          agent_name: "forge",
+          agent_display_name: "   ",
+        },
+      ],
+    } as unknown as Database;
+
+    const commands = await listRecentCommands(db, "tenant-1", 50);
+    expect(commands[0]!.agentName).toBe("forge");
+  });
+
+  it("yields agentName: null when the row carries no agent at all", async () => {
+    const db = {
+      listRecentToolInvocations: async () => [
+        {
+          id: "ti-1",
+          tool_id: "github.read_file",
+          created_at: new Date("2026-01-01T00:00:00Z"),
+          status: "ok",
+          error: null,
+          input_summary: null,
+          output_summary: null,
+          task_id: "task-1",
+          task_status: "completed",
+          agent_name: null,
+          agent_display_name: null,
+        },
+      ],
+    } as unknown as Database;
+
+    const commands = await listRecentCommands(db, "tenant-1", 50);
+    expect(commands[0]!.agentName).toBeNull();
   });
 });
 
