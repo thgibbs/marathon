@@ -38,8 +38,20 @@ export interface DeliveryReportOptions {
    * the silent cost footer on the fanned-out result (Track 16, §13.3).
    */
   getCostUsd?(taskId: string): Promise<number | null>;
-  /** Post-report hook (e.g. task bookkeeping/audit) after record + fan-out. */
-  onReported?(info: { taskId: string; repo: string; prNumber: number; prUrl: string }): Promise<void> | void;
+  /**
+   * Post-report hook (e.g. task bookkeeping/audit, the durable code-review
+   * trigger) after record + fan-out. `ready` mirrors the recorded draft/ready
+   * state: true when verification was green (PR is ready-for-review), false when
+   * it was converted (back) to draft — the live wiring enqueues a code-review job
+   * only on a green report (§A.3a).
+   */
+  onReported?(info: {
+    taskId: string;
+    repo: string;
+    prNumber: number;
+    prUrl: string;
+    ready: boolean;
+  }): Promise<void> | void;
 }
 
 /** `https://<host>/<owner>/<repo>/pull/<n>` -> { repo, number }. */
@@ -196,7 +208,7 @@ export function makeDeliveryReportTool(opts: DeliveryReportOptions): Tool {
         delivered = outcomes.filter((o) => o.status === "delivered").length;
       }
 
-      await opts.onReported?.({ taskId: ctx.taskId, repo: parsed.repo, prNumber: pr.number, prUrl: pr.url });
+      await opts.onReported?.({ taskId: ctx.taskId, repo: parsed.repo, prNumber: pr.number, prUrl: pr.url, ready: green });
 
       return {
         content:

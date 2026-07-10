@@ -52,7 +52,7 @@ function setup(
     { surfaceType: "slack", ref: { channel: "C1", thread_ts: "t1" } },
     { surfaceType: "github", ref: { repo: REPO, number: 7, kind: "pr" } },
   ];
-  const reported: Array<{ taskId: string; prUrl: string }> = [];
+  const reported: Array<{ taskId: string; prUrl: string; ready: boolean }> = [];
   const tool = makeDeliveryReportTool({
     getClient: () => client,
     registry,
@@ -60,7 +60,7 @@ function setup(
     fanout,
     getDeliveryTargets: async () => targets,
     getCostUsd: opts.getCostUsd,
-    onReported: (info) => void reported.push({ taskId: info.taskId, prUrl: info.prUrl }),
+    onReported: (info) => void reported.push({ taskId: info.taskId, prUrl: info.prUrl, ready: info.ready }),
   });
   return { client, store, registry, slack, github, tool, reported };
 }
@@ -122,7 +122,7 @@ describe("delivery.report_pr (Track 7)", () => {
     expect(slack.results).toHaveLength(1);
     expect(github.results).toHaveLength(1);
     expect(slack.results[0]?.result.actionsTaken).toEqual([`Opened PR: ${pr.url}`]);
-    expect(reported).toEqual([{ taskId: TASK, prUrl: pr.url }]);
+    expect(reported).toEqual([{ taskId: TASK, prUrl: pr.url, ready: true }]);
     expect(res.details).toMatchObject({ pr_number: pr.number, state: "submitted_ready", verified: true, delivered: 2 });
   });
 
@@ -197,6 +197,24 @@ describe("delivery.report_pr (Track 7)", () => {
     const draft4 = await c4.createPullRequest(REPO, "T", "b4", "main", "", { draft: true });
     await t4.execute({ pr_url: draft4.url, summary: "s" }, ctx);
     expect(c4.writes.filter((w) => w.op === "setPullRequestDraft")).toHaveLength(0);
+  });
+
+  it("onReported carries ready=true for a green report — including a green report on an ALREADY-ready PR (the in-place doc→code case, no draft flip, no webhook) — the durable code-review trigger (§A.3a)", async () => {
+    // Already-ready PR + green verification: report_pr does NOT flip draft (so
+    // GitHub emits no ready_for_review webhook), yet the delivery IS ready — the
+    // onReported hook must report ready=true so the durable code-review job fires.
+    const { client, tool, reported } = setup();
+    const readyPr = await client.createPullRequest(REPO, "T", "b-inplace", "main"); // opens ready (not draft)
+    await tool.execute({ pr_url: readyPr.url, summary: "s", verification: green }, ctx);
+    expect(client.writes.filter((w) => w.op === "setPullRequestDraft")).toHaveLength(0); // no flip → no webhook
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toMatchObject({ prUrl: readyPr.url, ready: true });
+
+    // A red/missing report is NOT ready → the live wiring enqueues no review.
+    const { client: c2, tool: t2, reported: r2 } = setup();
+    const red = await c2.createPullRequest(REPO, "T", "b-red", "main");
+    await t2.execute({ pr_url: red.url, summary: "s", verification: [{ command: "pnpm test", exit_code: 1, summary: "fail" }] }, ctx);
+    expect(r2[0]).toMatchObject({ ready: false });
   });
 
   it("rejects any PR but the task's own when the binding pins one (§29.1a same-PR invariant)", async () => {

@@ -1,7 +1,7 @@
 import type { AgentTurnContext } from "@marathon/agent";
 import type { Task } from "@marathon/core";
 import { describe, expect, it } from "vitest";
-import { handleCodeReviewReady, handleDocReviewOpened, handleReviewTask, runDesignReviewJob, runReviewCycle, type GithubAppDeps } from "../src/handlers";
+import { handleCodeReviewReady, handleDocReviewOpened, handleReviewTask, runCodeReviewJob, runDesignReviewJob, runReviewCycle, type GithubAppDeps } from "../src/handlers";
 
 /**
  * §A.3a review flow: a reviewer agent (task.agentId) reads the PR under review
@@ -232,6 +232,56 @@ describe("handleCodeReviewReady — code review fires when a code PR goes ready 
           : undefined,
     } as never as GithubAppDeps;
     expect(await handleCodeReviewReady(deps, "o/r", 9)).toBe(true);
+    expect(reviews).toBe(1);
+  });
+});
+
+describe("runCodeReviewJob — the durable code-review trigger (§A.3a)", () => {
+  it("is a no-op for a missing task id", async () => {
+    const deps = {} as never as GithubAppDeps;
+    expect(await runCodeReviewJob(deps, null)).toBe(false);
+    expect(await runCodeReviewJob(deps, undefined)).toBe(false);
+  });
+
+  it("is a no-op when the task reported no PR (getCodeChangeByTask → null / unreported)", async () => {
+    const noChange = { db: { getCodeChangeByTask: async () => null } } as never as GithubAppDeps;
+    expect(await runCodeReviewJob(noChange, "code-task")).toBe(false);
+    const unreported = { db: { getCodeChangeByTask: async () => ({ prNumber: null, repo: "o/r" }) } } as never as GithubAppDeps;
+    expect(await runCodeReviewJob(unreported, "code-task")).toBe(false);
+  });
+
+  it("resolves task → code change → PR and runs the review", async () => {
+    let reviews = 0;
+    let reviewedPr: number | undefined;
+    const deps = {
+      db: {
+        // The job carries the reporting task; resolve its code change for the PR.
+        getCodeChangeByTask: async () => ({ prNumber: 42, repo: "o/r", taskId: "code-task" }),
+        findCodeChangeByPr: async (_t: string, _r: string, n: number) => {
+          reviewedPr = n;
+          return { prNumber: n, taskId: "code-task" };
+        },
+        getTask: async () => ({ id: "code-task", agentId: "owner-id" }),
+        getReviewRound: async () => (reviews === 0 ? null : { lastVerdict: "approved", rounds: reviews }),
+        getLatestAgentVersion: async () => null,
+        transitionTask: async () => {},
+      },
+      client: { getPullRequestFiles: async () => [{ filename: "a.ts", status: "modified", additions: 1, deletions: 0, patch: "@@" }] },
+      tenantId: "tn1",
+      orchestrator: {
+        submit: async (i: { agentId?: string; sourceRef?: Record<string, unknown> }) => ({
+          task: { id: "rt", agentId: i.agentId, sourceRef: i.sourceRef, tenantId: "tn1" },
+          deduped: false,
+        }),
+      },
+      reviewerFor: (event: string) => (event === "code-review" ? "reviewer-id" : undefined),
+      agentRegistry: (id: string | undefined) =>
+        id === "reviewer-id"
+          ? { runtime: { nextTurn: async () => { reviews++; return { text: "r", done: true }; } }, on: ["code-review"], models: { default: "m" } }
+          : undefined,
+    } as never as GithubAppDeps;
+    expect(await runCodeReviewJob(deps, "code-task")).toBe(true);
+    expect(reviewedPr).toBe(42);
     expect(reviews).toBe(1);
   });
 });
