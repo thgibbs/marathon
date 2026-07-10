@@ -1138,7 +1138,7 @@ export class Database implements AuditWriter, IdempotencyStore {
       `select ti.*, t.status as task_status, agent.name as agent_name, agent.display_name as agent_display_name
        from tool_invocation ti
        join task t on t.id = ti.task_id
-       left join agent on agent.id = t.agent_id
+       left join agent on agent.id = t.agent_id and agent.tenant_id = t.tenant_id
        where t.tenant_id = $1
        order by ti.created_at desc
        limit $2`,
