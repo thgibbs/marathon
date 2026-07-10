@@ -12,6 +12,7 @@ export interface RecentCommand {
   outputSummary: string | null;
   taskId: string;
   taskStatus: string;
+  agentName: string | null;
 }
 
 function at(v: unknown): Date {
@@ -31,6 +32,7 @@ export async function listRecentCommands(db: Database, tenantId: Id, limit = 100
     outputSummary: (r.output_summary as string | null) ?? null,
     taskId: String(r.task_id),
     taskStatus: String(r.task_status),
+    agentName: (r.agent_display_name as string | null) ?? (r.agent_name as string | null) ?? null,
   }));
 }
 
