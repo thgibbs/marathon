@@ -1075,11 +1075,12 @@ oldest-first when over budget. For long in-flight runs, Pi performs in-loop comp
 
 ### Versioning & reproducibility
 
-The assembled prompt is tagged with a **`prompt_version`** = (AgentVersion + output/template
-version + builder version), recorded on each `ModelInvocation` (§10.10) and surfaced in the
-inspectability dashboard (§8.5, §11). Given the same `(instructions, context bundle,
-invocation, versions)`, the builder must produce the same prompt — this is what makes
-evaluation and replay meaningful (§7.6, §10.14).
+The assembled prompt is tagged with a **`prompt_version`** = (AgentVersion + selected instruction
+stage + output/template version + builder version), recorded on each `ModelInvocation` (§10.10)
+and surfaced in the inspectability dashboard (§8.5, §11). The selected stage is `none` when the
+task's work kind has no kernel stage. Given the same `(instructions, context bundle,
+invocation, versions)`, the builder must produce the same prompt — this is what makes evaluation
+and replay meaningful (§7.6, §10.14).
 
 ### Required
 
