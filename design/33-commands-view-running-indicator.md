@@ -69,38 +69,75 @@ terminal row exactly as today.
   `"blocked" | "error"` and drops the now-unused `outputSummary` field, since
   the only remaining `onInvocation` callers are the pre-execution paths,
   which never produce `"ok"` or an output summary.)
-- `ToolGateway.run` calls `onStart` immediately before `tool.execute()`,
-  keeps the returned handle, and calls `onComplete(handle, outcome)` in both
-  the success and catch branches (in place of today's single
-  `onInvocation` call there). `recorder` stays optional throughout — a
-  gateway with no recorder configured just skips all of this, as today.
+- `ToolGateway.run` calls `onStart(rec)` and immediately proceeds to
+  `tool.execute()` — it does **not** await `onStart` settling before
+  starting execution; see "Recorder failure & timing semantics" below for
+  exactly how the resulting handle is obtained and bounded. When
+  `tool.execute()` settles (success or thrown error), `run` calls
+  `onComplete(handle, outcome)` *only if* a real handle was obtained, in
+  place of today's single `onInvocation` call there. `recorder` stays
+  optional throughout — a gateway with no recorder configured just skips
+  all of this, as today.
 
-**Recorder failure semantics.** Recording is **best-effort and
-fail-open**, never fail-closed — a broken or slow DB must not be able to
-stop tool execution or corrupt its reported outcome:
-- `ToolGateway.run` wraps the `onStart` call in a try/catch (awaiting a
-  promise-returning `onStart` inside the same try). If it throws or
-  rejects, the error is logged (same logger/channel `ToolGateway` already
-  uses for other non-fatal conditions) and `tool.execute()` proceeds
-  immediately with `handle = undefined` — a failed `onStart` costs the
-  "running" row, nothing else. This is a deliberate change from today's
-  implicit behavior where an `onInvocation` failure had no `execute()` to
-  gate; it must be made explicit now because `onStart` sits *before*
-  `execute()` on the critical path for the first time.
-- `ToolGateway.run` likewise wraps each `onComplete(handle, outcome)` call
-  in a try/catch. Its result is discarded either way, and a throw/rejection
-  is logged and swallowed — it can never replace, mask, or delay the
-  `outcome` (`ok` result or thrown error) that `run` returns to its caller.
-  This matches today's behavior for `onInvocation`, made explicit for the
-  new call site.
-- Net effect: a fully-down `dbToolRecorder` degrades `/commands` to "no
-  running rows ever appear" (and, for calls whose `onStart` succeeded but
-  whose `onComplete` failed, a row stuck at `status = 'running'` — the same
-  stale-row class already called out in §33.5), but never degrades tool
-  execution itself. This is the same trust boundary the rest of the system
+**Recorder failure & timing semantics.** Recording is **best-effort,
+fail-open, and bounded** — a broken *or slow/hung* DB must not be able to
+stop, delay, or corrupt tool execution or its reported outcome. A plain
+try/catch around an awaited call handles a *rejecting* `onStart`/
+`onComplete`, but not a *hung* one that never settles at all — awaiting
+that inline would still block indefinitely. So both calls are governed by
+a fixed timeout constant, `RECORDER_TIMEOUT_MS` (defined alongside
+`ToolGateway`, e.g. 500ms), in addition to try/catch:
+
+- **Start side (bounded, but never blocks `execute`).** `onStart(rec)` is
+  invoked and raced (`Promise.race`) against a `RECORDER_TIMEOUT_MS` timer,
+  concurrently with `tool.execute()` being kicked off — `run` does not wait
+  for that race to settle before starting execution; `tool.execute()`
+  begins as soon as `run` is called, full stop. The race exists only to
+  bound how long `run` is willing to keep listening for a handle before
+  treating it as unavailable: if `onStart` throws, rejects, or the timer
+  wins, `handle` is treated as `undefined` for this invocation, and this is
+  logged (same logger/channel `ToolGateway` already uses for other
+  non-fatal conditions). A timed-out `onStart` promise is not abandoned
+  silently — it keeps a trailing `.catch` so a late rejection is still
+  logged and never becomes an unhandled rejection — but its eventual
+  result, even a real id resolved after the timeout, is discarded; once
+  timed out, always treated as no-handle for that call. This is a
+  deliberate change from today's implicit behavior where an `onInvocation`
+  failure had no `execute()` to gate; it must be made explicit now because
+  `onStart` sits *before* `execute()` conceptually for the first time, even
+  though it no longer sits before it *on the awaited critical path*.
+- **No ambiguous handle.** `onComplete` is **skipped entirely** when
+  `handle` is `undefined` — whether because `onStart` threw, rejected,
+  timed out, or (defensively) resolved to `undefined`. `dbToolRecorder`'s
+  `onComplete` maps directly to `Database.completeToolInvocation(id, rec)`,
+  an `update ... where id = $1`; calling it with `id: undefined` would be
+  ambiguous (matches no row, or requires bespoke guard code to no-op
+  safely) rather than a clean, obviously-correct skip, so the gateway never
+  makes that call in the first place. Net effect for that invocation: no
+  `'running'` row was ever written, so there is nothing to complete —
+  consistent with the "no running rows ever appear" degradation below.
+- **Completion side (bounded, and never blocks `run`'s return).** When
+  `handle` is defined, `onComplete(handle, outcome)` is invoked and also
+  raced against `RECORDER_TIMEOUT_MS`, wrapped so a throw, rejection, or
+  timeout is logged and swallowed (same trailing-`.catch` treatment as
+  above for anything that settles late). Critically, `run` does **not**
+  await this call — bounded or not — before returning `outcome` to its
+  caller: the call is fired, and its eventual settlement is used only for
+  logging, never to gate or delay what `run` returns. This is what makes
+  completion-side recording non-blocking rather than merely bounded:
+  `run`'s return path depends on `tool.execute()` settling and nothing
+  else.
+- **Net effect.** A fully-down or hung `dbToolRecorder` degrades
+  `/commands` to "no running rows ever appear" (and, for calls whose
+  `onStart` produced a handle within the bound but whose `onComplete` later
+  fails or hangs, a row stuck at `status = 'running'` — the same stale-row
+  class already called out in §33.5), but it can delay the *start* of
+  `tool.execute()` by exactly zero (execution is never gated on `onStart`)
+  and can delay `run`'s *return* by exactly zero (return is never gated on
+  `onComplete`). This is the same trust boundary the rest of the system
   already assumes (observability is downstream of, not a gate on, agent
-  actions) and is not being loosened or tightened here, only stated for the
-  first time at this call site.
+  actions) — now made explicitly bounded and non-blocking, not just
+  fail-open, at this call site.
 
 **`packages/db/src/index.ts`**
 - `Database.startToolInvocation(rec)` — `insert into tool_invocation(task_id,
@@ -176,11 +213,12 @@ gateway version ever exercised. Concretely:
   `onComplete` for it. Stated explicitly as an accepted v1 gap: a stale
   "running" row will sit at the top of `/commands` indefinitely and read as
   misleadingly in-flight. The same stale-row outcome can also result from a
-  failed `onComplete` call under the fail-open semantics in §33.4 — both
-  are the same accepted gap, not two different ones. A staleness cutoff
-  (e.g., treat `running` rows older than N minutes as "stale" in the UI
-  rather than "running") is a reasonable follow-up but is not built here —
-  flagged, not silently assumed away.
+  timed-out/failed `onStart` (no row ever appears — not a stale row, just a
+  missed one) or a failed/timed-out `onComplete` call under the bounded,
+  fail-open semantics in §33.4 — all are the same accepted gap, not several
+  different ones. A staleness cutoff (e.g., treat `running` rows older than
+  N minutes as "stale" in the UI rather than "running") is a reasonable
+  follow-up but is not built here — flagged, not silently assumed away.
 
 ## 33.6 Scope boundary
 
@@ -199,11 +237,22 @@ changes when/how the outcome is persisted.
   `invocations[0]?.status === "ok"` valid); add a case asserting `onStart`
   fires before `tool.execute()` resolves (e.g. a tool whose `execute` blocks
   on a manually-resolved promise) and `onComplete` fires after, with the
-  same handle. Add cases for the failure semantics in §33.4: a recorder
-  whose `onStart` throws/rejects still lets `tool.execute()` run and
-  `run()` return the tool's real outcome; a recorder whose `onComplete`
-  throws/rejects still surfaces the real outcome (success or thrown error)
-  from `run()` unchanged.
+  same handle. Add cases for the failure and timing semantics in §33.4:
+  - a recorder whose `onStart` throws/rejects still lets `tool.execute()`
+    run and `run()` return the tool's real outcome, and `onComplete` is
+    never called (no handle);
+  - a recorder whose `onComplete` throws/rejects still surfaces the real
+    outcome (success or thrown error) from `run()` unchanged;
+  - a **slow/pending `onStart`** — a recorder whose `onStart` returns a
+    promise that is still unresolved when the test asserts — must not
+    prevent `tool.execute()` from starting, and `run()` must still resolve
+    the real outcome without waiting for that promise to settle;
+  - a **slow/pending `onComplete`** — a recorder whose `onComplete` returns
+    a promise that is deliberately left unresolved for the duration of the
+    test — must not prevent `run()` from returning the real outcome;
+  - the **no-handle path** — a recorder whose `onStart` resolves to
+    `undefined` (distinct from throwing) — `onComplete` must never be
+    invoked for that call.
 - `packages/agent/test/codex.test.ts`, `packages/agent/test/claude-code.test.ts`
   — update the local recorder fakes the same way (both already assert on a
   final merged record shape; behavior unaffected, just re-plumbed).
