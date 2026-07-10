@@ -5,10 +5,18 @@ MARATHON_DB_PORT ?= 5432
 DATABASE_URL ?= postgres://marathon:marathon@localhost:$(MARATHON_DB_PORT)/marathon
 export DATABASE_URL MARATHON_DB_PORT
 
-.PHONY: install hooks secret-scan sandbox-image db-up db-down migrate typecheck test demo demo-kernel demo-k1 demo-k1-brokered demo-k1-network demo-k2 demo-k3 demo-k4 demo-k5 demo-k7 demo-k8 demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-floor demo-github-app demo-slack-app slack-app github-app smoke-pi smoke-github smoke-github-write smoke-github-doc smoke-pi-tools smoke-mem0 smoke-sandbox smoke-broker smoke-container smoke-pi-sandbox smoke-k4 smoke-slack down
+.PHONY: install register-github-app hooks secret-scan sandbox-image db-up db-down migrate typecheck test demo demo-kernel demo-k1 demo-k1-brokered demo-k1-network demo-k2 demo-k3 demo-k4 demo-k5 demo-k7 demo-k8 demo-m0 demo-m1 demo-m2 demo-m3 demo-m4 demo-m5 demo-m6 demo-m6.1 demo-m7 demo-m8 demo-m9 demo-floor demo-github-app demo-slack-app slack-app github-app smoke-pi smoke-github smoke-github-write smoke-github-doc smoke-pi-tools smoke-mem0 smoke-sandbox smoke-broker smoke-container smoke-pi-sandbox smoke-k4 smoke-slack down
 
 install:
 	pnpm install
+
+# Register a per-deployment GitHub App via the one-click manifest flow: creates
+# a dev smee channel, serves a local confirmation page, then writes the app's
+# credentials into .env and its private key into .keys/. Production endpoint
+# instead of smee: pnpm --filter @marathon/setup register-github-app -- --webhook-url https://<host>/webhooks/github
+# (The Slack side is a paste-a-manifest flow — see slack-app-manifest.yaml.)
+register-github-app:
+	pnpm --filter @marathon/setup register-github-app
 
 # Enable the version-controlled git hooks (gitleaks secret scan on commit).
 hooks:

@@ -1,0 +1,50 @@
+# Marathon Slack app manifest — create your deployment's OWN Slack app from
+# this file instead of clicking through scopes and event subscriptions by hand:
+#
+#   1. https://api.slack.com/apps → "Create New App" → "From a manifest"
+#      → pick your workspace → paste this file.
+#   2. Basic Information → App-Level Tokens → generate a token with scope
+#      `connections:write` → SLACK_APP_TOKEN (xapp-…).
+#   3. Install App → "Install to Workspace" → SLACK_BOT_TOKEN (xoxb-…).
+#   4. Basic Information → App Credentials → Signing Secret
+#      → SLACK_SIGNING_SECRET.
+#
+# Why every deployment creates its own app instead of sharing one: Socket Mode
+# app-level tokens are app-global, and Slack SPLITS event delivery across all
+# concurrently connected instances — two deployments sharing one app would
+# silently lose events to each other, and each would hold a credential for the
+# other's workspaces.
+display_information:
+  name: Marathon
+  description: Durable AI agent for long-running work — @marathon in a channel to start.
+  background_color: "#1f2430"
+features:
+  bot_user:
+    display_name: marathon
+    always_online: true
+  slash_commands:
+    # Socket Mode delivers slash commands over the websocket — no request URL.
+    - command: /marathon
+      description: Marathon commands — e.g. link your GitHub identity
+      usage_hint: link github
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      # The five scopes the live app uses (docs/quickstart.md §4): mentions
+      # start tasks, chat:write answers in threads, channels:history sees
+      # thread replies (task continuity), reactions ack via :+1: (§31).
+      - app_mentions:read
+      - chat:write
+      - channels:history
+      - reactions:read
+      - reactions:write
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.channels
+      - reaction_added
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

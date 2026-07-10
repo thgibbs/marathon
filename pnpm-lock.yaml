@@ -733,6 +733,8 @@ importers:
         specifier: ^8.13.0
         version: 8.22.0
 
+  packages/setup: {}
+
   packages/slack-app:
     dependencies:
       '@marathon/agent':
