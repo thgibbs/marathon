@@ -84,7 +84,9 @@ subscriptions, and the `/marathon` slash command in one paste:
 5. `SLACK_BOT_TOKEN` (xoxb-) — the Bot User OAuth Token from installing the
    app above (the manifest already granted the needed scopes:
    `app_mentions:read`, `chat:write`, `channels:history`, `reactions:read`,
-   `reactions:write`).
+   `reactions:write`, `commands` — the last one is what authorizes the
+   `/marathon` slash command; without it the installed bot token cannot
+   invoke slash commands even though the manifest declares one).
 6. `SLACK_SIGNING_SECRET` — from Basic Information → App Credentials.
 7. `SLACK_APP_TOKEN` (xapp-) — the Socket Mode app-level token, scope
    `connections:write`.
@@ -93,13 +95,16 @@ subscriptions, and the `/marathon` slash command in one paste:
 8. GitHub credential **and** webhook — pick one path; both need a webhook
    because the running app is driven entirely by inbound GitHub events, there
    is no polling fallback:
-   - **PAT path (quickstart)** — a fine-grained PAT with Contents + Pull
-     requests read/write on the target repo → `GITHUB_TOKEN`. A PAT has no
-     webhook of its own, so you must create one by hand: on the target repo,
-     go to Settings → Webhooks → Add webhook, content type
-     `application/json`, subscribed to the same events listed below, pointed
-     at the URL from §1.10. Generate the shared secret yourself the same way
-     as `MARATHON_SECRET_KEY` (`openssl rand -hex 32`), paste it into that
+   - **PAT path (quickstart)** — a fine-grained PAT with Contents, Pull
+     requests, and Issues read/write on the target repo → `GITHUB_TOKEN`
+     (Issues access is required, not optional — the running app posts
+     issue/PR comments, labels, and reactions, and omitting it will produce
+     403s during normal document-surface work). A PAT has no webhook of its
+     own, so you must create one by hand: on the target repo, go to Settings
+     → Webhooks → Add webhook, content type `application/json`, subscribed
+     to the same events listed below, pointed at the URL from §1.10.
+     Generate the shared secret yourself the same way as
+     `MARATHON_SECRET_KEY` (`openssl rand -hex 32`), paste it into that
      webhook's "Secret" field on GitHub, and set the identical value as
      `GITHUB_WEBHOOK_SECRET` in `.env`.
    - **GitHub App path (preferred)** — one command registers a private,
