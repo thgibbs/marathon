@@ -103,6 +103,44 @@ describe("classifyGithubEvent", () => {
     expect(classifyGithubEvent("star", {}).kind).toBe("ignore");
   });
 
+  it("a @marathon/* package or team reference is NOT a mention (2026-07-10 PR 61 incident)", () => {
+    const event = (body: string) =>
+      classifyGithubEvent("pull_request_review_comment", {
+        action: "created",
+        repository: { full_name: "o/repo", owner: { login: "o" } },
+        pull_request: { number: 61 },
+        comment: { id: 8, body, path: "design/33.md", line: 85, user: { login: "reviewer", type: "User" } },
+      });
+    // The incident shape: a review comment citing the repo's own package scope
+    // spawned a task on a human PR, with the "/config`…" tail as its text.
+    expect(event("`KernelEvent` lives in `@marathon/config` (`index.ts:198`), but core can't import it.").kind).toBe("ignore");
+    // A different username sharing the prefix is not a summon either.
+    expect(event("cc @marathon-tools for visibility").kind).toBe("ignore");
+    // A real mention still works even when a package reference precedes it.
+    const a = event("`@marathon/config` owns this — @marathon please reconcile the doc.");
+    expect(a.kind).toBe("mention");
+    if (a.kind === "mention") expect(a.invocation.text).toBe("please reconcile the doc.");
+  });
+
+  it("bot-authored comments never trigger a mention (§2b #15 — Marathon's own posts cite @marathon/*)", () => {
+    expect(
+      classifyGithubEvent("issue_comment", {
+        action: "created",
+        repository: { full_name: "o/repo", owner: { login: "o" } },
+        issue: { number: 61 },
+        comment: { id: 9, body: "@marathon do the thing", user: { login: "agentp-github-app[bot]", type: "Bot" } },
+      }).kind,
+    ).toBe("ignore");
+    expect(
+      classifyGithubEvent("pull_request_review_comment", {
+        action: "created",
+        repository: { full_name: "o/repo", owner: { login: "o" } },
+        pull_request: { number: 61 },
+        comment: { id: 10, body: "@marathon do the thing", path: "x.md", line: 1, user: { login: "ci[bot]", type: "Bot" } },
+      }).kind,
+    ).toBe("ignore");
+  });
+
   it("classifies a submitted review — NO mention required (§2b #11)", () => {
     const a = classifyGithubEvent("pull_request_review", {
       action: "submitted",

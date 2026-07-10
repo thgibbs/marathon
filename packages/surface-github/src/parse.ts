@@ -48,10 +48,17 @@ export interface ParseGithubOptions {
   knownAgents?: string[];
 }
 
-/** Extract agent + text from a comment body that mentions @marathon. */
+/**
+ * Extract agent + text from a comment body that mentions @marathon.
+ *
+ * A mention is `@marathon` NOT followed by `/`, `-`, or a word character:
+ * `@marathon/config` is a package/team reference — this repo's own package
+ * scope shows up in review comments constantly and once spawned a task on a
+ * human PR — and `@marathon-x` would be a different username.
+ */
 function mentionText(body: string, knownAgents?: string[]): { agentName: string | null; text: string } | null {
-  if (!/@marathon\b/i.test(body)) return null;
-  const after = body.replace(/^[\s\S]*?@marathon\s*/i, "").trim();
+  if (!/@marathon(?![\w/-])/i.test(body)) return null;
+  const after = body.replace(/^[\s\S]*?@marathon(?![\w/-])\s*/i, "").trim();
   const m = after.match(/^([A-Za-z][\w-]*)\s+([\s\S]+)$/);
   if (m && knownAgents?.includes(m[1]!)) {
     return { agentName: m[1]!, text: m[2]!.trim() };
@@ -71,6 +78,10 @@ function mentionText(body: string, knownAgents?: string[]): { agentName: string 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function classifyGithubEvent(eventType: string, payload: any, opts: ParseGithubOptions = {}): GithubAction {
   if (eventType === "issue_comment" && payload?.action === "created") {
+    // Bot authors never trigger runs — same rule as submitted reviews below
+    // (§2b #15): Marathon authors as <app-slug>[bot], so this structurally
+    // stops it re-triggering off its own comments (which cite @marathon/*).
+    if (payload.comment?.user?.type === "Bot") return { kind: "ignore" };
     const mt = mentionText(payload.comment?.body ?? "", opts.knownAgents);
     if (!mt) return { kind: "ignore" };
     return {
@@ -96,6 +107,8 @@ export function classifyGithubEvent(eventType: string, payload: any, opts: Parse
   }
 
   if (eventType === "pull_request_review_comment" && payload?.action === "created") {
+    // Bot authors never trigger runs (§2b #15) — see the issue_comment guard.
+    if (payload.comment?.user?.type === "Bot") return { kind: "ignore" };
     const mt = mentionText(payload.comment?.body ?? "", opts.knownAgents);
     if (!mt) return { kind: "ignore" };
     return {
